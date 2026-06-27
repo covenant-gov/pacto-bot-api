@@ -139,6 +139,39 @@ docker compose --profile bunker up -d --build
 - **Requirement traceability:** plan references requirements R1–R37; changes should update traced coverage where the project enforces it.
 - **Linting:** clippy (with custom lints forbidding plain strings for secrets) and `cargo-deny` for audit gates.
 
+## Agent Skills
+
+This repository vendors agent skills so contributors working in Claude Code, Cursor, or Oh My Pi get consistent Rust guidance without installing the skills CLI themselves.
+
+### Layout
+
+| Path | Purpose |
+|---|---|
+| `.claude/skills/` | Claude Code skill provider |
+| `.agents/skills/` | Cursor and OMP shared provider |
+| `.omp/skills/` | Oh My Pi native provider |
+| `skills-lock.json` | Reproducible skill manifest |
+
+Skills are installed with `npx skills add ... --copy` so the files are committed to the repo.
+
+### Installed skills
+
+| Skill | Source | Purpose |
+|---|---|---|
+| `rust-best-practices` | `apollographql/skills` | Idiomatic Rust, ownership, error handling, performance, linting |
+| `rust-async-patterns` | `wshobson/agents` | Tokio, async traits, concurrency, async debugging |
+| `rust-testing` | `affaan-m/everything-claude-code` | Unit, integration, async, property-based, and snapshot testing |
+| `rust-patterns` | `affaan-m/everything-claude-code` | Common Rust design patterns |
+| `m15-anti-pattern` | `zhanghandong/rust-skills` | Anti-patterns and code-smell detection |
+| `cargo-fuzz` | `trailofbits/skills` | Fuzzing with `cargo-fuzz` / `libFuzzer` |
+| `cargo-nextest` | `laurigates/claude-plugins` | Fast, structured test runs with `cargo nextest` |
+| `ce-compound` | `everyinc/compound-engineering-plugin` | Document solved problems and project vocabulary in `docs/solutions/` |
+| `ce-compound-refresh` | `everyinc/compound-engineering-plugin` | Audit and refresh stale learnings against the codebase |
+
+### Security note
+
+`cargo-fuzz` is flagged as higher-risk by skills.sh because fuzzing invokes compilers and runs arbitrary generated inputs. The skill is from Trail of Bits, a reputable security firm, and should be reviewed before use on sensitive code paths. Do not run fuzzing against production secrets or live services.
+
 ## Notes for AI Assistants
 
 - Do not assume a `src/` directory exists yet. Before editing code, verify whether scaffolding has been created.

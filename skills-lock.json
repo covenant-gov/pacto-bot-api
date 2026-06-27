@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "skills": {
+    "cargo-fuzz": {
+      "source": "trailofbits/skills",
+      "sourceType": "github",
+      "skillPath": "plugins/testing-handbook-skills/skills/cargo-fuzz/SKILL.md",
+      "computedHash": "d3f0be4bd295400e7f8ba8a0fb695cde53bc7958357edf4e5876c798bbc598ba"
+    },
+    "cargo-nextest": {
+      "source": "laurigates/claude-plugins",
+      "sourceType": "github",
+      "skillPath": "rust-plugin/skills/cargo-nextest/SKILL.md",
+      "computedHash": "3e7b273e5b6d6100a6a8e759dc161252238f543e837f860018e5764ade0667e9"
+    },
+    "ce-compound": {
+      "source": "everyinc/compound-engineering-plugin",
+      "sourceType": "github",
+      "skillPath": "skills/ce-compound/SKILL.md",
+      "computedHash": "0c8342b6f2ad29abf94871be536a6ef57fa7d11bdee4f7b78206a356d4b680d9"
+    },
+    "ce-compound-refresh": {
+      "source": "everyinc/compound-engineering-plugin",
+      "sourceType": "github",
+      "skillPath": "skills/ce-compound-refresh/SKILL.md",
+      "computedHash": "7a77743001dd3521cb5ebbc7941408ea9874461b111ebc56395ed94d093fd821"
+    },
+    "m15-anti-pattern": {
+      "source": "zhanghandong/rust-skills",
+      "sourceType": "github",
+      "skillPath": "skills/m15-anti-pattern/SKILL.md",
+      "computedHash": "d9f5d80bd2ab49f063a61d90a96100298788ea0e1e5bd5e917be3c7e124078a2"
+    },
+    "rust-async-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "skillPath": "plugins/systems-programming/skills/rust-async-patterns/SKILL.md",
+      "computedHash": "20d32ef58158c94eb4dfc4aaf19bec7ae2a025ae5d42da7b49ccfbaeda389273"
+    },
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-best-practices/SKILL.md",
+      "computedHash": "fd336f2f772eb46ddf8658de5f9dd8faa1f35615b316665307fc82eeb4b2e658"
+    },
+    "rust-patterns": {
+      "source": "affaan-m/everything-claude-code",
+      "sourceType": "github",
+      "skillPath": "skills/rust-patterns/SKILL.md",
+      "computedHash": "8ea8d0511dd6d2260d3e49794a146ab12655e0d89fc71544699e5483a94e7230"
+    },
+    "rust-testing": {
+      "source": "affaan-m/everything-claude-code",
+      "sourceType": "github",
+      "skillPath": "skills/rust-testing/SKILL.md",
+      "computedHash": "9a8f2bb0e7aa498b56af699e4673fd3ec1f50c5cfe9019c86dc80a93ccd08e66"
+    }
+  }
+}

@@ -4,3 +4,14 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Node / skills.sh
+node_modules/
+
+# Local runtime data and secrets
+/data
+.env
+.env.local
+
+# macOS
+.DS_Store

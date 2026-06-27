@@ -23,11 +23,17 @@ cargo build --release
 ## Run checks
 
 ```bash
-cargo check
-cargo clippy -- -D warnings
-cargo test
+cargo fmt --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo nextest run
 cargo deny check
 ```
+
+Project tooling:
+
+- `clippy.toml` — project-specific Clippy lints (e.g., forbidding plain `String`/`&str` for secrets).
+- `deny.toml` — license and audit policy for `cargo-deny`.
+- `xtask/` — project automation such as schema/codegen tasks (`cargo xtask codegen`).
 
 ## Running the daemon
 
@@ -70,20 +76,30 @@ cargo run --bin pacto-bot-admin -- diagnose --format json
 ### Default: in-process, no Docker
 
 ```bash
-cargo test
+cargo nextest run
 ```
 
 This runs the full default suite using in-process mock relay and mock bunker implementations. Target: under 30 seconds.
 
-### Integration tests against pacto-dev-env
-
-Some tests are gated behind `#[ignore]` and require the `pacto-dev-env` Docker environment:
+If you do not have `cargo-nextest` installed, the standard test runner works as a fallback:
 
 ```bash
-PACTO_DEV_ENV=1 cargo test -- --ignored
+cargo test
 ```
 
-See [`docs/dev-env.md`](docs/dev-env.md) for setup instructions.
+### Integration tests
+
+Integration tests live in `tests/` and run against in-process mock relay and bunker implementations by default. Run them with:
+
+```bash
+cargo nextest run --test integration
+```
+
+Tests that need external services (a local Nostr relay, EVM node, or NIP-46 bunker) are gated behind `#[ignore]` and can be run selectively once those services are available:
+
+```bash
+cargo nextest run --run-ignored all
+```
 
 ### Schema sync
 
@@ -133,10 +149,13 @@ capabilities = ["ReadMessages", "SendMessages"]
 
 ```bash
 # Watch and run tests on change
-cargo watch -x test
+cargo watch -x "nextest run"
 
-# Run a specific test
-cargo test --test cli_args
+# Run a specific test binary
+cargo nextest run --test cli_args
+
+# Run a single test by name
+cargo nextest run --test cli_args -- my_test_name
 
 # Generate and view docs
 cargo doc --open
