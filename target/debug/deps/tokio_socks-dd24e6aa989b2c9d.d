@@ -1,0 +1,11 @@
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/tokio_socks-dd24e6aa989b2c9d.d: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/error.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/mod.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/tokio.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/mod.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks4.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks5.rs
+
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/libtokio_socks-dd24e6aa989b2c9d.rmeta: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/error.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/mod.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/tokio.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/mod.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks4.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks5.rs
+
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/lib.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/error.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/mod.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/io/tokio.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/mod.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks4.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-socks-0.5.3/src/tcp/socks5.rs:

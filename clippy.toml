@@ -1,0 +1,5 @@
+# Clippy configuration for pacto-bot-api.
+# Placeholder: custom lints forbidding plain String for secrets will be added
+# in the secret-redaction implementation unit.
+
+avoid-breaking-exported-api = false

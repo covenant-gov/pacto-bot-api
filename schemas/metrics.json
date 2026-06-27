@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pacto-bot-api metrics payload",
+  "type": "object",
+  "properties": {
+    "uptime_seconds": { "type": "integer", "minimum": 0 },
+    "handlers_registered": { "type": "integer", "minimum": 0 },
+    "events_received_total": { "type": "integer", "minimum": 0 },
+    "events_dispatched_total": { "type": "integer", "minimum": 0 },
+    "rate_limited_total": { "type": "integer", "minimum": 0 },
+    "relay_reconnects_total": { "type": "integer", "minimum": 0 },
+    "bunker_sign_failures_total": { "type": "integer", "minimum": 0 }
+  }
+}

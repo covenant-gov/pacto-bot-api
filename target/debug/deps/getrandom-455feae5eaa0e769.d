@@ -1,0 +1,11 @@
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/getrandom-455feae5eaa0e769.d: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/error.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/util.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/../README.md /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/getentropy.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/../utils/get_errno.rs
+
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/libgetrandom-455feae5eaa0e769.rmeta: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/error.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/util.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/../README.md /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/getentropy.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/../utils/get_errno.rs
+
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/lib.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/error.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/util.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/../README.md:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/getentropy.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.3/src/backends/../utils/get_errno.rs:

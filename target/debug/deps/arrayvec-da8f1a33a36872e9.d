@@ -1,0 +1,11 @@
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/arrayvec-da8f1a33a36872e9.d: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec_impl.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/array_string.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/char.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/errors.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/utils.rs
+
+/Users/opselite/Projects/pacto-bot-api/target/debug/deps/libarrayvec-da8f1a33a36872e9.rmeta: /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/lib.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec_impl.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/array_string.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/char.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/errors.rs /Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/utils.rs
+
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/lib.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec_impl.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/arrayvec.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/array_string.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/char.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/errors.rs:
+/Users/opselite/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/arrayvec-0.7.7/src/utils.rs:
