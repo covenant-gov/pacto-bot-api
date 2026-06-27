@@ -1,0 +1,6 @@
+repos:
+  primary: "."
+  additional:
+    - "/Users/opselite/.beads-planning"
+
+export.auto: true
