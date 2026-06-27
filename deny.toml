@@ -1,0 +1,15 @@
+# cargo-deny configuration for pacto-bot-api.
+# Placeholder: dependency audit policy will be tightened as the crate matures.
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+yanked = "warn"
+
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "ISC", "MPL-2.0"]

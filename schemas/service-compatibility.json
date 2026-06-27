@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pacto-bot-api service compatibility windows",
+  "type": "object",
+  "properties": {
+    "relay": {
+      "type": "object",
+      "properties": {
+        "min_version": { "type": "string" },
+        "max_version": { "type": "string" }
+      }
+    },
+    "bunker": {
+      "type": "object",
+      "properties": {
+        "min_version": { "type": "string" },
+        "max_version": { "type": "string" }
+      }
+    }
+  }
+}
