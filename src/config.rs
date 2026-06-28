@@ -276,8 +276,11 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_config(content: &str) -> (tempfile::NamedTempFile, PathBuf) {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+    fn write_config(content: &str) -> (tempfile::TempDir, tempfile::NamedTempFile, PathBuf) {
+        // Create a restricted temp directory so the parent-directory permission
+        // check passes on CI runners where /tmp is world-writable.
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         file.write_all(content.as_bytes()).unwrap();
         let path = file.path().to_path_buf();
 
@@ -289,12 +292,12 @@ mod tests {
             fs::set_permissions(&path, perms).unwrap();
         }
 
-        (file, path)
+        (dir, file, path)
     }
 
     #[test]
     fn valid_single_bot_config() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [daemon]
 data_dir = "/tmp/pacto"
@@ -317,7 +320,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 
     #[test]
     fn valid_multi_bot_config() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -349,7 +352,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 
     #[test]
     fn duplicate_bot_id_error() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -369,7 +372,7 @@ signing = { backend = "nsec", nsec = "nsec1b" }
 
     #[test]
     fn missing_required_field_npub() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -383,7 +386,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
     #[test]
     fn missing_required_field_nsec() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -401,7 +404,7 @@ signing = { backend = "nsec" }
     fn env_var_expansion() {
         // SAFETY: test-only mutation of a unique environment variable name.
         unsafe { env::set_var("PACT_TEST_NSEC", "nsec1fromenv") };
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -422,7 +425,7 @@ signing = { backend = "nsec", nsec = "${PACT_TEST_NSEC}" }
     #[test]
     fn tilde_expansion() {
         let home = env::var("HOME").expect("HOME must be set for this test");
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [daemon]
 data_dir = "~/pacto-test"
@@ -440,7 +443,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
     #[test]
     fn bunker_remote_rejects_ws() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "bad-bot"
@@ -455,7 +458,7 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
 
     #[test]
     fn config_accepts_0o600_permissions() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -470,7 +473,8 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
     #[test]
     fn config_rejects_0o644_permissions() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         file.write_all(
             br#"
 [[bots]]
