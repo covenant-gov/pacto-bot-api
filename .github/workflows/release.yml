@@ -29,10 +29,10 @@ jobs:
             asset: linux_amd64
           - target: aarch64-unknown-linux-musl
             asset: linux_arm64
-          - target: x86_64-pc-windows-gnu
-            asset: windows_amd64
-          - target: x86_64-unknown-freebsd
-            asset: freebsd_amd64
+          # - target: x86_64-pc-windows-gnu
+          #   asset: windows_amd64
+          # - target: x86_64-unknown-freebsd
+          #   asset: freebsd_amd64
 
     steps:
       - name: Checkout repository
