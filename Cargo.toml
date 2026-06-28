@@ -55,3 +55,15 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 0
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+# Production safety: panics and unwrap/expect are forbidden outside tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# Avoid debug macro leakage.
+dbg_macro = "warn"
+

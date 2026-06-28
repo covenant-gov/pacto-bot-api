@@ -1,0 +1,19 @@
+# Clippy configuration for pacto-bot-api.
+# Lint levels are declared in Cargo.toml [lints.clippy].
+# This file only holds clippy configuration keys.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+allow-print-in-tests = true
+
+# Keep function sizes reasonable.
+too-many-lines-threshold = 80
+cognitive-complexity-threshold = 25
+
+# Encourage small error types.
+large-error-threshold = 256
+
+# Encourage documentation.
+missing-docs-in-crate-items = false
