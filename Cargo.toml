@@ -39,14 +39,19 @@ uuid = { version = "1", features = ["v4", "serde"] }
 secrecy = { version = "0.10", features = ["serde"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
+hyper = { version = "1", features = ["server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.2"
 tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-tungstenite = "0.26"
 hex = "0.4"
 subtle = "2"
 fs2 = "0.4"
 nostr-connect = "0.43"
+nostr-relay-pool = "0.43"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 schemars = "0.8"
@@ -59,6 +64,8 @@ parking_lot = "0.12"
 nix = { version = "0.29", features = ["signal", "process"] }
 tokio-tungstenite = "0.26"
 futures = "0.3"
+syn = { version = "2", features = ["full", "parsing"] }
+quote = "1"
 
 [profile.release]
 lto = true
@@ -75,6 +82,8 @@ unsafe_code = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+# Secret-hygiene: placeholder identifiers for sensitive values are forbidden.
+disallowed_names = "deny"
 # Avoid debug macro leakage.
 dbg_macro = "warn"
 

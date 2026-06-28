@@ -12,6 +12,9 @@
         "tests/transport_unix.rs",
         "tests/integration_test.rs"
       ],
+      "parsed_tests": [
+        "tests/transport_unix.rs"
+      ],
       "sources": [
         "src/transport/unix.rs"
       ],
@@ -24,6 +27,9 @@
       "tests": [
         "tests/transport_http.rs",
         "tests/integration_test.rs"
+      ],
+      "parsed_tests": [
+        "tests/transport_http.rs"
       ],
       "sources": [
         "src/transport/http.rs"
@@ -38,6 +44,10 @@
         "tests/transport_unix.rs",
         "tests/transport_http.rs"
       ],
+      "parsed_tests": [
+        "tests/transport_http.rs",
+        "tests/transport_unix.rs"
+      ],
       "sources": [
         "src/transport/unix.rs",
         "src/transport/http.rs",
@@ -51,7 +61,12 @@
       "summary": "The API supports the full method catalog defined in the architecture doc \u00a77.7.4, adapted for daemon\u2192handler direction (see High-Level Technical Design).",
       "tests": [
         "tests/integration_test.rs",
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "src/transport/protocol.rs",
@@ -64,7 +79,12 @@
       "id": "R5",
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "src/client_manager.rs",
@@ -79,6 +99,10 @@
       "tests": [
         "tests/admin_cli_bunker.rs",
         "tests/secret_redaction.rs",
+        "tests/daemon_startup.rs"
+      ],
+      "parsed_tests": [
+        "tests/admin_cli_bunker.rs",
         "tests/daemon_startup.rs"
       ],
       "sources": [
@@ -97,6 +121,10 @@
         "tests/daemon_startup.rs",
         "tests/cli_args.rs"
       ],
+      "parsed_tests": [
+        "tests/cli_args.rs",
+        "tests/daemon_startup.rs"
+      ],
       "sources": [
         "src/config.rs"
       ],
@@ -107,6 +135,9 @@
       "id": "R8",
       "summary": "A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` \u2194 `npub` mapping, and duplicate `bot_id` values within a single config are a validati...",
       "tests": [
+        "tests/daemon_startup.rs"
+      ],
+      "parsed_tests": [
         "tests/daemon_startup.rs"
       ],
       "sources": [
@@ -122,6 +153,9 @@
       "tests": [
         "tests/admin_cli_creation.rs"
       ],
+      "parsed_tests": [
+        "tests/admin_cli_creation.rs"
+      ],
       "sources": [
         "src/admin.rs"
       ],
@@ -132,6 +166,9 @@
       "id": "R10",
       "summary": "Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co...",
       "tests": [
+        "tests/admin_cli_migration.rs"
+      ],
+      "parsed_tests": [
         "tests/admin_cli_migration.rs"
       ],
       "sources": [
@@ -147,6 +184,9 @@
       "tests": [
         "tests/admin_cli_creation.rs"
       ],
+      "parsed_tests": [
+        "tests/admin_cli_creation.rs"
+      ],
       "sources": [
         "src/main.rs",
         "src/admin.rs"
@@ -159,7 +199,13 @@
       "summary": "The daemon sends and receives NIP-17/44/59 DMs (gift wrap pipeline) for each registered bot identity.",
       "tests": [
         "tests/nostr_client.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs",
+        "tests/nostr_client.rs"
       ],
       "sources": [
         "src/nostr.rs",
@@ -173,7 +219,13 @@
       "summary": "The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications.",
       "tests": [
         "tests/nostr_client.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs",
+        "tests/nostr_client.rs"
       ],
       "sources": [
         "src/nostr.rs",
@@ -189,6 +241,9 @@
       "tests": [
         "tests/dispatch_integration.rs"
       ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs"
+      ],
       "sources": [
         "src/dispatch.rs",
         "src/handlers.rs"
@@ -201,7 +256,13 @@
       "summary": "Handlers connect to the daemon and register via a `handler.register` JSON-RPC request, declaring which event types they handle and which bot identities they serve. The daemon assigns a server-gener...",
       "tests": [
         "tests/dispatch_integration.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs",
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "src/handlers.rs",
@@ -216,6 +277,9 @@
       "tests": [
         "tests/dispatch_integration.rs"
       ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs"
+      ],
       "sources": [
         "src/dispatch.rs",
         "src/handlers.rs"
@@ -228,7 +292,13 @@
       "summary": "Multiple handlers can register for the same bot identity and event type. The daemon fans out events to all matching handlers.",
       "tests": [
         "tests/dispatch_integration.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs",
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "src/dispatch.rs"
@@ -240,6 +310,9 @@
       "id": "R18",
       "summary": "Handlers respond to `agent.event` notifications with one of: `ack`, `reply`, `defer`, or `ignore` (see API spec). The daemon enforces a per-handler rate limit of 10 mutating operations per second (...",
       "tests": [
+        "tests/dispatch_integration.rs"
+      ],
+      "parsed_tests": [
         "tests/dispatch_integration.rs"
       ],
       "sources": [
@@ -255,6 +328,9 @@
         "tests/daemon_shutdown.rs",
         "tests/admin_cli_migration.rs"
       ],
+      "parsed_tests": [
+        "tests/daemon_shutdown.rs"
+      ],
       "sources": [
         "src/db.rs"
       ],
@@ -267,6 +343,9 @@
       "tests": [
         "tests/daemon_startup.rs",
         "tests/daemon_shutdown.rs"
+      ],
+      "parsed_tests": [
+        "tests/daemon_startup.rs"
       ],
       "sources": [
         "src/db.rs",
@@ -282,6 +361,10 @@
         "tests/daemon_startup.rs",
         "tests/cli_args.rs"
       ],
+      "parsed_tests": [
+        "tests/cli_args.rs",
+        "tests/daemon_startup.rs"
+      ],
       "sources": [
         "src/main.rs",
         "src/config.rs",
@@ -296,6 +379,9 @@
       "tests": [
         "tests/daemon_shutdown.rs"
       ],
+      "parsed_tests": [
+        "tests/daemon_shutdown.rs"
+      ],
       "sources": [
         "src/main.rs",
         "src/diagnostics.rs"
@@ -307,6 +393,9 @@
       "id": "R23",
       "summary": "The daemon emits `agent.status` notifications to handlers on state transitions: `initializing`, `ready`, `shutting_down`, `stopped`.",
       "tests": [
+        "tests/daemon_shutdown.rs"
+      ],
+      "parsed_tests": [
         "tests/daemon_shutdown.rs"
       ],
       "sources": [
@@ -323,6 +412,10 @@
         "tests/cli_args.rs",
         "tests/daemon_startup.rs"
       ],
+      "parsed_tests": [
+        "tests/cli_args.rs",
+        "tests/daemon_startup.rs"
+      ],
       "sources": [
         "src/main.rs",
         "src/config.rs"
@@ -334,6 +427,9 @@
       "id": "R25",
       "summary": "**Config rotation.** Runtime editing of bot config (relay list, bunker URI, capabilities) requires a daemon restart in Phase 1. Hot reload via SIGHUP is deferred to Phase 3.",
       "tests": [
+        "tests/daemon_startup.rs"
+      ],
+      "parsed_tests": [
         "tests/daemon_startup.rs"
       ],
       "sources": [
@@ -349,6 +445,9 @@
         "tests/dispatch_integration.rs",
         "tests/daemon_shutdown.rs"
       ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs"
+      ],
       "sources": [
         "src/dispatch.rs"
       ],
@@ -361,6 +460,9 @@
       "tests": [
         "tests/dispatch_integration.rs",
         "tests/daemon_shutdown.rs"
+      ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs"
       ],
       "sources": [
         "src/dispatch.rs",
@@ -375,6 +477,9 @@
       "tests": [
         "tests/transport_unix.rs"
       ],
+      "parsed_tests": [
+        "tests/transport_unix.rs"
+      ],
       "sources": [
         "src/transport/unix.rs"
       ],
@@ -385,6 +490,9 @@
       "id": "R29",
       "summary": "**State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti...",
       "tests": [
+        "tests/admin_cli_migration.rs"
+      ],
+      "parsed_tests": [
         "tests/admin_cli_migration.rs"
       ],
       "sources": [
@@ -399,6 +507,9 @@
       "tests": [
         "tests/dispatch_integration.rs"
       ],
+      "parsed_tests": [
+        "tests/dispatch_integration.rs"
+      ],
       "sources": [
         "src/dispatch.rs",
         "src/handlers.rs"
@@ -411,7 +522,13 @@
       "summary": "**Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,...",
       "tests": [
         "tests/diagnostics.rs",
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/admin_cli_status.rs"
+      ],
+      "parsed_tests": [
+        "tests/admin_cli_migration.rs",
+        "tests/admin_cli_status.rs",
+        "tests/diagnostics.rs"
       ],
       "sources": [
         "src/diagnostics.rs",
@@ -426,6 +543,7 @@
       "tests": [
         "tests/schema_sync.rs"
       ],
+      "parsed_tests": [],
       "sources": [
         "schemas/",
         "src/config_generated.rs",
@@ -441,7 +559,12 @@
       "tests": [
         "tests/support/mock_relay.rs",
         "tests/support/mock_bunker.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
+      ],
+      "parsed_tests": [
+        "tests/integration_test.rs",
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "tests/support/"
@@ -453,6 +576,9 @@
       "id": "R34",
       "summary": "**Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite...",
       "tests": [
+        "tests/secret_redaction.rs"
+      ],
+      "parsed_tests": [
         "tests/secret_redaction.rs"
       ],
       "sources": [
@@ -470,6 +596,10 @@
         "tests/diagnostics.rs",
         "tests/admin_cli_migration.rs"
       ],
+      "parsed_tests": [
+        "tests/admin_cli_migration.rs",
+        "tests/diagnostics.rs"
+      ],
       "sources": [
         "src/diagnostics.rs",
         "src/admin.rs",
@@ -481,9 +611,17 @@
     {
       "id": "R36",
       "summary": "**Service-version compatibility probing.** When running against `pacto-dev-env`, the daemon probes the versions of external services (relay, bunker, Nostra, Aztec) and warns when they fall outside ...",
-      "tests": [],
-      "sources": [],
-      "justification": "Service-version probing is a best-effort Phase 2 capability against pacto-dev-env; the xtask DevEnvProbe command is currently a placeholder and not wired into daemon startup.",
+      "tests": [
+        "tests/dev_env_probe.rs"
+      ],
+      "parsed_tests": [],
+      "sources": [
+        "src/dev_env_probe.rs",
+        "src/main.rs",
+        "xtask/src/dev_env_probe.rs",
+        "schemas/service-compatibility.json"
+      ],
+      "justification": null,
       "covered": true
     },
     {
@@ -492,6 +630,10 @@
       "tests": [
         "tests/diagnostics.rs",
         "tests/daemon_shutdown.rs"
+      ],
+      "parsed_tests": [
+        "tests/daemon_shutdown.rs",
+        "tests/diagnostics.rs"
       ],
       "sources": [
         "src/diagnostics.rs",

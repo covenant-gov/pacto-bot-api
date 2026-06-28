@@ -30,4 +30,6 @@ disallowed-names = [
     "plain_token",
     "raw_bunker_uri",
     "plain_bunker_uri",
+    "raw_secret_string",
+    "plain_secret_string",
 ]

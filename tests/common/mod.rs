@@ -1,15 +1,28 @@
 #![allow(dead_code)]
 
 use chrono::Utc;
-use nostr::ToBech32;
+use futures::{SinkExt, StreamExt};
+use nostr::nips::nip44;
+use nostr::{
+    EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32, UnsignedEvent,
+};
 use pacto_bot_api::config::{BotConfig, SigningConfig};
 use pacto_bot_api::db::Database;
 use pacto_bot_api::events::EventType;
 use pacto_bot_api::handlers::{ConnectionHandle, HandlerRef};
+use pacto_bot_api::transport::protocol::{JsonRpcMessage, serialize_message};
 use secrecy::{ExposeSecret, SecretString};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Stdio};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
+use tokio::net::UnixStream;
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::time::{Duration, timeout};
 
 /// Generate a bot config backed by a freshly generated local nsec key.
 pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>> {
@@ -204,9 +217,6 @@ pub fn write_loose_config(path: &Path, content: &str) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-use std::process::{Child, Stdio};
-use std::time::Duration;
-
 /// Path to the daemon binary for integration tests.
 pub fn daemon_bin_path() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_pacto-bot-api") {
@@ -221,15 +231,38 @@ pub fn daemon_bin_path() -> Result<PathBuf, Box<dyn Error>> {
 ///
 /// The caller is responsible for killing the returned child.
 pub async fn spawn_daemon_until_ready(config: &Path) -> Result<Child, Box<dyn std::error::Error>> {
+    spawn_daemon_until_ready_with_log(config, None).await
+}
+
+/// Spawn the daemon, optionally redirecting stderr to `log_path`, and wait
+/// until its Unix socket appears.
+pub async fn spawn_daemon_until_ready_with_log(
+    config: &Path,
+    log_path: Option<&Path>,
+) -> Result<Child, Box<dyn std::error::Error>> {
     let socket_path = config
         .parent()
         .ok_or("config has no parent directory")?
         .join("pacto-bot-api.sock");
 
+    let (stdout, stderr) = match log_path {
+        Some(path) => {
+            let file = std::fs::File::create(path)?;
+            let stderr = file.try_clone()?;
+            (Stdio::from(file), Stdio::from(stderr))
+        }
+        None => (Stdio::null(), Stdio::null()),
+    };
+
     let mut child = std::process::Command::new(daemon_bin_path()?)
         .arg("--config")
         .arg(config)
-        .stderr(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .env(
+            "RUST_LOG",
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "debug".into()),
+        )
         .spawn()?;
 
     let start = tokio::time::Instant::now();
@@ -263,4 +296,448 @@ pub async fn shutdown_daemon(mut child: Child) -> Result<(), Box<dyn std::error:
     })
     .await;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Dev-env integration gate
+// ---------------------------------------------------------------------------
+
+/// True when the `PACTO_DEV_ENV` environment variable is set to `1`.
+pub fn dev_env_enabled() -> bool {
+    std::env::var("PACTO_DEV_ENV").as_deref() == Ok("1")
+}
+
+/// Return `true` when the dev-env gate is enabled, printing a skip message
+/// and returning `false` otherwise.
+///
+/// Use at the start of a gated test to make the body a no-op when the gate
+/// is closed:
+///
+/// ```ignore
+/// if !common::skip_unless_dev_env() { return Ok(()); }
+/// ```
+pub fn skip_unless_dev_env() -> bool {
+    if !dev_env_enabled() {
+        eprintln!("PACTO_DEV_ENV=1 is required; skipping dev-env test");
+        false
+    } else {
+        true
+    }
+}
+
+/// Default Nostr relay URL provided by `pacto-dev-env`.
+pub const fn dev_relay_url() -> &'static str {
+    "ws://localhost:7000"
+}
+
+/// Default EVM RPC URL provided by `pacto-dev-env`.
+pub const fn dev_evm_url() -> &'static str {
+    "http://localhost:8545"
+}
+
+// ---------------------------------------------------------------------------
+// Handler client for Unix-socket JSON-RPC tests
+// ---------------------------------------------------------------------------
+
+/// Connect to `path` and retry until the socket accepts or `deadline` passes.
+pub async fn wait_for_socket(
+    path: &Path,
+    deadline: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let end = tokio::time::Instant::now() + deadline;
+    while tokio::time::Instant::now() < end {
+        if UnixStream::connect(path).await.is_ok() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err("daemon socket did not become available".into())
+}
+
+/// A simple handler client connected to the daemon Unix socket.
+///
+/// Maintains a persistent connection, matches responses by JSON-RPC id, and
+/// delivers daemon notifications on a dedicated channel.
+pub struct HandlerClient {
+    outgoing_tx: mpsc::UnboundedSender<JsonRpcMessage>,
+    notification_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
+    pending: Arc<Mutex<HashMap<Value, oneshot::Sender<JsonRpcMessage>>>>,
+    handler_id: String,
+}
+
+impl HandlerClient {
+    /// Register a new handler over the Unix socket at `path`.
+    pub async fn register(
+        path: &Path,
+        bot_ids: &[&str],
+        event_types: &[&str],
+        capabilities: &[&str],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::register_with_id(path, None, bot_ids, event_types, capabilities).await
+    }
+
+    /// Register or reconnect a handler over the Unix socket at `path`.
+    pub async fn register_with_id(
+        path: &Path,
+        handler_id: Option<&str>,
+        bot_ids: &[&str],
+        event_types: &[&str],
+        capabilities: &[&str],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        wait_for_socket(path, Duration::from_secs(10)).await?;
+        let stream = UnixStream::connect(path).await?;
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
+        let (notification_tx, notification_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
+        let pending: Arc<Mutex<HashMap<Value, oneshot::Sender<JsonRpcMessage>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let pending_for_io = Arc::clone(&pending);
+        tokio::spawn(async move {
+            let mut stream = BufStream::new(stream);
+
+            async fn read_frame(
+                stream: &mut BufStream<UnixStream>,
+            ) -> Result<String, std::io::Error> {
+                let mut line = String::new();
+                stream.read_line(&mut line).await?;
+                Ok(line)
+            }
+
+            loop {
+                tokio::select! {
+                    Some(msg) = outgoing_rx.recv() => {
+                        let line = match serialize_message(&msg) {
+                            Ok(l) => l,
+                            Err(_) => continue,
+                        };
+                        if stream.write_all(line.as_bytes()).await.is_err() {
+                            break;
+                        }
+                        if stream.write_all(b"\n").await.is_err() {
+                            break;
+                        }
+                        if stream.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                    result = read_frame(&mut stream) => {
+                        let line = match result {
+                            Ok(l) => l,
+                            Err(_) => break,
+                        };
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        let msg: JsonRpcMessage = match serde_json::from_str(trimmed) {
+                            Ok(m) => m,
+                            Err(_) => continue,
+                        };
+
+                        if let Some(id) = msg.id().cloned() {
+                            if let Some(tx) = pending_for_io.lock().await.remove(&id) {
+                                let _ = tx.send(msg);
+                                continue;
+                            }
+                        }
+                        let _ = notification_tx.send(msg);
+                    }
+                }
+            }
+        });
+
+        let mut client = Self {
+            outgoing_tx,
+            notification_rx,
+            pending,
+            handler_id: String::new(),
+        };
+
+        let mut params = serde_json::json!({
+            "bot_ids": bot_ids,
+            "event_types": event_types,
+            "capabilities": capabilities,
+        });
+        if let Some(id) = handler_id {
+            params["handler_id"] = Value::String(id.into());
+        }
+
+        let resp = client
+            .call(JsonRpcMessage::request(
+                1.into(),
+                "handler.register",
+                Some(params),
+            ))
+            .await?;
+
+        let handler_id = match resp {
+            JsonRpcMessage::Response { result, .. } => result
+                .and_then(|r| r.get("handler_id")?.as_str().map(String::from))
+                .ok_or("handler.register response missing handler_id")?,
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("handler.register failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected handler.register response".into()),
+        };
+
+        client.handler_id = handler_id;
+        Ok(client)
+    }
+
+    /// Send a JSON-RPC request and await its response.
+    pub async fn call(
+        &self,
+        msg: JsonRpcMessage,
+    ) -> Result<JsonRpcMessage, Box<dyn std::error::Error>> {
+        let id = msg.id().cloned().ok_or("request missing id")?;
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+        self.outgoing_tx
+            .send(msg)
+            .map_err(|_| "request channel closed")?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        match timeout(deadline.duration_since(tokio::time::Instant::now()), rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(_)) => Err("response channel closed".into()),
+            Err(_) => Err("request timed out".into()),
+        }
+    }
+
+    /// Wait for the next daemon notification.
+    pub async fn next_notification(
+        &mut self,
+        deadline: Duration,
+    ) -> Result<JsonRpcMessage, Box<dyn std::error::Error>> {
+        match timeout(deadline, self.notification_rx.recv()).await {
+            Ok(Some(msg)) => Ok(msg),
+            Ok(None) => Err("notification channel closed".into()),
+            Err(_) => Err("timed out waiting for notification".into()),
+        }
+    }
+
+    /// Return the server-assigned handler id.
+    pub fn handler_id(&self) -> &str {
+        &self.handler_id
+    }
+
+    /// Unregister this handler.
+    pub async fn unregister(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let resp = self
+            .call(JsonRpcMessage::request(
+                uuid::Uuid::new_v4().to_string().into(),
+                "handler.unregister",
+                None,
+            ))
+            .await?;
+        match resp {
+            JsonRpcMessage::Response {
+                result: Some(result),
+                ..
+            } => {
+                if result.get("unregistered").and_then(Value::as_bool) != Some(true) {
+                    return Err(format!("unexpected unregister response: {result}").into());
+                }
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("unregister failed: {} {}", error.code, error.message).into());
+            }
+            _ => return Err("unexpected unregister response shape".into()),
+        }
+        Ok(())
+    }
+
+    /// Send a `handler.response` notification.
+    pub async fn send_response(
+        &self,
+        event_id: &str,
+        action: &str,
+        content: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut params = serde_json::json!({
+            "event_id": event_id,
+            "action": action,
+        });
+        if let Some(c) = content {
+            params["content"] = Value::String(c.into());
+        }
+        let msg = JsonRpcMessage::notification("handler.response", Some(params));
+        self.outgoing_tx
+            .send(msg)
+            .map_err(|_| "request channel closed")?;
+        Ok(())
+    }
+}
+
+/// Build a kind:1059 gift wrap from `sender` to `recipient_npub`.
+pub async fn build_gift_wrap(
+    sender: &Keys,
+    recipient_npub: &str,
+    content: &str,
+) -> Result<nostr::Event, Box<dyn std::error::Error>> {
+    let recipient = PublicKey::parse(recipient_npub)?;
+    let event = EventBuilder::private_msg(sender, recipient, content, Vec::new()).await?;
+    Ok(event)
+}
+
+/// Build a kind:1059 gift wrap with an explicit `created_at` timestamp.
+///
+/// The normal [`EventBuilder::private_msg`] randomizes the gift-wrap
+/// timestamp for privacy; this helper is useful when a test needs a
+/// deterministic timestamp for `since` filter assertions.
+pub async fn build_gift_wrap_with_timestamp(
+    sender: &Keys,
+    recipient_npub: &str,
+    content: &str,
+    created_at: Timestamp,
+) -> Result<nostr::Event, Box<dyn std::error::Error>> {
+    let recipient = PublicKey::parse(recipient_npub)?;
+    let rumor = EventBuilder::private_msg_rumor(recipient, content).build(sender.public_key());
+    let seal = EventBuilder::seal(sender, &recipient, rumor)
+        .await?
+        .sign(sender)
+        .await?;
+
+    let ephemeral = Keys::generate();
+    let gift_content = nip44::encrypt(
+        ephemeral.secret_key(),
+        &recipient,
+        seal.as_json(),
+        nip44::Version::default(),
+    )?;
+    let gift = UnsignedEvent::new(
+        ephemeral.public_key(),
+        created_at,
+        Kind::GiftWrap,
+        [Tag::public_key(recipient)],
+        gift_content,
+    );
+    Ok(gift.sign_with_keys(&ephemeral)?)
+}
+
+// ---------------------------------------------------------------------------
+// Real-relay helpers for dev-env integration tests
+// ---------------------------------------------------------------------------
+
+/// Connected Nostr relay client used to publish events and wait for replies.
+///
+/// Implemented directly over `tokio_tungstenite` so dev-env tests have full
+/// control over REQ/EVENT timing and can subscribe before a fast reply is
+/// published by the daemon.
+pub struct DevRelayClient {
+    write: tokio::sync::mpsc::UnboundedSender<nostr::Event>,
+    notifications: tokio::sync::mpsc::UnboundedReceiver<nostr::Event>,
+    sub_id: String,
+}
+
+impl DevRelayClient {
+    /// Connect to `relay_url`, start a reader/writer loop, and subscribe to
+    /// kind:1059 gift wraps addressed to `recipient`.
+    pub async fn new(
+        relay_url: &str,
+        recipient: &PublicKey,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let (ws, _) = tokio_tungstenite::connect_async(relay_url).await?;
+        let (mut write_half, mut read_half) = ws.split();
+
+        let sub_id = format!("dev-relay-{}", uuid::Uuid::new_v4());
+        let req = serde_json::json!([
+            "REQ",
+            sub_id,
+            {
+                "kinds": [1059],
+                "#p": [recipient.to_hex()]
+            }
+        ]);
+        let req_line = serde_json::to_string(&req)?;
+        write_half
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                req_line.into(),
+            ))
+            .await?;
+
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<nostr::Event>();
+        let (publish_tx, mut publish_rx) = tokio::sync::mpsc::unbounded_channel::<nostr::Event>();
+
+        let sub_id_clone = sub_id.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(event) = publish_rx.recv() => {
+                        let msg = serde_json::json!(["EVENT", event]);
+                        let text = serde_json::to_string(&msg).unwrap_or_default();
+                        if write_half
+                            .send(tokio_tungstenite::tungstenite::Message::Text(text.into()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    msg = read_half.next() => {
+                        match msg {
+                            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                                if let Ok(parts) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+                                    if parts.len() >= 3
+                                        && parts[0] == "EVENT"
+                                        && parts[1].as_str() == Some(&sub_id_clone)
+                                    {
+                                        if let Ok(event) =
+                                            serde_json::from_value::<nostr::Event>(parts[2].clone())
+                                        {
+                                            let _ = event_tx.send(event);
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Err(_)) => {
+                                break;
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            write: publish_tx,
+            notifications: event_rx,
+            sub_id,
+        })
+    }
+
+    /// Publish `event` to the connected relay.
+    pub async fn publish(&self, event: &nostr::Event) -> Result<(), Box<dyn std::error::Error>> {
+        self.write
+            .send(event.clone())
+            .map_err(|_| "relay writer channel closed")?;
+        Ok(())
+    }
+
+    /// Wait for a kind:1059 gift wrap addressed to `recipient` within
+    /// `timeout_duration`.
+    pub async fn wait_for_reply(
+        &mut self,
+        recipient: &PublicKey,
+        timeout_duration: Duration,
+    ) -> Result<nostr::Event, Box<dyn std::error::Error>> {
+        let recipient = *recipient;
+        let deadline = tokio::time::Instant::now() + timeout_duration;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            match tokio::time::timeout(remaining, self.notifications.recv()).await {
+                Ok(Some(event))
+                    if event.kind == Kind::GiftWrap
+                        && event.tags.public_keys().any(|p| p == &recipient) =>
+                {
+                    return Ok(event);
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) => return Err("relay notification channel closed".into()),
+                Err(_) => return Err("timed out waiting for reply gift wrap on relay".into()),
+            }
+        }
+    }
 }

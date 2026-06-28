@@ -20,6 +20,8 @@ pub struct SensitiveFixture {
     /// Synthetic `nsec` value. Kept as a 64-character hex string so it is valid
     /// for `LocalKey::parse` while still being easy to search for.
     pub nsec_marker: String,
+    /// Raw 32-byte secret key bytes corresponding to `nsec_marker`.
+    nsec_marker_bytes: [u8; 32],
     /// Synthetic bunker URI substring.
     pub bunker_uri_marker: String,
     /// Synthetic HTTP secret token.
@@ -28,11 +30,18 @@ pub struct SensitiveFixture {
 
 impl SensitiveFixture {
     /// Create a new fixture with fresh markers.
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
         let first = Uuid::new_v4().as_simple().to_string();
         let second = Uuid::new_v4().as_simple().to_string();
+        let nsec_marker = format!("{first}{second}");
+        let nsec_marker_bytes: [u8; 32] = hex::decode(&nsec_marker)
+            .expect("UUID simple form is hex")
+            .try_into()
+            .expect("64 hex chars decode to 32 bytes");
         Self {
-            nsec_marker: format!("{first}{second}"),
+            nsec_marker,
+            nsec_marker_bytes,
             bunker_uri_marker: format!("pacto-test-bunker-{}", Uuid::new_v4()),
             http_token_marker: format!("pacto-test-token-{}", Uuid::new_v4()),
         }
@@ -71,6 +80,9 @@ pub fn assert_no_leak_bytes(haystack: &[u8], fixture: &SensitiveFixture) {
     let mut leaked = Vec::new();
     if contains_subsequence(haystack, fixture.nsec_marker.as_bytes()) {
         leaked.push("nsec");
+    }
+    if contains_subsequence(haystack, &fixture.nsec_marker_bytes) {
+        leaked.push("nsec_bytes");
     }
     if contains_subsequence(haystack, fixture.bunker_uri_marker.as_bytes()) {
         leaked.push("bunker_uri");
@@ -170,6 +182,10 @@ impl SensitiveFixture {
     pub fn scan_memory(&self) -> Option<Vec<u8>> {
         let exclusions = [
             (self.nsec_marker.as_ptr() as usize, self.nsec_marker.len()),
+            (
+                self.nsec_marker_bytes.as_ptr() as usize,
+                self.nsec_marker_bytes.len(),
+            ),
             (
                 self.bunker_uri_marker.as_ptr() as usize,
                 self.bunker_uri_marker.len(),

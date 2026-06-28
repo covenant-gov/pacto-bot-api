@@ -1,7 +1,8 @@
-# Pacto Python Reference Handler
+# Pacto Reference Handlers and Examples
 
 This directory contains a reference Python handler (`echo_bot.py`) and pytest
-fixtures/tests for the `pacto-bot-api` daemon.
+fixtures/tests for the `pacto-bot-api` daemon. Rust "example tests" that
+demonstrate core daemon patterns live under `tests/` and are described below.
 
 ## Files
 
@@ -11,6 +12,21 @@ fixtures/tests for the `pacto-bot-api` daemon.
 | `conftest.py` | pytest fixtures: `daemon`, `handler_client`, `mock_relay`. |
 | `test_echo_bot.py` | Integration tests for handler registration and echo behavior. |
 | `test-config.toml` | Example daemon config with placeholder keys. |
+
+## Rust example tests
+
+The Rust integration suite also contains focused, readable example tests:
+
+| File | Purpose |
+|------|---------|
+| `tests/example_http_handler.rs` | HTTP handler registration, SSE notifications, and `handler.response`. |
+| `tests/example_multi_bot.rs` | One daemon multiplexing multiple bot identities to separate handlers. |
+
+Run them with:
+
+```bash
+cargo test --test example_http_handler --test example_multi_bot
+```
 
 ## Setup
 
