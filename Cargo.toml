@@ -46,6 +46,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 hex = "0.4"
 subtle = "2"
 fs2 = "0.4"
+nostr-connect = "0.43"
 
 [dev-dependencies]
 schemars = "0.8"

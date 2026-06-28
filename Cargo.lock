@@ -1429,6 +1429,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-connect"
+version = "0.43.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3bcd44ea344d1cab3447615681cd3bb90134cafe4d157d3e714c23c31268cd8"
+dependencies = [
+ "async-utility",
+ "nostr",
+ "nostr-relay-pool",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nostr-database"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1603,6 +1616,7 @@ dependencies = [
  "jsonschema",
  "nix",
  "nostr",
+ "nostr-connect",
  "nostr-sdk",
  "parking_lot",
  "predicates",

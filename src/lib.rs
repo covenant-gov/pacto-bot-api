@@ -1,6 +1,6 @@
 pub mod bot_state;
-pub mod bunker;
 pub mod client_manager;
+pub mod nip46;
 
 pub use bot_state::BotState;
 pub use client_manager::ClientManager;

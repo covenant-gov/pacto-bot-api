@@ -3,10 +3,12 @@ use clap::{Parser, Subcommand};
 use nostr::event::tag::Tag;
 use nostr::key::Keys;
 use nostr::secp256k1::schnorr::Signature;
-use nostr::{Event, Kind, Timestamp, ToBech32, UnsignedEvent};
+use nostr::{Event, Kind, PublicKey, Timestamp, ToBech32, UnsignedEvent};
 use nostr_sdk::Client;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig};
 use pacto_bot_api::errors::DaemonError;
+use pacto_bot_api::nip46;
+use pacto_bot_api::secrecy::ExposeSecret;
 use pacto_bot_api::signer::{Signer, SignerBackend};
 use rusqlite::Connection;
 
@@ -20,6 +22,7 @@ use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::str::FromStr;
+use std::time::Duration;
 
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const BOT_SECRET_TOKEN_FILE: &str = "bot_secret_token";
@@ -231,8 +234,12 @@ async fn cmd_test_bunker(config_path: &Path, bot_id: &str) -> Result<(), DaemonE
         SigningConfig::Nsec { .. } => Err(DaemonError::Config(
             "test-bunker requires a bunker backend".into(),
         )),
-        _ => {
-            SignerBackend::from_config(&bot.signing, &bot.npub)?;
+        SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } => {
+            let expected_pubkey = PublicKey::parse(&bot.npub)
+                .map_err(|e| DaemonError::Config(format!("invalid npub for bot: {e}")))?;
+            let uri = uri.expose_secret();
+            nip46::verify_bunker_public_key(uri, &expected_pubkey, Duration::from_secs(30))
+                .await?;
             println!("bunker public key matches npub for {bot_id}");
             Ok(())
         }

@@ -51,6 +51,46 @@ pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<
     })
 }
 
+/// Generate a bot config backed by a bunker_local URI, returning the bunker
+/// keys so a test can start a live mock bunker.
+///
+/// `match_npub` controls whether the configured bot npub matches the bunker
+/// keys (`true`) or a different generated key (`false`).
+pub fn generate_bunker_bot_with_keys(
+    id: &str,
+    match_npub: bool,
+) -> Result<(BotConfig, nostr::Keys), Box<dyn Error>> {
+    let keys = nostr::Keys::generate();
+    let npub = keys.public_key().to_bech32()?;
+    let remote_keys = if match_npub {
+        keys.clone()
+    } else {
+        nostr::Keys::generate()
+    };
+    let uri = format!(
+        "bunker://{}?relay=ws://127.0.0.1:4848",
+        remote_keys.public_key().to_hex()
+    );
+    let bot = BotConfig {
+        id: id.to_string(),
+        npub,
+        signing: SigningConfig::BunkerLocal { uri: SecretString::new(uri.into()) },
+        relays: vec![],
+        capabilities: vec![],
+    };
+    Ok((bot, remote_keys))
+}
+
+/// Replace the bunker URI on a bot config.
+pub fn set_bunker_uri(bot: &mut BotConfig, new_uri: &str) {
+    match &mut bot.signing {
+        SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } => {
+            *uri = SecretString::new(new_uri.into());
+        }
+        SigningConfig::Nsec { .. } => {}
+    }
+}
+
 /// Write a `pacto-bot-api.toml` into `dir` and return its path.
 pub fn make_config(
     dir: &tempfile::TempDir,
