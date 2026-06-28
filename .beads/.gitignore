@@ -37,6 +37,10 @@ redirect
 export-state/
 export-state.json
 
+# JSONL exports / audit logs (DoltHub is the source of truth)
+issues.jsonl
+interactions.jsonl
+
 # Ephemeral store (SQLite - wisps/molecules, intentionally not versioned)
 ephemeral.sqlite3
 ephemeral.sqlite3-journal

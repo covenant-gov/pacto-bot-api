@@ -3,8 +3,6 @@ repos:
   additional:
     - "/Users/opselite/.beads-planning"
 
-export.auto: true
-
-sync.remote: "git+ssh://git@github.com/logicminds/pacto-bot-api.git"
+export.auto: false
 
 federation.remote: "https://doltremoteapi.dolthub.com/opselite/pacto-bot-api"
