@@ -38,7 +38,12 @@ const EXEMPT_SCHEMAS: &[(&str, &str)] = &[(
 /// define the type (empty for the schema root) and `rust_type` is the struct
 /// name in `source_file`.
 const TRACKED_HANDWRITTEN_TYPES: &[(&str, &str, &[&str], &str)] = &[
-    ("src/transport/protocol.rs", "metrics.json", &[], "MetricsResponse"),
+    (
+        "src/transport/protocol.rs",
+        "metrics.json",
+        &[],
+        "MetricsResponse",
+    ),
     (
         "src/transport/protocol.rs",
         "version.json",
