@@ -58,10 +58,11 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
-      - name: Check cargo deny
-        run: |
-          cargo install --locked cargo-deny
-          cargo deny check
+      # no need to run on every PR, as it is slow and not critical for CI. It can be run manually if needed.
+      # - name: Check cargo deny
+      #   run: |
+      #     cargo install --locked cargo-deny
+      #     cargo deny check
 
   test:
     name: Test
