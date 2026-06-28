@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use crate::client_manager::ClientManager;
 use crate::db::Database;
-use crate::diagnostics::Diagnostics;
+use crate::diagnostics::{DaemonStatus, Diagnostics};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
@@ -163,6 +163,7 @@ pub struct Dispatch {
     rate_limiter: RateLimiter,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
     handlers_registered: AtomicU64,
+    last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
 }
 
 impl Dispatch {
@@ -179,6 +180,7 @@ impl Dispatch {
             rate_limiter: RateLimiter::default(),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
+            last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
         }
     }
 
@@ -196,6 +198,7 @@ impl Dispatch {
             rate_limiter,
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
+            last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
         }
     }
 
@@ -291,6 +294,10 @@ impl Dispatch {
         if !any_defer {
             let cursor = i64::try_from(event.timestamp)
                 .map_err(|_| DaemonError::Config("event timestamp out of range".into()))?;
+            {
+                let mut last_cursor = self.last_cursor.lock().await;
+                last_cursor.insert(event.bot_id.clone(), (npub.clone(), cursor));
+            }
             let db = self
                 .db
                 .lock()
@@ -298,6 +305,40 @@ impl Dispatch {
             db.save_cursor(&event.bot_id, &npub, cursor)?;
         }
 
+        Ok(())
+    }
+
+    /// Broadcast an `agent.status` notification to all registered handlers.
+    pub async fn broadcast_status(&self, status: DaemonStatus) {
+        let state = match status {
+            DaemonStatus::Initializing => "initializing",
+            DaemonStatus::Ready => "ready",
+            DaemonStatus::ShuttingDown => "shutting_down",
+            DaemonStatus::Stopped => "stopped",
+        };
+
+        let handlers = {
+            let cm = self.client_manager.read().await;
+            cm.handler_registry.all_handlers()
+        };
+
+        for handler in handlers {
+            if let Err(e) = handler.send_status(state) {
+                warn!(handler_id = %handler.id, error = %e, "failed to send status notification");
+            }
+        }
+    }
+
+    /// Persist the latest cursor for every bot seen by this dispatch instance.
+    pub async fn flush_cursors(&self) -> Result<(), DaemonError> {
+        let last_cursor = self.last_cursor.lock().await;
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
+        for (bot_id, (npub, cursor)) in last_cursor.iter() {
+            db.save_cursor(bot_id, npub, *cursor)?;
+        }
         Ok(())
     }
 

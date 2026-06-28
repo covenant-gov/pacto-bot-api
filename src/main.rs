@@ -10,17 +10,21 @@ use pacto_bot_api::signer::Signer;
 use pacto_bot_api::transport::TransportLayer;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{RwLock, oneshot};
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const AGENT_DB_FILE: &str = "agent.db";
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-api")]
@@ -53,6 +57,64 @@ async fn main() {
     if let Err(e) = run_daemon(cli).await {
         eprintln!("{e}");
         process::exit(1);
+    }
+}
+
+/// Coordinates graceful shutdown on the first signal and forced exit on the
+/// second signal.
+struct ShutdownCoordinator {
+    shutdown_rx: oneshot::Receiver<()>,
+    force_rx: oneshot::Receiver<()>,
+}
+
+impl ShutdownCoordinator {
+    /// Start listening for SIGINT/SIGTERM (Unix) or Ctrl-C (non-Unix).
+    #[cfg(unix)]
+    fn start() -> Result<Self, String> {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_tx, force_rx) = oneshot::channel();
+
+        let mut sigint = signal(SignalKind::interrupt())
+            .map_err(|e| format!("failed to install SIGINT handler: {e}"))?;
+        let mut sigterm = signal(SignalKind::terminate())
+            .map_err(|e| format!("failed to install SIGTERM handler: {e}"))?;
+
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigint.recv() => {},
+                _ = sigterm.recv() => {},
+            }
+            let _ = shutdown_tx.send(());
+
+            tokio::select! {
+                _ = sigint.recv() => {},
+                _ = sigterm.recv() => {},
+            }
+            let _ = force_tx.send(());
+        });
+
+        Ok(Self {
+            shutdown_rx,
+            force_rx,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn start() -> Result<Self, String> {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_tx, force_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_tx.send(());
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = force_tx.send(());
+        });
+
+        Ok(Self {
+            shutdown_rx,
+            force_rx,
+        })
     }
 }
 
@@ -165,32 +227,23 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     ));
 
     let transport = TransportLayer::new(&config, cli.enable_http);
+    let coordinator = ShutdownCoordinator::start()?;
 
-    let (event_loop_shutdown_tx, mut event_loop_shutdown_rx) = oneshot::channel();
     let (transport_shutdown_tx, transport_shutdown_rx) = oneshot::channel();
-
-    tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            let _ = event_loop_shutdown_tx.send(());
-            let _ = transport_shutdown_tx.send(());
-        }
-    });
-
     let transport_handle = tokio::spawn(transport.run(dispatch.clone(), transport_shutdown_rx));
 
-    emit_agent_status(&diagnostics, &dispatch, "initializing").await;
-    diagnostics.set_status(DaemonStatus::Ready);
-    emit_agent_status(&diagnostics, &dispatch, "ready").await;
+    emit_agent_status(&diagnostics, &dispatch, DaemonStatus::Ready).await;
 
     info!("pacto-bot-api daemon ready");
 
     let mut event_stream = nostr_client.receive_events();
     let mut flush_interval = tokio::time::interval(Duration::from_secs(30));
+    let mut shutdown_rx = coordinator.shutdown_rx;
 
     loop {
         tokio::select! {
             biased;
-            _ = &mut event_loop_shutdown_rx => break,
+            _ = &mut shutdown_rx => break,
             _ = flush_interval.tick() => {
                 if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
                     warn!(error = %e, "failed to flush diagnostics report");
@@ -210,14 +263,47 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     }
 
     info!("pacto-bot-api daemon shutting down");
-    diagnostics.set_status(DaemonStatus::ShuttingDown);
-    emit_agent_status(&diagnostics, &dispatch, "shutting_down").await;
+    emit_agent_status(&diagnostics, &dispatch, DaemonStatus::ShuttingDown).await;
 
-    let _ = transport_handle.await;
+    let force_rx = coordinator.force_rx;
+    let graceful_shutdown = async {
+        // Brief grace window so a second signal received immediately after the
+        // first can be detected and trigger a forced exit before cleanup completes.
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
-    diagnostics.set_status(DaemonStatus::Stopped);
-    if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
-        warn!(error = %e, "failed to flush final diagnostics report");
+        if let Err(e) = dispatch.flush_cursors().await {
+            warn!(error = %e, "failed to flush cursors during shutdown");
+        }
+
+        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
+            warn!(error = %e, "failed to flush diagnostics report during shutdown");
+        }
+
+        let _ = transport_shutdown_tx.send(());
+        let _ = transport_handle.await;
+
+        nostr_client.disconnect().await;
+
+        // Release the daemon lock before declaring stopped.
+        drop(lock_file);
+
+        emit_agent_status(&diagnostics, &dispatch, DaemonStatus::Stopped).await;
+
+        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
+            warn!(error = %e, "failed to flush final diagnostics report");
+        }
+    };
+
+    tokio::select! {
+        _ = graceful_shutdown => {},
+        _ = force_rx => {
+            warn!("second shutdown signal received, forcing exit");
+            process::exit(1);
+        }
+        _ = tokio::time::sleep(SHUTDOWN_TIMEOUT) => {
+            warn!("graceful shutdown timed out, forcing exit");
+            process::exit(1);
+        }
     }
 
     Ok(())
@@ -246,18 +332,8 @@ fn open_lock_file(path: &Path) -> Result<File, std::io::Error> {
     }
 }
 
-/// Emit an `agent.status` lifecycle notification.
-///
-/// The transport layer currently handles inbound JSON-RPC traffic; outbound
-/// push to handlers is not yet wired. Until that channel exists we log the
-/// notification and defer delivery to handler registration time.
-async fn emit_agent_status(diagnostics: &Diagnostics, _dispatch: &Dispatch, state: &str) {
-    let status = match state {
-        "initializing" => DaemonStatus::Initializing,
-        "ready" => DaemonStatus::Ready,
-        "shutting_down" => DaemonStatus::ShuttingDown,
-        _ => DaemonStatus::Stopped,
-    };
+/// Emit an `agent.status` lifecycle notification and update diagnostics.
+async fn emit_agent_status(diagnostics: &Diagnostics, dispatch: &Dispatch, status: DaemonStatus) {
     diagnostics.set_status(status);
-    info!(method = "agent.status", state, "broadcasting agent status");
+    dispatch.broadcast_status(status).await;
 }

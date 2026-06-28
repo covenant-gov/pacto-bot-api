@@ -1,28 +1,30 @@
 use crate::config::BotConfig;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
+use crate::transport::protocol::JsonRpcMessage;
 use chrono::{DateTime, Utc};
+use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Capability a handler may request for a bot.
 pub type Capability = String;
 
-/// Lightweight handle to a handler connection for outbound notifications.
+/// Lightweight handle to a handler connection for outbound JSON-RPC notifications.
 #[derive(Debug, Clone)]
 pub struct ConnectionHandle {
-    sender: UnboundedSender<AgentEvent>,
+    sender: UnboundedSender<JsonRpcMessage>,
 }
 
 impl ConnectionHandle {
-    pub fn new(sender: UnboundedSender<AgentEvent>) -> Self {
+    pub fn new(sender: UnboundedSender<JsonRpcMessage>) -> Self {
         Self { sender }
     }
 
-    /// Send an event to the connected handler.
-    pub fn send(&self, event: AgentEvent) -> Result<(), DaemonError> {
+    /// Send a JSON-RPC notification to the connected handler.
+    pub fn send(&self, msg: JsonRpcMessage) -> Result<(), DaemonError> {
         self.sender
-            .send(event)
+            .send(msg)
             .map_err(|_| DaemonError::HandlerNotRegistered)
     }
 }
@@ -53,10 +55,20 @@ impl HandlerRef {
             && self.capabilities.contains(&capability.to_string())
     }
 
-    /// Send an event to this handler if it has a live connection.
+    /// Send an `agent.event` notification to this handler if it has a live connection.
     pub fn send_event(&self, event: AgentEvent) -> Result<(), DaemonError> {
+        let msg = JsonRpcMessage::notification("agent.event", Some(serde_json::to_value(&event)?));
         match &self.connection {
-            Some(conn) => conn.send(event),
+            Some(conn) => conn.send(msg),
+            None => Err(DaemonError::HandlerNotRegistered),
+        }
+    }
+
+    /// Send an `agent.status` notification to this handler if it has a live connection.
+    pub fn send_status(&self, state: &str) -> Result<(), DaemonError> {
+        let msg = JsonRpcMessage::notification("agent.status", Some(json!({ "state": state })));
+        match &self.connection {
+            Some(conn) => conn.send(msg),
             None => Err(DaemonError::HandlerNotRegistered),
         }
     }
@@ -139,6 +151,11 @@ impl HandlerRegistry {
             .filter(|h| h.matches(bot_id, event_type))
             .cloned()
             .collect()
+    }
+
+    /// Return a clone of every registered handler reference.
+    pub fn all_handlers(&self) -> Vec<HandlerRef> {
+        self.handlers.values().cloned().collect()
     }
 
     /// Check whether the handler is registered for the bot and has the required capability.
@@ -450,14 +467,17 @@ mod tests {
             .expect("handler should exist");
         let event = sample_event("echo-bot");
         handler
-            .connection
-            .as_ref()
-            .expect("live handler should have a connection")
-            .send(event.clone())
+            .send_event(event.clone())
             .expect("send should succeed");
 
         let received = rx.recv().await.expect("should receive event");
-        assert_eq!(received.bot_id, event.bot_id);
-        assert_eq!(received.content, event.content);
+        let JsonRpcMessage::Notification { method, params, .. } = received else {
+            panic!("expected notification");
+        };
+        assert_eq!(method, "agent.event");
+        let payload = params.expect("params should be present");
+        let received_event: AgentEvent = serde_json::from_value(payload).expect("valid event");
+        assert_eq!(received_event.bot_id, event.bot_id);
+        assert_eq!(received_event.content, event.content);
     }
 }

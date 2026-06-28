@@ -94,6 +94,11 @@ impl NostrClient {
         Ok(())
     }
 
+    /// Disconnect from all relays.
+    pub async fn disconnect(&self) {
+        self.client.disconnect().await;
+    }
+
     /// Send a NIP-17 private direct message as a NIP-59 gift wrap.
     ///
     /// If `reply_to` is provided, an `e` tag referencing the original rumor or

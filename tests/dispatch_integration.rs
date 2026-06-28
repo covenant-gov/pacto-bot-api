@@ -65,6 +65,17 @@ fn sample_event(bot_id: &str) -> AgentEvent {
     }
 }
 
+fn parse_event_notification(msg: &JsonRpcMessage) -> Option<AgentEvent> {
+    let JsonRpcMessage::Notification { method, params, .. } = msg else {
+        return None;
+    };
+    if method != "agent.event" {
+        return None;
+    }
+    let params = params.as_ref()?;
+    serde_json::from_value(params.clone()).ok()
+}
+
 #[tokio::test]
 async fn fan_out_delivers_event_and_advances_cursor()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -109,12 +120,15 @@ async fn fan_out_delivers_event_and_advances_cursor()
     let dispatch_for_h1 = Arc::clone(&dispatch);
     let handler_id1_for_task = handler_id1.clone();
     let h1 = tokio::spawn(async move {
-        let event = timeout(Duration::from_secs(1), rx1.recv())
+        let msg = timeout(Duration::from_secs(1), rx1.recv())
             .await
             .map_err(|_| DaemonError::Config("timeout waiting for handler 1 event".into()))?
             .ok_or(DaemonError::Config(
                 "handler 1 did not receive event".into(),
             ))?;
+        let event = parse_event_notification(&msg).ok_or(DaemonError::Config(
+            "handler 1 received invalid event notification".into(),
+        ))?;
         assert_eq!(event.event_id, "evt1");
         dispatch_for_h1
             .handle_message(
@@ -134,12 +148,15 @@ async fn fan_out_delivers_event_and_advances_cursor()
     let dispatch_for_h2 = Arc::clone(&dispatch);
     let handler_id2_for_task = handler_id2.clone();
     let h2 = tokio::spawn(async move {
-        let event = timeout(Duration::from_secs(1), rx2.recv())
+        let msg = timeout(Duration::from_secs(1), rx2.recv())
             .await
             .map_err(|_| DaemonError::Config("timeout waiting for handler 2 event".into()))?
             .ok_or(DaemonError::Config(
                 "handler 2 did not receive event".into(),
             ))?;
+        let event = parse_event_notification(&msg).ok_or(DaemonError::Config(
+            "handler 2 received invalid event notification".into(),
+        ))?;
         assert_eq!(event.event_id, "evt1");
         dispatch_for_h2
             .handle_message(
@@ -195,10 +212,13 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
     let dispatch_for_h = Arc::clone(&dispatch);
     let handler_id_for_task = handler_id.clone();
     let h = tokio::spawn(async move {
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        let msg = timeout(Duration::from_secs(1), rx.recv())
             .await
             .map_err(|_| DaemonError::Config("timeout waiting for handler event".into()))?
             .ok_or(DaemonError::Config("handler did not receive event".into()))?;
+        let event = parse_event_notification(&msg).ok_or(DaemonError::Config(
+            "handler received invalid event notification".into(),
+        ))?;
         assert_eq!(event.event_id, "evt1");
         dispatch_for_h
             .handle_message(

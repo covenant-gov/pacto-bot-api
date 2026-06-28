@@ -96,7 +96,6 @@ impl ClientManager {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-    use crate::events::AgentEvent;
     use crate::handlers::ConnectionHandle;
     use nostr::ToBech32;
     use tokio::sync::mpsc;
@@ -213,7 +212,7 @@ mod tests {
         let bot_cfg = bot_config("auth-bot", &keys);
         let mut manager = manager_with_bots(vec![bot_cfg.clone()]);
 
-        let (tx, _rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let (tx, _rx) = mpsc::unbounded_channel::<crate::transport::protocol::JsonRpcMessage>();
         let handler_id = manager
             .handler_registry
             .register(
