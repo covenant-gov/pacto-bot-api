@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 pub mod http;
 pub mod protocol;
 pub mod protocol_generated;
+#[cfg(unix)]
 pub mod unix;
 
 /// A boxed future returned by a message handler.
@@ -63,12 +64,15 @@ where
 /// Combined transport layer exposing JSON-RPC over Unix socket and localhost HTTP.
 #[derive(Debug)]
 pub struct TransportLayer {
+    #[cfg(unix)]
     socket_path: PathBuf,
     http_bind: String,
     data_dir: PathBuf,
     enable_http: bool,
     max_frame_size: usize,
+    #[cfg(unix)]
     idle_timeout: Duration,
+    #[cfg(unix)]
     max_connections: usize,
     http_idle_timeout: Duration,
     http_max_connections: usize,
@@ -79,12 +83,15 @@ impl TransportLayer {
     /// Build a transport layer from daemon configuration.
     pub fn new(config: &DaemonConfig, enable_http: bool) -> Self {
         Self {
+            #[cfg(unix)]
             socket_path: PathBuf::from(config.socket_path()),
             http_bind: config.daemon.http_bind.clone(),
             data_dir: PathBuf::from(config.data_dir()),
             enable_http,
             max_frame_size: protocol::MAX_FRAME_BYTES,
+            #[cfg(unix)]
             idle_timeout: Duration::from_secs(300),
+            #[cfg(unix)]
             max_connections: 128,
             http_idle_timeout: Duration::from_secs(config.daemon.http_idle_timeout_secs),
             http_max_connections: config.daemon.http_max_connections,
@@ -148,18 +155,33 @@ impl TransportLayer {
 
         let dispatch_handle = tokio::spawn(dispatch_consumer(dispatch, event_rx));
 
-        let unix = unix::UnixTransport::new(&self.socket_path).with_limits(
-            self.max_frame_size,
-            self.idle_timeout,
-            self.max_connections,
-        );
+        // Non-Unix platforms have no Unix socket transport, so HTTP must be
+        // enabled or the daemon would have no way to accept connections.
+        #[cfg(not(unix))]
+        if !self.enable_http {
+            return Err(DaemonError::Config(
+                "HTTP transport must be enabled on non-Unix platforms".into(),
+            ));
+        }
+
+        #[cfg(unix)]
         let (unix_shutdown_tx, unix_shutdown_rx) = oneshot::channel();
+        #[cfg(unix)]
         let handler_for_unix = handler.clone();
+        #[cfg(unix)]
         let disconnect_for_unix = disconnect_tx.clone();
-        let unix_handle = tokio::spawn(async move {
-            unix.run(handler_for_unix, disconnect_for_unix, unix_shutdown_rx)
-                .await
-        });
+        #[cfg(unix)]
+        let unix_handle = {
+            let unix = unix::UnixTransport::new(&self.socket_path).with_limits(
+                self.max_frame_size,
+                self.idle_timeout,
+                self.max_connections,
+            );
+            tokio::spawn(async move {
+                unix.run(handler_for_unix, disconnect_for_unix, unix_shutdown_rx)
+                    .await
+            })
+        };
 
         let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel();
         let http_handle: Option<tokio::task::JoinHandle<Result<(), DaemonError>>> =
@@ -188,9 +210,11 @@ impl TransportLayer {
         // Wait for the external shutdown signal.
         let _ = shutdown.await;
 
+        #[cfg(unix)]
         let _ = unix_shutdown_tx.send(());
         let _ = http_shutdown_tx.send(());
 
+        #[cfg(unix)]
         let unix_res = unix_handle
             .await
             .map_err(|e| DaemonError::Config(format!("unix transport task panicked: {e}")))?;
@@ -202,6 +226,7 @@ impl TransportLayer {
             http_res?;
         }
 
+        #[cfg(unix)]
         unix_res?;
 
         dispatch_handle
