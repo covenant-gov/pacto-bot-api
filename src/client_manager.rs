@@ -45,7 +45,13 @@ impl ClientManager {
             .and_then(|npub| self.bots.get(npub))
     }
 
-    pub fn is_authorized(&self, handler_id: &str, bot_id: &str) -> bool {
-        self.handler_registry.is_authorized(handler_id, bot_id)
+    pub fn is_authorized(
+        &self,
+        handler_id: &str,
+        bot_id: &str,
+        capability: &str,
+    ) -> Result<bool, DaemonError> {
+        self.handler_registry
+            .is_authorized(handler_id, bot_id, capability)
     }
 }
