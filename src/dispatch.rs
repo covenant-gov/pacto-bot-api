@@ -343,10 +343,16 @@ impl Dispatch {
     }
 
     /// Handle an incoming JSON-RPC message from a transport.
+    ///
+    /// `out_tx` is the outbound channel for the connection that sent `msg`.
+    /// It is used to wire the live connection during `handler.register` so
+    /// that the daemon can push `agent.event` and `agent.status`
+    /// notifications back to the handler.
     pub async fn handle_message(
         &self,
         msg: JsonRpcMessage,
         handler_id: Option<&str>,
+        out_tx: Option<mpsc::UnboundedSender<JsonRpcMessage>>,
     ) -> Result<Option<JsonRpcMessage>, DaemonError> {
         let id = msg.id().cloned();
 
@@ -370,7 +376,7 @@ impl Dispatch {
 
         let params = message_params(&msg);
         let result = match method {
-            Method::HandlerRegister => self.handle_register(params).await,
+            Method::HandlerRegister => self.handle_register(params, out_tx).await,
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
@@ -386,7 +392,11 @@ impl Dispatch {
         }
     }
 
-    async fn handle_register(&self, params: Option<&Value>) -> Result<Option<Value>, DaemonError> {
+    async fn handle_register(
+        &self,
+        params: Option<&Value>,
+        out_tx: Option<mpsc::UnboundedSender<JsonRpcMessage>>,
+    ) -> Result<Option<Value>, DaemonError> {
         let params =
             params.ok_or_else(|| DaemonError::Config("handler.register missing params".into()))?;
         let bot_ids: Vec<String> = serde_json::from_value(
@@ -408,8 +418,13 @@ impl Dispatch {
                 .unwrap_or(Value::Array(vec![])),
         )?;
 
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let connection = ConnectionHandle::new(tx);
+        let connection = out_tx.map_or_else(
+            || {
+                let (tx, _rx) = mpsc::unbounded_channel();
+                ConnectionHandle::new(tx)
+            },
+            ConnectionHandle::new,
+        );
 
         let bot_configs = {
             let cm = self.client_manager.read().await;
@@ -771,7 +786,11 @@ mod tests {
             })),
         );
 
-        let resp = dispatch.handle_message(req, None).await.unwrap().unwrap();
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
         let JsonRpcMessage::Response { result, .. } = resp else {
             panic!("expected response");
         };
@@ -818,7 +837,7 @@ mod tests {
         );
 
         let resp = dispatch
-            .handle_message(req, Some(&handler_id))
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap()
             .unwrap();
@@ -863,7 +882,7 @@ mod tests {
         );
 
         dispatch
-            .handle_message(req, Some(&handler_id))
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap();
         let snapshot = dispatch.diagnostics.snapshot();

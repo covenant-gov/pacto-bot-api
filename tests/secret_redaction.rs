@@ -152,7 +152,7 @@ async fn json_rpc_error_response_does_not_contain_secret_markers()
     let token = "known-test-token";
     write_token_file(&data_dir, token).await?;
 
-    let error_handler = message_handler(|_| async move {
+    let error_handler = message_handler(|_, _out_tx, _handler_id| async move {
         Err::<Option<JsonRpcMessage>, DaemonError>(DaemonError::MethodNotFound)
     });
 
@@ -252,7 +252,7 @@ async fn write_token_file(data_dir: &Path, token: &str) -> std::io::Result<()> {
 }
 
 fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
-    message_handler(|msg| async move {
+    message_handler(|msg, _out_tx, _handler_id| async move {
         let id = msg.id().cloned().unwrap_or(serde_json::Value::Null);
         Ok(Some(JsonRpcMessage::response(
             id,

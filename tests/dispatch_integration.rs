@@ -140,6 +140,7 @@ async fn fan_out_delivers_event_and_advances_cursor()
                     })),
                 ),
                 Some(&handler_id1_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -168,6 +169,7 @@ async fn fan_out_delivers_event_and_advances_cursor()
                     })),
                 ),
                 Some(&handler_id2_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -230,6 +232,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
                     })),
                 ),
                 Some(&handler_id_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -280,7 +283,9 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
         })),
     );
 
-    let resp = dispatch.handle_message(req, Some(&handler_id)).await?;
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?;
     match resp {
         Some(JsonRpcMessage::Error { error, .. }) => {
             assert_eq!(error.code, -32006);
@@ -329,12 +334,14 @@ async fn rate_limit_rejects_excess_calls_with_32005()
 
     // First call consumes the single-token burst; it is authorized but not implemented yet.
     let first = dispatch
-        .handle_message(req.clone(), Some(&handler_id))
+        .handle_message(req.clone(), Some(&handler_id), None)
         .await?;
     assert!(matches!(first, Some(JsonRpcMessage::Error { .. })));
 
     // Second call is rate limited.
-    let second = dispatch.handle_message(req, Some(&handler_id)).await?;
+    let second = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?;
     match second {
         Some(JsonRpcMessage::Error { error, .. }) => {
             assert_eq!(error.code, -32005);

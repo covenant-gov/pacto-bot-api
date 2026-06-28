@@ -154,7 +154,11 @@ async fn http_handler(
         let response = match parse_message(line) {
             Ok(msg) => {
                 let id = msg.id().cloned();
-                match (state.handler)(msg).await {
+                // HTTP is request/response: there is no persistent connection
+                // over which the daemon can push async notifications, so we
+                // pass a disconnected outbound sender and no handler id.
+                let (out_tx, _out_rx) = tokio::sync::mpsc::unbounded_channel();
+                match (state.handler)(msg, out_tx, None).await {
                     Ok(resp) => resp,
                     Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
                 }
