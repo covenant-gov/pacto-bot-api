@@ -10,6 +10,6 @@ if command -v bd >/dev/null 2>&1; then
   bd hooks run pre-commit "$@" || exit $?
 fi
 
-# Enforce consistent Rust formatting
-echo "Checking Rust formatting with cargo fmt..."
-cargo fmt --all -- --check
+# Run project validation gate (fmt-check, clippy, tests)
+echo "Running make validate..."
+make validate

@@ -59,6 +59,7 @@ fn generate_config(schemas_dir: &Path, root: &Path) -> Result<()> {
         }
     }
 
+    let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/config_generated.rs"), out)?;
     Ok(())
 }
@@ -85,6 +86,7 @@ fn generate_protocol(schemas_dir: &Path, root: &Path) -> Result<()> {
     out.push_str("/// JSON-RPC catalog container.\n");
     emit_struct(&mut out, "JsonRpcCatalogGenerated", &schema)?;
 
+    let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/transport/protocol_generated.rs"), out)?;
     Ok(())
 }
@@ -98,6 +100,7 @@ fn generate_metrics(schemas_dir: &Path, root: &Path) -> Result<()> {
     out.push_str("/// Metrics payload generated from schemas/metrics.json.\n");
     emit_struct(&mut out, "MetricsPayloadGenerated", &schema)?;
 
+    let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/metrics_generated.rs"), out)?;
     Ok(())
 }
