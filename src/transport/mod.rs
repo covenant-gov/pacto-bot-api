@@ -146,7 +146,7 @@ async fn dispatch_consumer(
     mut rx: mpsc::Receiver<DispatchRequest>,
 ) -> Result<(), DaemonError> {
     while let Some((msg, tx)) = rx.recv().await {
-        let resp = dispatch.handle_message(msg).await;
+        let resp = dispatch.handle_message(msg, None).await;
         let _ = tx.send(resp);
     }
     Ok(())
