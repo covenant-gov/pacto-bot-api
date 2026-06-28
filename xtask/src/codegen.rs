@@ -47,15 +47,15 @@ fn generate_config(schemas_dir: &Path, root: &Path) -> Result<()> {
             out.push_str("/// Daemon-wide settings.\n");
             emit_struct(&mut out, "DaemonConfigGenerated", daemon)?;
         }
-        if let Some(bots) = props.get("bots") {
-            if let Some(items) = bots["items"].as_object() {
-                out.push_str("/// Per-bot identity configuration.\n");
-                emit_struct(
-                    &mut out,
-                    "BotConfigGenerated",
-                    &Value::Object(items.clone()),
-                )?;
-            }
+        if let Some(bots) = props.get("bots")
+            && let Some(items) = bots["items"].as_object()
+        {
+            out.push_str("/// Per-bot identity configuration.\n");
+            emit_struct(
+                &mut out,
+                "BotConfigGenerated",
+                &Value::Object(items.clone()),
+            )?;
         }
     }
 
