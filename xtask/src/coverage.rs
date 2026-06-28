@@ -20,13 +20,17 @@ pub fn run() -> Result<()> {
 }
 
 fn find_workspace_root() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
+    let start = std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().expect("current dir available"));
+    let mut dir = start;
+    let script = PathBuf::from("scripts/generate_requirement_coverage.py");
     loop {
-        if dir.join("Cargo.toml").exists() {
+        if dir.join(&script).exists() {
             return Ok(dir);
         }
         if !dir.pop() {
-            anyhow::bail!("could not find workspace root containing Cargo.toml");
+            anyhow::bail!("could not find workspace root containing {}", script.display());
         }
     }
 }

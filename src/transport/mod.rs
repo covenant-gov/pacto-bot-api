@@ -26,7 +26,7 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 pub type MessageHandler = Arc<
     dyn Fn(
             JsonRpcMessage,
-            mpsc::UnboundedSender<JsonRpcMessage>,
+            mpsc::Sender<JsonRpcMessage>,
             Option<String>,
         ) -> BoxFuture<Result<Option<JsonRpcMessage>, DaemonError>>
         + Send
@@ -36,7 +36,7 @@ pub type MessageHandler = Arc<
 /// A request routed from a transport to the dispatch sink.
 type DispatchRequest = (
     JsonRpcMessage,
-    Option<mpsc::UnboundedSender<JsonRpcMessage>>,
+    Option<mpsc::Sender<JsonRpcMessage>>,
     Option<String>,
     oneshot::Sender<Result<Option<JsonRpcMessage>, DaemonError>>,
 );
@@ -44,7 +44,7 @@ type DispatchRequest = (
 /// Wrap a closure as a [`MessageHandler`].
 pub fn message_handler<F, Fut>(f: F) -> MessageHandler
 where
-    F: Fn(JsonRpcMessage, mpsc::UnboundedSender<JsonRpcMessage>, Option<String>) -> Fut
+    F: Fn(JsonRpcMessage, mpsc::Sender<JsonRpcMessage>, Option<String>) -> Fut
         + Send
         + Sync
         + 'static,

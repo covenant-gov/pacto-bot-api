@@ -65,6 +65,54 @@ async fn http_accepts_correct_secret() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[tokio::test]
+async fn http_rejects_handler_register() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(
+        8.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+        })),
+    ))?;
+    let response = raw_http_post(port, Some(&token), &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert!(
+        response.contains("-32007") || response.contains("not supported"),
+        "response should indicate method not supported: {response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_rejects_handler_response() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(
+        9.into(),
+        "handler.response",
+        Some(serde_json::json!({
+            "event_id": "evt-123",
+            "action": "defer",
+        })),
+    ))?;
+    let response = raw_http_post(port, Some(&token), &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert!(
+        response.contains("-32007") || response.contains("not supported"),
+        "response should indicate method not supported: {response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_rejects_non_loopback_bind() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let transport = HttpTransport::new("0.0.0.0:0", dir.path());

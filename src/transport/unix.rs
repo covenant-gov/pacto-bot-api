@@ -145,9 +145,11 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
 
-    // Channel for the read loop and dispatch to push outbound JSON-RPC messages
-    // (responses and async notifications) to the socket writer task.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
+    // Bounded outbound buffer: responses await room (backpressure on a slow
+    // peer), while async notifications are dropped when the buffer is full so
+    // the dispatcher never blocks on a non-reading handler.
+    const OUTBOUND_BUFFER: usize = 128;
+    let (out_tx, mut out_rx) = mpsc::channel::<JsonRpcMessage>(OUTBOUND_BUFFER);
     let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // Writer task: forwards outbound messages to the socket.
@@ -218,7 +220,7 @@ async fn handle_connection(
             }
 
             if let Some(resp) = response {
-                if out_tx.send(resp).is_err() {
+                if out_tx.send(resp).await.is_err() {
                     return Ok(());
                 }
             }

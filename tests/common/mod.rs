@@ -163,7 +163,7 @@ pub fn handler_ref(
     event_types: &[EventType],
     capabilities: &[&str],
 ) -> HandlerRef {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
     HandlerRef {
         id: id.to_string(),
         connection: Some(ConnectionHandle::new(tx)),

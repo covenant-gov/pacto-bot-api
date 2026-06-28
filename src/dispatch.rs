@@ -355,7 +355,7 @@ impl Dispatch {
         &self,
         msg: JsonRpcMessage,
         handler_id: Option<&str>,
-        out_tx: Option<mpsc::UnboundedSender<JsonRpcMessage>>,
+        out_tx: Option<mpsc::Sender<JsonRpcMessage>>,
     ) -> Result<Option<JsonRpcMessage>, DaemonError> {
         let id = msg.id().cloned();
 
@@ -398,7 +398,7 @@ impl Dispatch {
     async fn handle_register(
         &self,
         params: Option<&Value>,
-        out_tx: Option<mpsc::UnboundedSender<JsonRpcMessage>>,
+        out_tx: Option<mpsc::Sender<JsonRpcMessage>>,
     ) -> Result<Option<Value>, DaemonError> {
         let params =
             params.ok_or_else(|| DaemonError::Config("handler.register missing params".into()))?;
@@ -423,7 +423,7 @@ impl Dispatch {
 
         let connection = out_tx.map_or_else(
             || {
-                let (tx, _rx) = mpsc::unbounded_channel();
+                let (tx, _rx) = mpsc::channel(1);
                 ConnectionHandle::new(tx)
             },
             ConnectionHandle::new,
@@ -816,7 +816,7 @@ mod tests {
 
         let handler_id = {
             let mut cm = cm.write().await;
-            let (tx, _rx) = mpsc::unbounded_channel();
+            let (tx, _rx) = mpsc::channel(1);
             let handle = ConnectionHandle::new(tx);
             cm.handler_registry
                 .register(
@@ -863,7 +863,7 @@ mod tests {
 
         let handler_id = {
             let mut cm = cm.write().await;
-            let (tx, _rx) = mpsc::unbounded_channel();
+            let (tx, _rx) = mpsc::channel(1);
             let handle = ConnectionHandle::new(tx);
             cm.handler_registry
                 .register(

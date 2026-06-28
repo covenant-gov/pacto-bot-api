@@ -3,7 +3,7 @@ use crate::handlers::{ConnectionHandle, HandlerRef};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::channel;
 
 /// SQLite persistence handle for cursors and handler registrations.
 #[derive(Debug)]
@@ -156,7 +156,7 @@ impl Database {
         let mut handlers = Vec::new();
         for row in rows {
             let (id, bot_ids, event_types, capabilities, registered_at) = row?;
-            let (sender, _receiver) = unbounded_channel();
+            let (sender, _receiver) = channel(1);
             handlers.push(HandlerRef {
                 id,
                 connection: Some(ConnectionHandle::new(sender)),
@@ -195,7 +195,7 @@ mod tests {
     }
 
     fn disconnected_handle() -> ConnectionHandle {
-        let (sender, _receiver) = unbounded_channel();
+        let (sender, _receiver) = channel(1);
         ConnectionHandle::new(sender)
     }
 

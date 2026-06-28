@@ -221,7 +221,7 @@ mod tests {
         let bot_cfg = bot_config("auth-bot", &keys);
         let mut manager = manager_with_bots(vec![bot_cfg.clone()]);
 
-        let (tx, _rx) = mpsc::unbounded_channel::<crate::transport::protocol::JsonRpcMessage>();
+        let (tx, _rx) = mpsc::channel::<crate::transport::protocol::JsonRpcMessage>(1);
         let handler_id = manager
             .handler_registry
             .register(

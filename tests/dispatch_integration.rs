@@ -96,8 +96,8 @@ async fn fan_out_delivers_event_and_advances_cursor()
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
-    let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(64);
+    let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
 
     let (handler_id1, handler_id2) = {
         let mut cm = cm.write().await;
@@ -200,7 +200,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(
@@ -262,7 +262,7 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(
@@ -312,7 +312,7 @@ async fn rate_limit_rejects_excess_calls_with_32005()
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(

@@ -1,10 +1,11 @@
 """Integration tests for the reference Python echo handler.
 
 These tests exercise the JSON-RPC contract between ``echo_bot.py`` and the
-pacto-bot-api daemon.  Because the current daemon implementation does not yet
-push ``agent.status`` / ``agent.event`` notifications to Unix-socket handlers,
-the full DM round-trip is verified by testing ``echo_bot.py`` against a mock
-daemon socket that speaks the same protocol.
+pacto-bot-api daemon.  The daemon now pushes ``agent.status`` and
+``agent.event`` notifications to Unix-socket handlers, so most tests run
+against a live daemon.  ``test_echo_bot_replies_to_dm`` uses a lightweight mock
+daemon socket to verify the handler's request/response behavior in isolation
+without requiring a live Nostr relay.
 """
 
 from __future__ import annotations

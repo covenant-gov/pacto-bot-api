@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use secrecy::SecretString;
 use serde_json::json;
 use std::collections::HashMap;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 
 /// Capability a handler may request for a bot.
 pub type Capability = String;
@@ -15,18 +15,22 @@ pub type Capability = String;
 /// Lightweight handle to a handler connection for outbound JSON-RPC notifications.
 #[derive(Debug, Clone)]
 pub struct ConnectionHandle {
-    sender: UnboundedSender<JsonRpcMessage>,
+    sender: Sender<JsonRpcMessage>,
 }
 
 impl ConnectionHandle {
-    pub fn new(sender: UnboundedSender<JsonRpcMessage>) -> Self {
+    pub fn new(sender: Sender<JsonRpcMessage>) -> Self {
         Self { sender }
     }
 
     /// Send a JSON-RPC notification to the connected handler.
+    ///
+    /// Notifications are best-effort: if the outbound buffer is full because
+    /// the peer is not reading, the notification is dropped so the dispatcher
+    /// never blocks on a slow handler.
     pub fn send(&self, msg: JsonRpcMessage) -> Result<(), DaemonError> {
         self.sender
-            .send(msg)
+            .try_send(msg)
             .map_err(|_| DaemonError::HandlerNotRegistered)
     }
 }
@@ -200,7 +204,7 @@ mod tests {
     }
 
     fn dummy_handle() -> ConnectionHandle {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
         ConnectionHandle::new(tx)
     }
 
@@ -452,7 +456,7 @@ mod tests {
     async fn connection_handle_can_deliver_events() {
         let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
         let mut registry = HandlerRegistry::new();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
 
         let handler_id = registry
             .register(

@@ -78,6 +78,9 @@ pub enum DaemonError {
     #[error("method not found")]
     MethodNotFound,
 
+    #[error("method {0} not supported over this transport")]
+    MethodNotSupported(String),
+
     #[error("frame too large")]
     FrameTooLarge,
 }
@@ -95,6 +98,7 @@ impl DaemonError {
             DaemonError::UnauthorizedBot => -32006,
             DaemonError::JsonRpc(e) => e.code,
             DaemonError::MethodNotFound => -32601,
+            DaemonError::MethodNotSupported(_) => -32007,
             // Malformed input or bad params are treated as invalid request/params.
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,

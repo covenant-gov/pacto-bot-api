@@ -11,6 +11,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -249,9 +250,11 @@ class DaemonClient:
     ) -> None:
         """Wait until a DM reply containing *text* is observed.
 
-        Note: the current daemon does not push ``agent.event`` notifications to
-        Unix-socket handlers, so this helper is primarily useful when testing
-        against a mock daemon.  See ``test_echo_bot_replies_to_dm``.
+        The daemon pushes ``agent.event`` notifications to Unix-socket handlers,
+        so this helper waits for those events and matches on the reply content.
+        It is used by tests that drive the real daemon end-to-end; the mock-daemon
+        test ``test_echo_bot_replies_to_dm`` exercises the same contract in
+        isolation.
         """
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
