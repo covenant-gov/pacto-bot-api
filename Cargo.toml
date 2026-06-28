@@ -33,6 +33,7 @@ nostr = { version = "0.40", features = ["nip46"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
+async-trait = "0.1"
 zeroize = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 secrecy = "0.10"
@@ -40,6 +41,9 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
+getrandom = "0.2"
+hex = "0.4"
+subtle = "2"
 
 [dev-dependencies]
 schemars = "0.8"
@@ -55,3 +59,15 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 0
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+# Production safety: panics and unwrap/expect are forbidden outside tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+# Avoid debug macro leakage.
+dbg_macro = "warn"
+

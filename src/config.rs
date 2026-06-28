@@ -357,6 +357,7 @@ signing = { backend = "nsec" }
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn env_var_expansion() {
         // SAFETY: test-only mutation of a unique environment variable name.
         unsafe { env::set_var("PACT_TEST_NSEC", "nsec1fromenv") };

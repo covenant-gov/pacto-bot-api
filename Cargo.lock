@@ -133,6 +133,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "async-utility"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1553,9 +1564,12 @@ name = "pacto-bot-api"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "async-trait",
  "axum",
  "chrono",
  "clap",
+ "getrandom 0.2.17",
+ "hex",
  "jsonschema",
  "nostr 0.40.0",
  "nostr-sdk",
@@ -1567,6 +1581,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3143,6 +3158,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "serde_json",
 ]
 
 [[package]]

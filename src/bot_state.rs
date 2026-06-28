@@ -11,7 +11,7 @@ pub struct BotState {
 
 impl BotState {
     pub fn new(config: BotConfig) -> Result<Self, DaemonError> {
-        let signer = SignerBackend::from_config(&config.signing)?;
+        let signer = SignerBackend::from_config(&config.signing, &config.npub)?;
         Ok(Self { config, signer })
     }
 }
