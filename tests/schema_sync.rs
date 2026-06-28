@@ -27,19 +27,25 @@ const TRACKED_GENERATED_FILES: &[&str] = &[
 /// Schema files that are intentionally not represented by a generated Rust
 /// module, with a short justification. Every other file in `schemas/` must
 /// either be generated or appear here.
-const EXEMPT_SCHEMAS: &[(&str, &str)] = &[];
+const EXEMPT_SCHEMAS: &[(&str, &str)] = &[(
+    "version.json",
+    "response shape tracked by handwritten AgentVersionResponse in src/transport/protocol.rs",
+)];
 
 /// Hand-written Rust response types that must match a canonical schema.
 /// Each entry maps `(source_file, schema_file, schema_selector, rust_type)`
 /// where `schema_selector` is the dotted path to the object whose properties
 /// define the type (empty for the schema root) and `rust_type` is the struct
 /// name in `source_file`.
-const TRACKED_HANDWRITTEN_TYPES: &[(&str, &str, &[&str], &str)] = &[(
-    "src/transport/protocol.rs",
-    "metrics.json",
-    &[],
-    "MetricsResponse",
-)];
+const TRACKED_HANDWRITTEN_TYPES: &[(&str, &str, &[&str], &str)] = &[
+    ("src/transport/protocol.rs", "metrics.json", &[], "MetricsResponse"),
+    (
+        "src/transport/protocol.rs",
+        "version.json",
+        &[],
+        "AgentVersionResponse",
+    ),
+];
 
 #[test]
 fn generated_types_match_schemas() {
@@ -186,7 +192,8 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
 
     for method in &catalog.methods {
         assert!(
-            !method.params.is_empty() || method.name == "agent.metrics",
+            !method.params.is_empty()
+                || matches!(method.name.as_str(), "agent.metrics" | "agent.version"),
             "{} must declare params (or explicitly declare no params)",
             method.name
         );
@@ -198,6 +205,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.send_dm"
                 | "agent.set_profile"
                 | "agent.metrics"
+                | "agent.version"
         );
         if expects_result {
             assert!(
@@ -301,7 +309,9 @@ fn handwritten_response_types_match_schemas() {
         for (field_name, ty) in fields {
             let is_optional = is_option_type(ty);
             let type_string = type_to_string(ty);
-            let is_valid_type = if field_name == "bots" {
+            let is_valid_type = if *schema_file == "version.json" {
+                type_string == "String"
+            } else if field_name == "bots" {
                 is_optional && type_string.contains("Vec")
             } else {
                 type_string == "u64" || type_string == "Option < u64 >"

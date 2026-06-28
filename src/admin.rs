@@ -46,12 +46,12 @@ use std::time::Duration;
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const BOT_SECRET_TOKEN_FILE: &str = "bot_secret_token";
 const AGENT_DB_FILE: &str = "agent.db";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `pacto-bot-admin` command-line interface.
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-admin")]
 #[command(about = "Pacto bot admin CLI")]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
 struct Cli {
     /// Path to the bot configuration file.
     #[arg(
@@ -291,7 +291,7 @@ fn cmd_export(
 
     let state = ExportState {
         metadata: ExportMetadata {
-            daemon_version: VERSION.to_string(),
+            daemon_version: pacto_bot_api::version::VERSION.to_string(),
             exported_at: Utc::now().to_rfc3339(),
             source_data_dir: data_dir.to_string_lossy().to_string(),
         },

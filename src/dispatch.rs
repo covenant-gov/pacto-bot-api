@@ -16,7 +16,8 @@ use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::{
-    HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse, parse_method,
+    AgentVersionResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
+    parse_method,
 };
 
 #[cfg(test)]
@@ -482,6 +483,7 @@ impl Dispatch {
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
             Method::AgentMetrics => self.handle_metrics().await,
+            Method::AgentVersion => self.handle_version().await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
 
@@ -776,6 +778,14 @@ impl Dispatch {
         Ok(Some(serde_json::to_value(response)?))
     }
 
+    async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
+        let response = AgentVersionResponse {
+            version: crate::version::VERSION.to_string(),
+            commit: crate::version::GIT_COMMIT_SHORT.to_string(),
+        };
+        Ok(Some(serde_json::to_value(response)?))
+    }
+
     /// Load the persisted cursor for a bot.
     pub fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
         let db = self
@@ -1013,6 +1023,32 @@ mod tests {
             panic!("expected error response");
         };
         assert_eq!(error.code, -32006);
+    }
+
+    #[tokio::test]
+    async fn agent_version_returns_version_and_commit() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let req = JsonRpcMessage::request(1.into(), "agent.version", None);
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("version").and_then(|v| v.as_str()),
+            Some(crate::version::VERSION)
+        );
+        assert_eq!(
+            result.get("commit").and_then(|v| v.as_str()),
+            Some(crate::version::GIT_COMMIT_SHORT)
+        );
     }
 
     #[tokio::test]

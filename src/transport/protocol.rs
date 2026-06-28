@@ -173,6 +173,8 @@ pub enum Method {
     AgentStatus,
     #[serde(rename = "agent.metrics")]
     AgentMetrics,
+    #[serde(rename = "agent.version")]
+    AgentVersion,
 }
 
 impl Method {
@@ -188,6 +190,7 @@ impl Method {
             Method::AgentEvent,
             Method::AgentStatus,
             Method::AgentMetrics,
+            Method::AgentVersion,
         ]
     }
 }
@@ -206,6 +209,7 @@ impl FromStr for Method {
             "agent.event" => Ok(Self::AgentEvent),
             "agent.status" => Ok(Self::AgentStatus),
             "agent.metrics" => Ok(Self::AgentMetrics),
+            "agent.version" => Ok(Self::AgentVersion),
             _ => Err(DaemonError::MethodNotFound),
         }
     }
@@ -295,6 +299,18 @@ pub struct AgentStatusParams {
     pub capabilities: Vec<String>,
 }
 
+/// Typed payload returned by the `agent.version` JSON-RPC method.
+///
+/// Matches `schemas/version.json`: the result contains the daemon's Cargo
+/// package version and the short git commit hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentVersionResponse {
+    /// Cargo package version.
+    pub version: String,
+    /// Short git commit hash (8 characters).
+    pub commit: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +327,7 @@ mod tests {
             "agent.event",
             "agent.status",
             "agent.metrics",
+            "agent.version",
         ];
 
         for method in methods {

@@ -31,6 +31,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-api")]
 #[command(about = "Pacto bot API daemon")]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
 struct Cli {
     /// Path to the bot configuration file.
     #[arg(short, long, value_name = "PATH", default_value = "pacto-bot-api.toml")]
