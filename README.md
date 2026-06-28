@@ -16,6 +16,29 @@ A standalone Rust daemon that multiplexes multiple Pacto bot identities onto one
 
 ### 1. Install
 
+#### Install from a GitHub release
+
+The fastest way to get the daemon and admin CLI is to use the release install
+script. It detects your platform (macOS or Linux) and architecture (x86_64 or
+arm64), downloads the latest GitHub release, verifies the SHA-256 checksum, and
+installs both binaries into `/usr/local/bin`:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
+```
+
+You can customize the installation with environment variables:
+
+```bash
+# Install to ~/.local/bin instead of /usr/local/bin
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
+
+# Install a specific version instead of latest
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.1.0 bash
+```
+
+#### Build from source
+
 Requires Rust 1.85 or later.
 
 ```bash
@@ -34,10 +57,12 @@ Binaries:
 ### 2. Create a bot identity
 
 ```bash
-cargo run --bin pacto-bot-admin -- new echo-bot --backend nsec
+pacto-bot-admin new echo-bot --backend nsec
 ```
 
 This prints an `npub`, an `nsec`, and a `[[bots]]` config snippet. For anything beyond local experimentation, use a NIP-46 bunker instead of `nsec`.
+
+If you built from source, use `cargo run --bin pacto-bot-admin -- new echo-bot --backend nsec` instead.
 
 ### 3. Configure the daemon
 
@@ -51,10 +76,12 @@ Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the 
 ### 4. Run the daemon
 
 ```bash
-PACT_BOT_NSEC=<nsec-hex> cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml
+PACT_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
 ```
 
 Add `--enable-http` to start the optional localhost HTTP transport on `127.0.0.1:9800`.
+
+If you built from source, use `cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml` instead.
 
 ### 5. Connect a handler
 
