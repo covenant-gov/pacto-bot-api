@@ -12,6 +12,7 @@ use pacto_bot_api::events::{AgentEvent, EventType};
 use pacto_bot_api::handlers::ConnectionHandle;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
+use secrecy::SecretString;
 use tempfile::tempdir;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -25,7 +26,7 @@ fn bot_config(id: &str, keys: &nostr::Keys, capabilities: &[&str]) -> BotConfig 
         id: id.to_string(),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
-            nsec: keys.secret_key().to_bech32().unwrap(),
+            nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
         },
         relays: vec![],
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
@@ -95,8 +96,8 @@ async fn fan_out_delivers_event_and_advances_cursor()
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
-    let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(64);
+    let (tx2, mut rx2) = tokio::sync::mpsc::channel(64);
 
     let (handler_id1, handler_id2) = {
         let mut cm = cm.write().await;
@@ -140,6 +141,7 @@ async fn fan_out_delivers_event_and_advances_cursor()
                     })),
                 ),
                 Some(&handler_id1_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -168,6 +170,7 @@ async fn fan_out_delivers_event_and_advances_cursor()
                     })),
                 ),
                 Some(&handler_id2_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -197,7 +200,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(
@@ -230,6 +233,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
                     })),
                 ),
                 Some(&handler_id_for_task),
+                None,
             )
             .await?;
         Ok::<(), DaemonError>(())
@@ -258,7 +262,7 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(
@@ -280,7 +284,9 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
         })),
     );
 
-    let resp = dispatch.handle_message(req, Some(&handler_id)).await?;
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?;
     match resp {
         Some(JsonRpcMessage::Error { error, .. }) => {
             assert_eq!(error.code, -32006);
@@ -306,7 +312,7 @@ async fn rate_limit_rejects_excess_calls_with_32005()
         cm.get_bot_by_id("echo-bot").unwrap().config.clone()
     };
 
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
         cm.handler_registry.register(
@@ -329,12 +335,14 @@ async fn rate_limit_rejects_excess_calls_with_32005()
 
     // First call consumes the single-token burst; it is authorized but not implemented yet.
     let first = dispatch
-        .handle_message(req.clone(), Some(&handler_id))
+        .handle_message(req.clone(), Some(&handler_id), None)
         .await?;
     assert!(matches!(first, Some(JsonRpcMessage::Error { .. })));
 
     // Second call is rate limited.
-    let second = dispatch.handle_message(req, Some(&handler_id)).await?;
+    let second = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?;
     match second {
         Some(JsonRpcMessage::Error { error, .. }) => {
             assert_eq!(error.code, -32005);

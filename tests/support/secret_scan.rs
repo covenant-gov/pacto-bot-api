@@ -1,3 +1,8 @@
+#![allow(
+    dead_code,
+    reason = "support utilities used by future integration tests"
+)]
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

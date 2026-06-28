@@ -1,4 +1,5 @@
 use crate::errors::DaemonError;
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::env;
@@ -58,11 +59,11 @@ pub struct BotConfig {
 #[serde(tag = "backend", rename_all = "snake_case")]
 pub enum SigningConfig {
     /// Local test key (dev-only).
-    Nsec { nsec: String },
+    Nsec { nsec: SecretString },
     /// Local NIP-46 bunker on the same machine.
-    BunkerLocal { uri: String },
+    BunkerLocal { uri: SecretString },
     /// Production NIP-46 bunker reachable over `wss://`.
-    BunkerRemote { uri: String },
+    BunkerRemote { uri: SecretString },
 }
 
 impl DaemonConfig {
@@ -136,7 +137,7 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
 
         match &bot.signing {
             SigningConfig::Nsec { nsec } => {
-                if nsec.is_empty() {
+                if nsec.expose_secret().is_empty() {
                     return Err(DaemonError::Config(format!(
                         "bot {}: nsec backend requires a non-empty nsec value",
                         bot.id
@@ -144,7 +145,7 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
                 }
             }
             SigningConfig::BunkerLocal { uri } => {
-                if uri.is_empty() {
+                if uri.expose_secret().is_empty() {
                     return Err(DaemonError::Config(format!(
                         "bot {}: bunker_local backend requires a non-empty uri",
                         bot.id
@@ -152,6 +153,7 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
                 }
             }
             SigningConfig::BunkerRemote { uri } => {
+                let uri = uri.expose_secret();
                 if uri.is_empty() {
                     return Err(DaemonError::Config(format!(
                         "bot {}: bunker_remote backend requires a non-empty uri",
@@ -373,7 +375,7 @@ signing = { backend = "nsec", nsec = "${PACT_TEST_NSEC}" }
         let config = DaemonConfig::load(&path).unwrap();
         match &config.bots[0].signing {
             SigningConfig::Nsec { nsec } => {
-                assert_eq!(nsec, "nsec1fromenv");
+                assert_eq!(nsec.expose_secret(), "nsec1fromenv");
             }
             _ => panic!("expected nsec backend"),
         }

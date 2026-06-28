@@ -16,5 +16,10 @@ node_modules/
 # Rust build artifacts
 /target
 
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
 # macOS
 .DS_Store

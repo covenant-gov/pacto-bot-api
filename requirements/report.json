@@ -1,0 +1,504 @@
+{
+  "generated_by": "scripts/generate_requirement_coverage.py",
+  "total_requirements": 37,
+  "covered_requirements": 37,
+  "uncovered_requirements": [],
+  "path_warnings": [],
+  "coverage": [
+    {
+      "id": "R1",
+      "summary": "The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACT_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler id...",
+      "tests": [
+        "tests/transport_unix.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/transport/unix.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R2",
+      "summary": "The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ...",
+      "tests": [
+        "tests/transport_http.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/transport/http.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R3",
+      "summary": "The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo...",
+      "tests": [
+        "tests/transport_unix.rs",
+        "tests/transport_http.rs"
+      ],
+      "sources": [
+        "src/transport/unix.rs",
+        "src/transport/http.rs",
+        "src/transport/mod.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R4",
+      "summary": "The API supports the full method catalog defined in the architecture doc \u00a77.7.4, adapted for daemon\u2192handler direction (see High-Level Technical Design).",
+      "tests": [
+        "tests/integration_test.rs",
+        "tests/dispatch_integration.rs"
+      ],
+      "sources": [
+        "src/transport/protocol.rs",
+        "src/transport/protocol_generated.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R5",
+      "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
+      "tests": [
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/client_manager.rs",
+        "src/bot_state.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R6",
+      "summary": "The daemon supports three signing backends per bot identity: (a) **local test key** \u2014 nsec hex in config or `PACT_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** \u2014 a bunker on t...",
+      "tests": [
+        "tests/admin_cli_bunker.rs",
+        "tests/secret_redaction.rs",
+        "tests/daemon_startup.rs"
+      ],
+      "sources": [
+        "src/signer.rs",
+        "src/nip46.rs",
+        "src/config.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R7",
+      "summary": "Bot identities are configured via a TOML config file (`pacto-bot-api.toml`) listing each bot's npub, signing backend (one of `nsec`, `bunker_local`, `bunker_remote`), relay list, and capabilities. ...",
+      "tests": [
+        "tests/admin_cli_migration.rs",
+        "tests/daemon_startup.rs",
+        "tests/cli_args.rs"
+      ],
+      "sources": [
+        "src/config.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R8",
+      "summary": "A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` \u2194 `npub` mapping, and duplicate `bot_id` values within a single config are a validati...",
+      "tests": [
+        "tests/daemon_startup.rs"
+      ],
+      "sources": [
+        "src/client_manager.rs",
+        "src/db.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R9",
+      "summary": "Bot identities are created and deleted only through the `pacto-bot-admin` CLI; the daemon runtime never creates or deletes identities.",
+      "tests": [
+        "tests/admin_cli_creation.rs"
+      ],
+      "sources": [
+        "src/admin.rs"
+      ],
+      "justification": "Daemon runtime exposes no create/delete identity endpoints; lifecycle is isolated in pacto-bot-admin.",
+      "covered": true
+    },
+    {
+      "id": "R10",
+      "summary": "Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co...",
+      "tests": [
+        "tests/admin_cli_migration.rs"
+      ],
+      "sources": [
+        "src/admin.rs",
+        "src/db.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R11",
+      "summary": "The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations.",
+      "tests": [
+        "tests/admin_cli_creation.rs"
+      ],
+      "sources": [
+        "src/main.rs",
+        "src/admin.rs"
+      ],
+      "justification": "Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods.",
+      "covered": true
+    },
+    {
+      "id": "R12",
+      "summary": "The daemon sends and receives NIP-17/44/59 DMs (gift wrap pipeline) for each registered bot identity.",
+      "tests": [
+        "tests/nostr_client.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/nostr.rs",
+        "src/bot_state.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R13",
+      "summary": "The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications.",
+      "tests": [
+        "tests/nostr_client.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/nostr.rs",
+        "src/dispatch.rs",
+        "src/events.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R14",
+      "summary": "Handlers send DM replies via `agent.send_dm` notifications to the daemon. The daemon encrypts, wraps, and publishes the gift wrap. The daemon verifies that the calling handler is authorized for the...",
+      "tests": [
+        "tests/dispatch_integration.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs",
+        "src/handlers.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R15",
+      "summary": "Handlers connect to the daemon and register via a `handler.register` JSON-RPC request, declaring which event types they handle and which bot identities they serve. The daemon assigns a server-gener...",
+      "tests": [
+        "tests/dispatch_integration.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/handlers.rs",
+        "src/transport/protocol.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R16",
+      "summary": "The daemon dispatches events to registered handlers based on event type and bot identity. A handler receives only events for bot identities it registered for. The daemon enforces per-call capabilit...",
+      "tests": [
+        "tests/dispatch_integration.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs",
+        "src/handlers.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R17",
+      "summary": "Multiple handlers can register for the same bot identity and event type. The daemon fans out events to all matching handlers.",
+      "tests": [
+        "tests/dispatch_integration.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R18",
+      "summary": "Handlers respond to `agent.event` notifications with one of: `ack`, `reply`, `defer`, or `ignore` (see API spec). The daemon enforces a per-handler rate limit of 10 mutating operations per second (...",
+      "tests": [
+        "tests/dispatch_integration.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R19",
+      "summary": "The daemon persists event cursors, handler registrations, and bot configuration in a SQLite database (`agent.db`) using WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`). The ...",
+      "tests": [
+        "tests/daemon_shutdown.rs",
+        "tests/admin_cli_migration.rs"
+      ],
+      "sources": [
+        "src/db.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R20",
+      "summary": "The daemon recovers state on restart: validates that stored npub values match the config, resets cursors for mismatched identities, and resumes event subscriptions from the last persisted cursor. C...",
+      "tests": [
+        "tests/daemon_startup.rs",
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/db.rs",
+        "src/client_manager.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R21",
+      "summary": "The daemon runs as a long-lived process. On first run it creates `$DATA_DIR` if it does not exist. It starts, acquires an exclusive file lock on `$DATA_DIR/daemon.lock` (exit if held), validates co...",
+      "tests": [
+        "tests/daemon_startup.rs",
+        "tests/cli_args.rs"
+      ],
+      "sources": [
+        "src/main.rs",
+        "src/config.rs",
+        "src/db.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R22",
+      "summary": "The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:\"shutting_down\"}`, closes relay and bunker connections, releases the lock file, ...",
+      "tests": [
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/main.rs",
+        "src/diagnostics.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R23",
+      "summary": "The daemon emits `agent.status` notifications to handlers on state transitions: `initializing`, `ready`, `shutting_down`, `stopped`.",
+      "tests": [
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/diagnostics.rs",
+        "src/transport/mod.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R24",
+      "summary": "**First-run setup.** If `$DATA_DIR` or the config file is missing, the daemon exits with an actionable error. The daemon logs the HTTP secret token path on first run when `--enable-http` is used; o...",
+      "tests": [
+        "tests/cli_args.rs",
+        "tests/daemon_startup.rs"
+      ],
+      "sources": [
+        "src/main.rs",
+        "src/config.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R25",
+      "summary": "**Config rotation.** Runtime editing of bot config (relay list, bunker URI, capabilities) requires a daemon restart in Phase 1. Hot reload via SIGHUP is deferred to Phase 3.",
+      "tests": [
+        "tests/daemon_startup.rs"
+      ],
+      "sources": [
+        "src/config.rs"
+      ],
+      "justification": "Static config model is enforced by design; no runtime reload path exists in Phase 1.",
+      "covered": true
+    },
+    {
+      "id": "R26",
+      "summary": "**Event delivery semantics.** The daemon provides best-effort delivery to currently connected handlers. If a handler crashes or disconnects before returning a terminal response, the event is not re...",
+      "tests": [
+        "tests/dispatch_integration.rs",
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R27",
+      "summary": "**Cursor advancement.** The event cursor advances only after all registered handlers have returned a terminal response (`ack`, `reply`, `ignore`) or the dispatch timeout has expired. This defines t...",
+      "tests": [
+        "tests/dispatch_integration.rs",
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs",
+        "src/db.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R28",
+      "summary": "**Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron...",
+      "tests": [
+        "tests/transport_unix.rs"
+      ],
+      "sources": [
+        "src/transport/unix.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R29",
+      "summary": "**State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti...",
+      "tests": [
+        "tests/admin_cli_migration.rs"
+      ],
+      "sources": [
+        "src/admin.rs"
+      ],
+      "justification": "Active split-brain detection is deferred to Phase 2; metadata warning is verified.",
+      "covered": true
+    },
+    {
+      "id": "R30",
+      "summary": "**Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing...",
+      "tests": [
+        "tests/dispatch_integration.rs"
+      ],
+      "sources": [
+        "src/dispatch.rs",
+        "src/handlers.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R31",
+      "summary": "**Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,...",
+      "tests": [
+        "tests/diagnostics.rs",
+        "tests/admin_cli_migration.rs"
+      ],
+      "sources": [
+        "src/diagnostics.rs",
+        "src/admin.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R32",
+      "summary": "**Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio...",
+      "tests": [
+        "tests/schema_sync.rs"
+      ],
+      "sources": [
+        "schemas/",
+        "src/config_generated.rs",
+        "src/metrics_generated.rs",
+        "src/transport/protocol_generated.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R33",
+      "summary": "**Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `...",
+      "tests": [
+        "tests/support/mock_relay.rs",
+        "tests/support/mock_bunker.rs",
+        "tests/integration_test.rs"
+      ],
+      "sources": [
+        "tests/support/"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R34",
+      "summary": "**Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite...",
+      "tests": [
+        "tests/secret_redaction.rs"
+      ],
+      "sources": [
+        "src/errors.rs",
+        "src/config.rs",
+        "src/transport/http.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R35",
+      "summary": "**Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing.",
+      "tests": [
+        "tests/diagnostics.rs",
+        "tests/admin_cli_migration.rs"
+      ],
+      "sources": [
+        "src/diagnostics.rs",
+        "src/admin.rs",
+        "src/metrics_generated.rs"
+      ],
+      "justification": null,
+      "covered": true
+    },
+    {
+      "id": "R36",
+      "summary": "**Service-version compatibility probing.** When running against `pacto-dev-env`, the daemon probes the versions of external services (relay, bunker, Nostra, Aztec) and warns when they fall outside ...",
+      "tests": [],
+      "sources": [],
+      "justification": "Service-version probing is a best-effort Phase 2 capability against pacto-dev-env; the xtask DevEnvProbe command is currently a placeholder and not wired into daemon startup.",
+      "covered": true
+    },
+    {
+      "id": "R37",
+      "summary": "**Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs...",
+      "tests": [
+        "tests/diagnostics.rs",
+        "tests/daemon_shutdown.rs"
+      ],
+      "sources": [
+        "src/diagnostics.rs",
+        "src/main.rs"
+      ],
+      "justification": null,
+      "covered": true
+    }
+  ]
+}

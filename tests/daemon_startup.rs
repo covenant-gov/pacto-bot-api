@@ -6,6 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 mod common;
+mod support;
 
 async fn spawn_until_ready(
     config: &Path,
@@ -33,6 +34,29 @@ async fn startup_succeeds_with_valid_config_and_acquires_lock()
     }
 
     common::shutdown_daemon(child).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+
+    let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("bunker-bot", true)?;
+    let bunker = support::mock_bunker::MockBunker::new(bunker_keys, vec![relay.url()]).await?;
+    let uri = bunker
+        .uri_from_relays(&[relay.url()])
+        .ok_or("mock bunker produced no URI")?;
+    common::set_bunker_uri(&mut bot, &uri);
+    bot.relays = vec![relay.url()];
+
+    let config = common::make_config(&dir, vec![bot])?;
+
+    let child = spawn_until_ready(&config).await?;
+    common::shutdown_daemon(child).await?;
+
+    bunker.stop().await;
+    relay.stop().await;
     Ok(())
 }
 

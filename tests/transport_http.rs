@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
-    message_handler(|msg| async move {
+    message_handler(|msg, _out_tx, _handler_id| async move {
         let id = msg.id().cloned().unwrap_or(Value::Null);
         Ok(Some(JsonRpcMessage::response(
             id,
@@ -58,6 +58,54 @@ async fn http_accepts_correct_secret() -> Result<(), Box<dyn std::error::Error>>
     assert!(
         response.contains("\"id\":7"),
         "response should echo request id"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_rejects_handler_register() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(
+        8.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+        })),
+    ))?;
+    let response = raw_http_post(port, Some(&token), &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert!(
+        response.contains("-32007") || response.contains("not supported"),
+        "response should indicate method not supported: {response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_rejects_handler_response() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(
+        9.into(),
+        "handler.response",
+        Some(serde_json::json!({
+            "event_id": "evt-123",
+            "action": "defer",
+        })),
+    ))?;
+    let response = raw_http_post(port, Some(&token), &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert!(
+        response.contains("-32007") || response.contains("not supported"),
+        "response should indicate method not supported: {response}"
     );
 
     let _ = shutdown_tx.send(());

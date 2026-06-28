@@ -15,7 +15,7 @@ fn test_socket_dir() -> Result<PathBuf, std::io::Error> {
 }
 
 fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
-    message_handler(|msg| async move {
+    message_handler(|msg, _out_tx, _handler_id| async move {
         let id = msg.id().cloned().unwrap_or(Value::Null);
         Ok(Some(JsonRpcMessage::response(
             id,

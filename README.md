@@ -91,6 +91,17 @@ pacto-bot-api/
 
 ## Status
 
-This project is in early implementation. The daemon currently loads config and exits cleanly; the real event loop, transports, and Nostr integration are under active development.
+Phase 1 of the daemon is implemented and passes its in-process test suite:
 
-See [`docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md`](docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md) for the full implementation plan.
+- Multi-bot static config loaded from `pacto-bot-api.toml`.
+- Full daemon event loop with Unix-socket and optional localhost HTTP transports.
+- NIP-17/44/59 DM send/receive over a shared `nostr-sdk` relay pool.
+- Three signing backends: dev-only `nsec`, local NIP-46 bunker, and remote NIP-46 bunker.
+- Handler registration, capability enforcement, fan-out dispatch, and per-handler/per-bot rate limits.
+- SQLite persistence with WAL mode, cursor recovery, and `export`/`import` via `pacto-bot-admin`.
+- Structured diagnostics, metrics, last-run reports, and a schema-first contract in `schemas/`.
+- Docker-free integration tests using in-process mock relay and bunker implementations.
+
+Phase 2 and beyond (MLS group participation, on-chain governance reads/writes, webhook delivery) are planned but not yet implemented.
+
+See [`docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md`](docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md) for the full implementation plan and roadmap.

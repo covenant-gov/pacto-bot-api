@@ -1,0 +1,155 @@
+{
+  "R1": {
+    "tests": ["tests/transport_unix.rs", "tests/integration_test.rs"],
+    "sources": ["src/transport/unix.rs"]
+  },
+  "R2": {
+    "tests": ["tests/transport_http.rs", "tests/integration_test.rs"],
+    "sources": ["src/transport/http.rs"]
+  },
+  "R3": {
+    "tests": ["tests/transport_unix.rs", "tests/transport_http.rs"],
+    "sources": ["src/transport/unix.rs", "src/transport/http.rs", "src/transport/mod.rs"]
+  },
+  "R4": {
+    "tests": ["tests/integration_test.rs", "tests/dispatch_integration.rs"],
+    "sources": ["src/transport/protocol.rs", "src/transport/protocol_generated.rs"]
+  },
+  "R5": {
+    "tests": ["tests/integration_test.rs"],
+    "sources": ["src/client_manager.rs", "src/bot_state.rs"]
+  },
+  "R6": {
+    "tests": ["tests/admin_cli_bunker.rs", "tests/secret_redaction.rs", "tests/daemon_startup.rs"],
+    "sources": ["src/signer.rs", "src/nip46.rs", "src/config.rs"]
+  },
+  "R7": {
+    "tests": ["tests/admin_cli_migration.rs", "tests/daemon_startup.rs", "tests/cli_args.rs"],
+    "sources": ["src/config.rs"]
+  },
+  "R8": {
+    "tests": ["tests/daemon_startup.rs"],
+    "sources": ["src/client_manager.rs", "src/db.rs"]
+  },
+  "R9": {
+    "tests": ["tests/admin_cli_creation.rs"],
+    "sources": ["src/admin.rs"],
+    "justification": "Daemon runtime exposes no create/delete identity endpoints; lifecycle is isolated in pacto-bot-admin."
+  },
+  "R10": {
+    "tests": ["tests/admin_cli_migration.rs"],
+    "sources": ["src/admin.rs", "src/db.rs"]
+  },
+  "R11": {
+    "tests": ["tests/admin_cli_creation.rs"],
+    "sources": ["src/main.rs", "src/admin.rs"],
+    "justification": "Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods."
+  },
+  "R12": {
+    "tests": ["tests/nostr_client.rs", "tests/integration_test.rs"],
+    "sources": ["src/nostr.rs", "src/bot_state.rs"]
+  },
+  "R13": {
+    "tests": ["tests/nostr_client.rs", "tests/integration_test.rs"],
+    "sources": ["src/nostr.rs", "src/dispatch.rs", "src/events.rs"]
+  },
+  "R14": {
+    "tests": ["tests/dispatch_integration.rs"],
+    "sources": ["src/dispatch.rs", "src/handlers.rs"]
+  },
+  "R15": {
+    "tests": ["tests/dispatch_integration.rs", "tests/integration_test.rs"],
+    "sources": ["src/handlers.rs", "src/transport/protocol.rs"]
+  },
+  "R16": {
+    "tests": ["tests/dispatch_integration.rs"],
+    "sources": ["src/dispatch.rs", "src/handlers.rs"]
+  },
+  "R17": {
+    "tests": ["tests/dispatch_integration.rs", "tests/integration_test.rs"],
+    "sources": ["src/dispatch.rs"]
+  },
+  "R18": {
+    "tests": ["tests/dispatch_integration.rs"],
+    "sources": ["src/dispatch.rs"]
+  },
+  "R19": {
+    "tests": ["tests/daemon_shutdown.rs", "tests/admin_cli_migration.rs"],
+    "sources": ["src/db.rs"]
+  },
+  "R20": {
+    "tests": ["tests/daemon_startup.rs", "tests/daemon_shutdown.rs"],
+    "sources": ["src/db.rs", "src/client_manager.rs"]
+  },
+  "R21": {
+    "tests": ["tests/daemon_startup.rs", "tests/cli_args.rs"],
+    "sources": ["src/main.rs", "src/config.rs", "src/db.rs"]
+  },
+  "R22": {
+    "tests": ["tests/daemon_shutdown.rs"],
+    "sources": ["src/main.rs", "src/diagnostics.rs"]
+  },
+  "R23": {
+    "tests": ["tests/daemon_shutdown.rs"],
+    "sources": ["src/diagnostics.rs", "src/transport/mod.rs"]
+  },
+  "R24": {
+    "tests": ["tests/cli_args.rs", "tests/daemon_startup.rs"],
+    "sources": ["src/main.rs", "src/config.rs"]
+  },
+  "R25": {
+    "tests": ["tests/daemon_startup.rs"],
+    "sources": ["src/config.rs"],
+    "justification": "Static config model is enforced by design; no runtime reload path exists in Phase 1."
+  },
+  "R26": {
+    "tests": ["tests/dispatch_integration.rs", "tests/daemon_shutdown.rs"],
+    "sources": ["src/dispatch.rs"]
+  },
+  "R27": {
+    "tests": ["tests/dispatch_integration.rs", "tests/daemon_shutdown.rs"],
+    "sources": ["src/dispatch.rs", "src/db.rs"]
+  },
+  "R28": {
+    "tests": ["tests/transport_unix.rs"],
+    "sources": ["src/transport/unix.rs"]
+  },
+  "R29": {
+    "tests": ["tests/admin_cli_migration.rs"],
+    "sources": ["src/admin.rs"],
+    "justification": "Active split-brain detection is deferred to Phase 2; metadata warning is verified."
+  },
+  "R30": {
+    "tests": ["tests/dispatch_integration.rs"],
+    "sources": ["src/dispatch.rs", "src/handlers.rs"]
+  },
+  "R31": {
+    "tests": ["tests/diagnostics.rs", "tests/admin_cli_migration.rs"],
+    "sources": ["src/diagnostics.rs", "src/admin.rs"]
+  },
+  "R32": {
+    "tests": ["tests/schema_sync.rs"],
+    "sources": ["schemas/", "src/config_generated.rs", "src/metrics_generated.rs", "src/transport/protocol_generated.rs"]
+  },
+  "R33": {
+    "tests": ["tests/support/mock_relay.rs", "tests/support/mock_bunker.rs", "tests/integration_test.rs"],
+    "sources": ["tests/support/"]
+  },
+  "R34": {
+    "tests": ["tests/secret_redaction.rs"],
+    "sources": ["src/errors.rs", "src/config.rs", "src/transport/http.rs"]
+  },
+  "R35": {
+    "tests": ["tests/diagnostics.rs", "tests/admin_cli_migration.rs"],
+    "sources": ["src/diagnostics.rs", "src/admin.rs", "src/metrics_generated.rs"]
+  },
+  "R36": {
+    "tests": [],
+    "sources": [],
+    "justification": "Service-version probing is a best-effort Phase 2 capability against pacto-dev-env; the xtask DevEnvProbe command is currently a placeholder and not wired into daemon startup."
+  },
+  "R37": {
+    "tests": ["tests/diagnostics.rs", "tests/daemon_shutdown.rs"],
+    "sources": ["src/diagnostics.rs", "src/main.rs"]
+  }
+}

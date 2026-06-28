@@ -179,7 +179,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 - When generating config examples, enforce `0o600` permissions and warn against committing real nsec values.
 - Prefer deterministic, Docker-free tests; gate external-service tests behind `#[ignore]`.
 
-<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
 This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
@@ -223,6 +223,7 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
    # Team-maintainer opt-in only, unless current instructions forbid it:
    git pull --rebase
+   bd dolt push
    git push
    git status
    ```

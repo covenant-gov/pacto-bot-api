@@ -1,4 +1,5 @@
 mod codegen;
+mod coverage;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -19,6 +20,8 @@ enum Command {
     FullCheck,
     /// Probe external dev-env services (placeholder).
     DevEnvProbe,
+    /// Generate and validate the requirement-coverage report.
+    Coverage,
 }
 
 fn main() -> Result<()> {
@@ -34,5 +37,6 @@ fn main() -> Result<()> {
             println!("dev-env-probe: not yet implemented");
             Ok(())
         }
+        Command::Coverage => coverage::run(),
     }
 }

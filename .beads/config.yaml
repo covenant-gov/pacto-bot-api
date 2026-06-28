@@ -3,4 +3,6 @@ repos:
   additional:
     - "/Users/opselite/.beads-planning"
 
-export.auto: true
+export.auto: false
+
+federation.remote: "https://doltremoteapi.dolthub.com/opselite/pacto-bot-api"

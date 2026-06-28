@@ -6,10 +6,11 @@ use crate::transport::protocol::{
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// Unix domain socket transport for JSON-RPC handlers.
 #[derive(Debug)]
@@ -140,56 +141,103 @@ async fn handle_connection(
     max_frame_size: usize,
     idle_timeout: Duration,
 ) -> Result<(), DaemonError> {
-    let (reader, mut writer) = stream.into_split();
+    let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut buf = Vec::new();
 
-    loop {
-        buf.clear();
-        let read_future = reader.read_until(b'\n', &mut buf);
-        let n = match tokio::time::timeout(idle_timeout, read_future).await {
-            Ok(Ok(n)) => n,
-            Ok(Err(e)) => return Err(DaemonError::Io(e)),
-            Err(_) => return Ok(()),
-        };
+    // Bounded outbound buffer: responses await room (backpressure on a slow
+    // peer), while async notifications are dropped when the buffer is full so
+    // the dispatcher never blocks on a non-reading handler.
+    const OUTBOUND_BUFFER: usize = 128;
+    let (out_tx, mut out_rx) = mpsc::channel::<JsonRpcMessage>(OUTBOUND_BUFFER);
+    let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-        if n == 0 {
-            // Peer closed the connection cleanly.
-            return Ok(());
+    // Writer task: forwards outbound messages to the socket.
+    let writer_handle = tokio::spawn(async move {
+        let mut writer = writer;
+        while let Some(msg) = out_rx.recv().await {
+            if write_message(&mut writer, &msg).await.is_err() {
+                break;
+            }
         }
+    });
 
-        if buf.len() > max_frame_size {
-            // Oversized frame: drop the connection per R3.
-            return Ok(());
-        }
+    // Run the read loop in a scoped async block so `out_tx` is dropped before
+    // we await the writer task. Otherwise a connection teardown can hang the
+    // writer, which is blocked waiting for outbound messages.
+    let result = async move {
+        loop {
+            buf.clear();
+            let read_future = reader.read_until(b'\n', &mut buf);
+            let n = match tokio::time::timeout(idle_timeout, read_future).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(DaemonError::Io(e)),
+                Err(_) => return Ok(()),
+            };
 
-        // Strip the trailing newline for parsing.
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        }
-        if buf.is_empty() {
-            continue;
-        }
+            if n == 0 {
+                // Peer closed the connection cleanly.
+                return Ok(());
+            }
 
-        let line = String::from_utf8(buf.clone())
-            .map_err(|_| DaemonError::Config("frame is not valid UTF-8".into()))?;
+            if buf.len() > max_frame_size {
+                // Oversized frame: drop the connection per R3.
+                return Ok(());
+            }
 
-        let response = match parse_message(&line) {
-            Ok(msg) => {
-                let id = msg.id().cloned();
-                match handler(msg).await {
-                    Ok(resp) => resp,
-                    Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+            // Strip the trailing newline for parsing.
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+            if buf.is_empty() {
+                continue;
+            }
+
+            let line = String::from_utf8(buf.clone())
+                .map_err(|_| DaemonError::Config("frame is not valid UTF-8".into()))?;
+
+            let response = match parse_message(&line) {
+                Ok(msg) => {
+                    let id = msg.id().cloned();
+                    let current_handler_id = handler_id.lock().await.clone();
+                    match handler(msg, out_tx.clone(), current_handler_id).await {
+                        Ok(resp) => resp,
+                        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+                    }
+                }
+                Err(e) => Some(JsonRpcMessage::error(serde_json::Value::Null, e.into())),
+            };
+
+            if let Some(JsonRpcMessage::Response {
+                result: Some(r), ..
+            }) = &response
+            {
+                // If this is a successful handler.register response, remember the
+                // handler id so subsequent calls on this connection are authorized.
+                if let Some(id) = r.get("handler_id").and_then(|v| v.as_str()) {
+                    *handler_id.lock().await = Some(id.to_string());
                 }
             }
-            Err(e) => Some(JsonRpcMessage::error(serde_json::Value::Null, e.into())),
-        };
 
-        if let Some(resp) = response {
-            let line = serialize_message(&resp)?;
-            writer.write_all(line.as_bytes()).await?;
-            writer.write_all(b"\n").await?;
-            writer.flush().await?;
+            if let Some(resp) = response {
+                if out_tx.send(resp).await.is_err() {
+                    return Ok(());
+                }
+            }
         }
     }
+    .await;
+
+    let _ = writer_handle.await;
+    result
+}
+
+async fn write_message(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    msg: &JsonRpcMessage,
+) -> Result<(), std::io::Error> {
+    let line = serialize_message(msg).map_err(|e| std::io::Error::other(e.to_string()))?;
+    writer.write_all(line.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await
 }

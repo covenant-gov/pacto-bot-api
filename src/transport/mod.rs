@@ -18,23 +18,39 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
 /// Handler closure that processes an incoming JSON-RPC message and optionally
 /// returns a response.
+///
+/// The transport provides an outbound sender so that the dispatch layer can
+/// wire live handler connections (e.g. for `agent.event` notifications). The
+/// `handler_id` argument is the server-generated id for connections that have
+/// already completed `handler.register`; it is `None` before registration.
 pub type MessageHandler = Arc<
-    dyn Fn(JsonRpcMessage) -> BoxFuture<Result<Option<JsonRpcMessage>, DaemonError>> + Send + Sync,
+    dyn Fn(
+            JsonRpcMessage,
+            mpsc::Sender<JsonRpcMessage>,
+            Option<String>,
+        ) -> BoxFuture<Result<Option<JsonRpcMessage>, DaemonError>>
+        + Send
+        + Sync,
 >;
 
 /// A request routed from a transport to the dispatch sink.
 type DispatchRequest = (
     JsonRpcMessage,
+    Option<mpsc::Sender<JsonRpcMessage>>,
+    Option<String>,
     oneshot::Sender<Result<Option<JsonRpcMessage>, DaemonError>>,
 );
 
 /// Wrap a closure as a [`MessageHandler`].
 pub fn message_handler<F, Fut>(f: F) -> MessageHandler
 where
-    F: Fn(JsonRpcMessage) -> Fut + Send + Sync + 'static,
+    F: Fn(JsonRpcMessage, mpsc::Sender<JsonRpcMessage>, Option<String>) -> Fut
+        + Send
+        + Sync
+        + 'static,
     Fut: Future<Output = Result<Option<JsonRpcMessage>, DaemonError>> + Send + 'static,
 {
-    Arc::new(move |msg| Box::pin(f(msg)))
+    Arc::new(move |msg, out_tx, handler_id| Box::pin(f(msg, out_tx, handler_id)))
 }
 
 /// Combined transport layer exposing JSON-RPC over Unix socket and localhost HTTP.
@@ -74,11 +90,11 @@ impl TransportLayer {
     ) -> Result<(), DaemonError> {
         let (msg_tx, msg_rx) = mpsc::channel::<DispatchRequest>(256);
 
-        let handler = message_handler(move |msg| {
+        let handler = message_handler(move |msg, out_tx, handler_id| {
             let tx = msg_tx.clone();
             async move {
                 let (resp_tx, resp_rx) = oneshot::channel();
-                tx.send((msg, resp_tx))
+                tx.send((msg, Some(out_tx), handler_id, resp_tx))
                     .await
                     .map_err(|_| DaemonError::Config("dispatch sink closed".into()))?;
                 resp_rx
@@ -145,9 +161,11 @@ async fn dispatch_consumer(
     dispatch: Arc<Dispatch>,
     mut rx: mpsc::Receiver<DispatchRequest>,
 ) -> Result<(), DaemonError> {
-    while let Some((msg, tx)) = rx.recv().await {
-        let resp = dispatch.handle_message(msg, None).await;
-        let _ = tx.send(resp);
+    while let Some((msg, out_tx, handler_id, resp_tx)) = rx.recv().await {
+        let resp = dispatch
+            .handle_message(msg, handler_id.as_deref(), out_tx)
+            .await;
+        let _ = resp_tx.send(resp);
     }
     Ok(())
 }

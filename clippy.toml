@@ -17,3 +17,17 @@ large-error-threshold = 256
 
 # Encourage documentation.
 missing-docs-in-crate-items = false
+
+# Secret-hygiene policy:
+# Sensitive values (nsec, bunker URI, HTTP secret token) must be represented
+# with secrecy::SecretString or zeroize::Zeroizing, never a plain String/&str.
+# SigningConfig now enforces this at the type level; the disallowed-names list
+# below catches obviously unsafe placeholder identifiers.
+disallowed-names = [
+    "raw_nsec",
+    "plain_nsec",
+    "raw_token",
+    "plain_token",
+    "raw_bunker_uri",
+    "plain_bunker_uri",
+]

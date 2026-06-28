@@ -1,7 +1,7 @@
 use crate::errors::DaemonError;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
-    JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message,
+    JsonRpcMessage, MAX_FRAME_BYTES, Method, parse_message, parse_method, serialize_message,
 };
 use axum::Router;
 use axum::body::Bytes;
@@ -154,9 +154,30 @@ async fn http_handler(
         let response = match parse_message(line) {
             Ok(msg) => {
                 let id = msg.id().cloned();
-                match (state.handler)(msg).await {
-                    Ok(resp) => resp,
-                    Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+                let method_name = msg.method().map(|s| s.to_string());
+
+                // HTTP is request/response only.  Registration and handler
+                // responses require a persistent outbound channel for async
+                // daemon→handler notifications; creating them over HTTP would
+                // leave a dead registration that dispatch can never reach.
+                if matches!(
+                    method_name.as_deref().and_then(|m| parse_method(m).ok()),
+                    Some(Method::HandlerRegister) | Some(Method::HandlerResponse)
+                ) {
+                    let err = method_name.map_or_else(
+                        || DaemonError::MethodNotFound,
+                        DaemonError::MethodNotSupported,
+                    );
+                    id.map(|id| JsonRpcMessage::error(id, err.into()))
+                } else {
+                    // No persistent connection over which the daemon can push
+                    // async notifications, so we pass a disconnected outbound
+                    // sender and no handler id.
+                    let (out_tx, _out_rx) = tokio::sync::mpsc::channel(1);
+                    match (state.handler)(msg, out_tx, None).await {
+                        Ok(resp) => resp,
+                        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+                    }
                 }
             }
             Err(e) => Some(JsonRpcMessage::error(Value::Null, e.into())),

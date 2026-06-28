@@ -1,10 +1,13 @@
 use crate::bot_state::BotState;
 use crate::config::DaemonConfig;
 use crate::errors::DaemonError;
+
 use crate::handlers::HandlerRegistry;
 use crate::nostr::NostrClient;
 use crate::signer::Signer;
 use nostr::PublicKey;
+#[cfg(test)]
+use secrecy::SecretString;
 use std::collections::HashMap;
 
 /// Manages multiple bot identities and provides npub/bot_id lookups.
@@ -105,7 +108,7 @@ mod tests {
             id: id.into(),
             npub: keys.public_key().to_bech32().unwrap(),
             signing: SigningConfig::Nsec {
-                nsec: keys.secret_key().to_bech32().unwrap(),
+                nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
             },
             relays: vec![],
             capabilities: vec!["ReadMessages".into()],
@@ -192,7 +195,13 @@ mod tests {
                 id: "bad-bot".into(),
                 npub: "not-a-valid-npub".into(),
                 signing: SigningConfig::Nsec {
-                    nsec: nostr::Keys::generate().secret_key().to_bech32().unwrap(),
+                    nsec: SecretString::new(
+                        nostr::Keys::generate()
+                            .secret_key()
+                            .to_bech32()
+                            .unwrap()
+                            .into(),
+                    ),
                 },
                 relays: vec![],
                 capabilities: vec![],
@@ -212,7 +221,7 @@ mod tests {
         let bot_cfg = bot_config("auth-bot", &keys);
         let mut manager = manager_with_bots(vec![bot_cfg.clone()]);
 
-        let (tx, _rx) = mpsc::unbounded_channel::<crate::transport::protocol::JsonRpcMessage>();
+        let (tx, _rx) = mpsc::channel::<crate::transport::protocol::JsonRpcMessage>(1);
         let handler_id = manager
             .handler_registry
             .register(
