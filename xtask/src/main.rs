@@ -1,3 +1,5 @@
+mod codegen;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -23,10 +25,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Codegen => {
-            println!("codegen: schema generation is not yet implemented");
-            Ok(())
-        }
+        Command::Codegen => codegen::run(),
         Command::FullCheck => {
             println!("full-check: not yet implemented");
             Ok(())
