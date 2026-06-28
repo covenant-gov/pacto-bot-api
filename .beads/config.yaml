@@ -4,3 +4,5 @@ repos:
     - "/Users/opselite/.beads-planning"
 
 export.auto: true
+
+sync.remote: "git+ssh://git@github.com/logicminds/pacto-bot-api.git"
