@@ -12,6 +12,12 @@ pub struct DaemonConfigGenerated {
     /// http_bind
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_bind: Option<String>,
+    /// Idle timeout for HTTP keep-alive connections in seconds
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_idle_timeout_secs: Option<u64>,
+    /// Maximum concurrent HTTP connections
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_max_connections: Option<u64>,
     /// socket_path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<String>,

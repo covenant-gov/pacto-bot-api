@@ -1,5 +1,7 @@
 mod codegen;
 mod coverage;
+mod dev_env_probe;
+mod secret_lint;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -16,12 +18,14 @@ struct Cli {
 enum Command {
     /// Run schema/code generation tasks.
     Codegen,
-    /// Run the full verification suite (placeholder).
+    /// Run the full verification suite.
     FullCheck,
     /// Probe external dev-env services (placeholder).
     DevEnvProbe,
     /// Generate and validate the requirement-coverage report.
     Coverage,
+    /// Lint production source for plain-string secret fields.
+    SecretLint,
 }
 
 fn main() -> Result<()> {
@@ -30,13 +34,14 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Codegen => codegen::run(),
         Command::FullCheck => {
-            println!("full-check: not yet implemented");
+            secret_lint::run()?;
+            codegen::run()?;
+            coverage::run()?;
+            println!("full-check: ok");
             Ok(())
         }
-        Command::DevEnvProbe => {
-            println!("dev-env-probe: not yet implemented");
-            Ok(())
-        }
+        Command::DevEnvProbe => dev_env_probe::run(),
         Command::Coverage => coverage::run(),
+        Command::SecretLint => secret_lint::run(),
     }
 }

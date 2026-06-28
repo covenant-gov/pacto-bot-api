@@ -18,6 +18,7 @@ pub fn run() -> Result<()> {
     generate_config(&schemas_dir, &root)?;
     generate_protocol(&schemas_dir, &root)?;
     generate_metrics(&schemas_dir, &root)?;
+    generate_service_compatibility(&schemas_dir, &root)?;
 
     println!("codegen: generated Rust types from schemas/");
     Ok(())
@@ -65,7 +66,7 @@ fn generate_config(schemas_dir: &Path, root: &Path) -> Result<()> {
 }
 
 fn generate_protocol(schemas_dir: &Path, root: &Path) -> Result<()> {
-    let schema: Value = read_schema(schemas_dir, "jsonrpc.json")?;
+    let _schema: Value = read_schema(schemas_dir, "jsonrpc.json")?;
     let mut out = String::new();
     out.push_str("//! Generated from schemas/jsonrpc.json — do not edit manually.\n");
     out.push_str("//! Run `cargo xtask codegen` to regenerate.\n\n");
@@ -74,17 +75,49 @@ fn generate_protocol(schemas_dir: &Path, root: &Path) -> Result<()> {
 
     out.push_str("/// JSON-RPC method catalog entry.\n");
     out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
-    out.push_str("pub struct JsonRpcMethod {\n");
+    out.push_str("pub struct JsonRpcMethodGenerated {\n");
     out.push_str("    /// Method name (e.g. `handler.register`).\n");
     out.push_str("    pub name: String,\n");
-    out.push_str("    /// Parameter schema fragments.\n");
-    out.push_str("    pub params: Option<Value>,\n");
-    out.push_str("    /// Result schema fragment.\n");
-    out.push_str("    pub result: Option<Value>,\n");
+    out.push_str("    /// Human-readable summary.\n");
+    out.push_str("    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n");
+    out.push_str("    pub summary: Option<String>,\n");
+    out.push_str("    /// Parameter schemas (by-name JSON-RPC style).\n");
+    out.push_str("    #[serde(default)]\n");
+    out.push_str("    pub params: Vec<JsonRpcParamGenerated>,\n");
+    out.push_str("    /// Result schema, when the method returns a value.\n");
+    out.push_str("    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n");
+    out.push_str("    pub result: Option<JsonRpcResultGenerated>,\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Named parameter schema for a JSON-RPC method.\n");
+    out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+    out.push_str("pub struct JsonRpcParamGenerated {\n");
+    out.push_str("    /// Outer key used on the wire (`params` for by-name).\n");
+    out.push_str("    pub name: String,\n");
+    out.push_str("    /// JSON Schema fragment for the parameter object.\n");
+    out.push_str("    pub schema: Value,\n");
+    out.push_str("}\n\n");
+
+    out.push_str("/// Result schema for a JSON-RPC method.\n");
+    out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+    out.push_str("pub struct JsonRpcResultGenerated {\n");
+    out.push_str("    /// Descriptive name for the result payload.\n");
+    out.push_str("    pub name: String,\n");
+    out.push_str("    /// JSON Schema fragment for the result value.\n");
+    out.push_str("    pub schema: Value,\n");
     out.push_str("}\n\n");
 
     out.push_str("/// JSON-RPC catalog container.\n");
-    emit_struct(&mut out, "JsonRpcCatalogGenerated", &schema)?;
+    out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+    out.push_str("pub struct JsonRpcCatalogGenerated {\n");
+    out.push_str("    /// OpenRPC version.\n");
+    out.push_str("    pub openrpc: String,\n");
+    out.push_str("    /// Catalog metadata.\n");
+    out.push_str("    #[serde(default, skip_serializing_if = \"Option::is_none\")]\n");
+    out.push_str("    pub info: Option<Value>,\n");
+    out.push_str("    /// Registered JSON-RPC methods.\n");
+    out.push_str("    pub methods: Vec<JsonRpcMethodGenerated>,\n");
+    out.push_str("}\n\n");
 
     let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/transport/protocol_generated.rs"), out)?;
@@ -97,11 +130,58 @@ fn generate_metrics(schemas_dir: &Path, root: &Path) -> Result<()> {
     out.push_str("//! Generated from schemas/metrics.json — do not edit manually.\n");
     out.push_str("//! Run `cargo xtask codegen` to regenerate.\n\n");
     out.push_str("use serde::{Deserialize, Serialize};\n\n");
+
+    // Emit any named definitions referenced by $ref first.
+    if let Some(defs) = schema["definitions"].as_object() {
+        for (def_name, def_schema) in defs {
+            let rust_name = format!("{}Generated", to_pascal_case(def_name));
+            out.push_str(&format!(
+                "/// Generated from `#/definitions/{}`.\n",
+                def_name
+            ));
+            emit_struct(&mut out, &rust_name, def_schema)?;
+        }
+    }
+
     out.push_str("/// Metrics payload generated from schemas/metrics.json.\n");
     emit_struct(&mut out, "MetricsPayloadGenerated", &schema)?;
 
     let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/metrics_generated.rs"), out)?;
+    Ok(())
+}
+
+fn generate_service_compatibility(schemas_dir: &Path, root: &Path) -> Result<()> {
+    let schema: Value = read_schema(schemas_dir, "service-compatibility.json")?;
+    let mut out = String::new();
+    out.push_str("//! Generated from schemas/service-compatibility.json — do not edit manually.\n");
+    out.push_str("//! Run `cargo xtask codegen` to regenerate.\n\n");
+    out.push_str("use serde::{Deserialize, Serialize};\n\n");
+
+    // Emit any named definitions referenced by $ref first.
+    if let Some(defs) = schema["definitions"].as_object() {
+        for (def_name, def_schema) in defs {
+            let rust_name = format!("{}Generated", to_pascal_case(def_name));
+            out.push_str(&format!(
+                "/// Generated from `#/definitions/{}`.\n",
+                def_name
+            ));
+            emit_struct_with_derives(&mut out, &rust_name, def_schema, &["PartialEq", "Eq"])?;
+        }
+    }
+
+    out.push_str(
+        "/// Service compatibility windows generated from schemas/service-compatibility.json.\n",
+    );
+    emit_struct_with_derives(
+        &mut out,
+        "ServiceCompatibilityGenerated",
+        &schema,
+        &["PartialEq", "Eq"],
+    )?;
+
+    let out = out.trim_end().to_string() + "\n";
+    fs::write(root.join("src/service_compatibility_generated.rs"), out)?;
     Ok(())
 }
 
@@ -113,7 +193,21 @@ fn read_schema(schemas_dir: &Path, name: &str) -> Result<Value> {
 }
 
 fn emit_struct(out: &mut String, name: &str, schema: &Value) -> Result<()> {
-    out.push_str("#[derive(Debug, Clone, Default, Serialize, Deserialize)]\n");
+    emit_struct_with_derives(out, name, schema, &[])
+}
+
+fn emit_struct_with_derives(
+    out: &mut String,
+    name: &str,
+    schema: &Value,
+    extra_derives: &[&str],
+) -> Result<()> {
+    out.push_str("#[derive(Debug, Clone, Default, Serialize, Deserialize");
+    for d in extra_derives {
+        out.push_str(", ");
+        out.push_str(d);
+    }
+    out.push_str(")]\n");
     out.push_str(&format!("pub struct {} {{\n", name));
 
     let props = schema["properties"]
@@ -151,6 +245,15 @@ fn emit_struct(out: &mut String, name: &str, schema: &Value) -> Result<()> {
 }
 
 fn schema_type_to_rust(schema: &Value) -> Result<String> {
+    // Resolve a local `$ref` to the referenced definition.
+    if let Some(reference) = schema["$ref"].as_str() {
+        let def_name = reference
+            .strip_prefix("#/definitions/")
+            .or_else(|| reference.strip_prefix("#/components/schemas/"))
+            .with_context(|| format!("unsupported $ref: {reference}"))?;
+        return Ok(format!("{}Generated", to_pascal_case(def_name)));
+    }
+
     let typ = schema["type"].as_str().unwrap_or("object");
     match typ {
         "string" => Ok("String".into()),
@@ -167,6 +270,22 @@ fn schema_type_to_rust(schema: &Value) -> Result<String> {
         }
         _ => Ok("serde_json::Value".into()),
     }
+}
+
+fn to_pascal_case(s: &str) -> String {
+    let mut out = String::new();
+    let mut upper = true;
+    for ch in s.chars() {
+        if ch == '_' || ch == '-' {
+            upper = true;
+        } else if upper {
+            out.push(ch.to_ascii_uppercase());
+            upper = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn to_snake_case(s: &str) -> String {

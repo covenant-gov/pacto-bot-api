@@ -26,6 +26,8 @@ REPORT_MD_PATH = REPO_ROOT / "requirements" / "report.md"
 REPORT_JSON_PATH = REPO_ROOT / "requirements" / "report.json"
 
 REQUIREMENT_RE = re.compile(r"^- (R\d+)\.\s+(.*)$")
+REQ_ATTR_RE = re.compile(r"#\[req\(([^)]*)\)\]")
+REQ_COMMENT_RE = re.compile(r"///*\s*req\(([^)]*)\)")
 
 
 def parse_requirements(plan_text: str) -> dict[str, str]:
@@ -59,6 +61,40 @@ def load_mapping(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
+def _split_req_ids(payload: str) -> list[str]:
+    r"""Return valid R\d+ IDs found in a `req(...)` payload."""
+    ids: list[str] = []
+    for part in payload.split(","):
+        part = part.strip()
+        if re.fullmatch(r"R\d+", part):
+            ids.append(part)
+    return ids
+
+
+def parse_test_tags(tests_dir: Path) -> dict[str, list[str]]:
+    """Parse req(...) tags from test source files.
+
+    Returns a mapping from requirement ID to the list of test files (relative to
+    the repo root) that tag it.
+    """
+    tags: dict[str, list[str]] = {}
+    if not tests_dir.exists():
+        return tags
+
+    for path in sorted(tests_dir.glob("*.rs")):
+        text = path.read_text(encoding="utf-8")
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        ids: set[str] = set()
+        for match in REQ_ATTR_RE.finditer(text):
+            ids.update(_split_req_ids(match.group(1)))
+        for match in REQ_COMMENT_RE.finditer(text):
+            ids.update(_split_req_ids(match.group(1)))
+        for req_id in sorted(ids):
+            tags.setdefault(req_id, []).append(rel)
+
+    return tags
+
+
 def normalize_coverage(req_id: str, entry: Any) -> dict[str, Any]:
     """Return a normalized coverage entry with defaults."""
     if entry is None:
@@ -84,7 +120,11 @@ def verify_paths(req_id: str, paths: list[str]) -> list[str]:
     return warnings
 
 
-def build_report(requirements: dict[str, str], mapping: dict[str, Any]) -> dict[str, Any]:
+def build_report(
+    requirements: dict[str, str],
+    mapping: dict[str, Any],
+    parsed_tags: dict[str, list[str]],
+) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     uncovered: list[str] = []
     warnings: list[str] = []
@@ -94,7 +134,10 @@ def build_report(requirements: dict[str, str], mapping: dict[str, Any]) -> dict[
         raw = mapping.get(req_id)
         cov = normalize_coverage(req_id, raw)
 
-        has_tests = bool(cov["tests"])
+        parsed_tests = parsed_tags.get(req_id, [])
+        merged_tests = list(dict.fromkeys(cov["tests"] + parsed_tests))
+
+        has_tests = bool(merged_tests)
         has_sources = bool(cov["sources"])
         has_justification = bool(cov["justification"])
         covered = has_tests or has_sources or has_justification
@@ -108,7 +151,8 @@ def build_report(requirements: dict[str, str], mapping: dict[str, Any]) -> dict[
             {
                 "id": req_id,
                 "summary": summary,
-                "tests": cov["tests"],
+                "tests": merged_tests,
+                "parsed_tests": parsed_tests,
                 "sources": cov["sources"],
                 "justification": cov["justification"],
                 "covered": covered,
@@ -163,6 +207,22 @@ def write_markdown(report: dict[str, Any]) -> None:
             lines.append(f"- **{req_id}** — {entry['summary']}")
         lines.append("")
 
+    auto_covered = [e for e in report["coverage"] if e["parsed_tests"]]
+    if auto_covered:
+        lines.extend(
+            [
+                "## Auto-detected Test Tags",
+                "",
+                "The following requirements were tagged directly in test source files:",
+                "",
+            ]
+        )
+        for entry in auto_covered:
+            lines.append(
+                f"- **{entry['id']}** — " + ", ".join(entry["parsed_tests"])
+            )
+        lines.append("")
+
     if report["path_warnings"]:
         lines.extend(
             [
@@ -179,7 +239,7 @@ def write_markdown(report: dict[str, Any]) -> None:
             "## Coverage by Requirement",
             "",
             "| ID | Summary | Tests | Sources | Justification | Status |",
-            "|---|---|---|---|---|---|",
+            "|---|---|---|---|---|---|---|",
         ]
     )
 
@@ -217,8 +277,9 @@ def main() -> int:
         return 1
 
     mapping = load_mapping(MAPPING_PATH) if MAPPING_PATH.exists() else {}
+    parsed_tags = parse_test_tags(REPO_ROOT / "tests")
 
-    report = build_report(requirements, mapping)
+    report = build_report(requirements, mapping, parsed_tags)
     write_json(report)
     write_markdown(report)
 
