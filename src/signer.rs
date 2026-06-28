@@ -2,7 +2,8 @@
 //!
 //! The daemon supports three progressive-trust signing backends:
 //!
-//! * `LocalKey` — dev-only raw `nsec` in memory, cleared on drop via `zeroize`.
+//! * `LocalKey` — dev-only raw `nsec` in memory. Secret clearing depends on the
+//!   underlying `nostr::Keys` implementation; do not assume active zeroization.
 //! * `BunkerLocal` — NIP-46 bunker on the same machine.
 //! * `BunkerRemote` — production NIP-46 bunker over `wss://`.
 //!
@@ -101,9 +102,9 @@ impl Signer for SignerBackend {
     }
 }
 
-/// Dev-only local nsec signer with `zeroize` clearing on drop.
+/// Dev-only local nsec signer.
 pub struct LocalKey {
-    /// The parsed nostr keys. Wrapped so `zeroize` clears secret bytes on drop.
+    /// The parsed nostr keys.
     keys: ZeroizingKeys,
 }
 
@@ -141,7 +142,10 @@ impl Signer for LocalKey {
     }
 }
 
-/// Newtype around `Keys` so we can implement `ZeroizeOnDrop`.
+/// Newtype around `Keys` that documents the local key is retained in memory.
+///
+/// `#[zeroize(skip)]` means the inner `Keys` bytes are not cleared by this
+/// wrapper; any clearing depends on `nostr::Keys` internals.
 #[derive(Zeroize, ZeroizeOnDrop)]
 struct ZeroizingKeys(#[zeroize(skip)] Keys);
 

@@ -99,24 +99,28 @@ impl TransportLayer {
         let unix_handle =
             tokio::spawn(async move { unix.run(handler_for_unix, unix_shutdown_rx).await });
 
+        let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel();
         let http_handle: Option<tokio::task::JoinHandle<Result<(), DaemonError>>> =
             if self.enable_http {
                 let http = http::HttpTransport::new(&self.http_bind, &self.data_dir)
                     .with_max_frame_size(self.max_frame_size);
-                let (http_shutdown_tx, http_shutdown_rx) = oneshot::channel();
+                let handler_for_http = handler.clone();
                 Some(tokio::spawn(async move {
-                    let result = http.run(handler, http_shutdown_rx).await;
-                    drop(http_shutdown_tx);
-                    result
+                    http.run(handler_for_http, http_shutdown_rx).await
                 }))
             } else {
                 None
             };
 
+        // Drop the last clone of the handler held in this scope so the dispatch
+        // channel can close once the transports shut down.
+        drop(handler);
+
         // Wait for the external shutdown signal.
         let _ = shutdown.await;
 
         let _ = unix_shutdown_tx.send(());
+        let _ = http_shutdown_tx.send(());
 
         let unix_res = unix_handle
             .await

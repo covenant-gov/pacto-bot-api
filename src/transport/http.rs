@@ -83,6 +83,16 @@ impl HttpTransport {
         handler: MessageHandler,
         shutdown: oneshot::Receiver<()>,
     ) -> Result<(), DaemonError> {
+        let addr = listener.local_addr().map_err(|e| {
+            DaemonError::Config(format!("failed to read listener local address: {e}"))
+        })?;
+        if !addr.ip().is_loopback() {
+            return Err(DaemonError::Config(format!(
+                "HTTP listener must be loopback-only, got {}",
+                addr
+            )));
+        }
+
         let token = load_or_create_token(&self.data_dir).await?;
 
         let state = AppState {
@@ -190,7 +200,19 @@ async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonErr
     let path = data_dir.join("bot_secret_token");
 
     match tokio::fs::metadata(&path).await {
-        Ok(_) => {}
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    return Err(DaemonError::Config(format!(
+                        "HTTP secret token file {} has overly permissive mode {:03o}; expected 0o600 or stricter",
+                        path.display(),
+                        mode
+                    )));
+                }
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::create_dir_all(data_dir).await?;
             let mut bytes = [0u8; 32];

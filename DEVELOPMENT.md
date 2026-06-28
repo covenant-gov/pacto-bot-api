@@ -31,13 +31,13 @@ cargo deny check
 
 Project tooling:
 
-- `clippy.toml` — project-specific Clippy lints (e.g., forbidding plain `String`/`&str` for secrets).
+- `.clippy.toml` — project-specific Clippy lints (e.g., forbidding plain `String`/`&str` for secrets).
 - `deny.toml` — license and audit policy for `cargo-deny`.
 - `xtask/` — project automation such as schema/codegen tasks (`cargo xtask codegen`).
 
 ## Git hooks
 
-A pre-commit hook is available in `scripts/pre-commit.sh`. It runs the Beads pre-commit hook (if installed) and checks Rust formatting with `cargo fmt --check`.
+A pre-commit hook is available in `scripts/pre-commit.sh`. It runs the Beads pre-commit hook (if installed) and `make validate` (format check, clippy, and tests).
 
 Install it:
 
