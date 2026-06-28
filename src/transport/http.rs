@@ -405,10 +405,10 @@ async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonErr
     let path = data_dir.join("bot_secret_token");
 
     match tokio::fs::metadata(&path).await {
-        Ok(metadata) => {
+        Ok(_metadata) => {
             #[cfg(unix)]
             {
-                let mode = metadata.permissions().mode() & 0o777;
+                let mode = _metadata.permissions().mode() & 0o777;
                 if mode & 0o077 != 0 {
                     return Err(DaemonError::Config(format!(
                         "HTTP secret token file {} has overly permissive mode {:03o}; expected 0o600 or stricter",
@@ -471,10 +471,10 @@ async fn load_token(data_dir: &Path) -> Result<SecretString, DaemonError> {
     let path = data_dir.join("bot_secret_token");
 
     match tokio::fs::metadata(&path).await {
-        Ok(metadata) => {
+        Ok(_metadata) => {
             #[cfg(unix)]
             {
-                let mode = metadata.permissions().mode() & 0o777;
+                let mode = _metadata.permissions().mode() & 0o777;
                 if mode & 0o077 != 0 {
                     return Err(DaemonError::Config(format!(
                         "HTTP secret token file {} has overly permissive mode {:03o}; expected 0o600 or stricter",

@@ -302,6 +302,17 @@
           "$ref": "metrics.json"
         }
       }
+    },
+    {
+      "name": "agent.version",
+      "summary": "Return the daemon version and git commit hash.",
+      "params": [],
+      "result": {
+        "name": "version",
+        "schema": {
+          "$ref": "version.json"
+        }
+      }
     }
   ]
 }

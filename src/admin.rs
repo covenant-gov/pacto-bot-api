@@ -14,6 +14,9 @@ use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::nip46;
 use pacto_bot_api::secrecy::ExposeSecret;
 use pacto_bot_api::signer::{Signer, SignerBackend};
+#[cfg(not(unix))]
+use pacto_bot_api::transport::protocol::MetricsResponse;
+#[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
     JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
 };
@@ -43,12 +46,12 @@ use std::time::Duration;
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const BOT_SECRET_TOKEN_FILE: &str = "bot_secret_token";
 const AGENT_DB_FILE: &str = "agent.db";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// `pacto-bot-admin` command-line interface.
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-admin")]
 #[command(about = "Pacto bot admin CLI")]
+#[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
 struct Cli {
     /// Path to the bot configuration file.
     #[arg(
@@ -288,7 +291,7 @@ fn cmd_export(
 
     let state = ExportState {
         metadata: ExportMetadata {
-            daemon_version: VERSION.to_string(),
+            daemon_version: pacto_bot_api::version::VERSION.to_string(),
             exported_at: Utc::now().to_rfc3339(),
             source_data_dir: data_dir.to_string_lossy().to_string(),
         },
@@ -558,7 +561,7 @@ async fn cmd_status(
             Err(_) => (false, None, read_latest_report(dir)),
         },
         #[cfg(not(unix))]
-        (_, Some(dir)) => (false, None, read_latest_report(dir)),
+        (_, Some(dir)) => (false, None::<MetricsResponse>, read_latest_report(dir)),
         _ => (false, None, None),
     };
 
@@ -620,7 +623,10 @@ fn find_bot<'a>(bots: &'a [BotConfig], bot_id: &str) -> Result<&'a BotConfig, Da
 
 fn inspect_socket(path: &Path) -> SocketHealth {
     let exists = path.exists();
+    #[cfg(unix)]
     let mut mode = None;
+    #[cfg(not(unix))]
+    let mode: Option<u32> = None;
     let mut owner_readable = false;
     let mut owner_writable = false;
     if exists {
@@ -655,6 +661,8 @@ async fn probe_live_metrics(socket_path: &Path, data_dir: &Path) -> Option<Healt
     // the response shape only contains counters. The full snapshot (status,
     // per-bot health, recent errors) lives in the flushed report file.
     let _ = call_agent_metrics(socket_path).await.ok();
+    #[cfg(not(unix))]
+    let _ = socket_path;
     read_latest_report(data_dir)
 }
 

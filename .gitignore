@@ -17,6 +17,7 @@ coverage.json
 lcov.info
 # Rust build artifacts
 /target
+/dist
 
 # Python cache
 __pycache__/

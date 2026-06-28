@@ -1,9 +1,43 @@
 # pacto-bot-api development shortcuts
 
-.PHONY: help fmt fmt-check clippy test build coverage validate deny clean run admin xtask-codegen install-hooks
+.PHONY: help fmt fmt-check clippy test build coverage validate deny clean run admin xtask-codegen install-hooks cross-setup cross-compile cross-compile-macos cross-compile-linux cross-compile-windows cross-compile-freebsd package
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+# Cross-compilation targets using cargo-zigbuild (zig handles C toolchains/linking).
+# macOS host recommended. Install once: brew install zig cargo-zigbuild
+# Linux host: install zig from https://ziglang.org/learn/getting-started/ then cargo install cargo-zigbuild
+CROSS_MACOS_TARGETS := x86_64-apple-darwin aarch64-apple-darwin
+CROSS_LINUX_TARGETS := x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+CROSS_WINDOWS_TARGETS := x86_64-pc-windows-gnu
+CROSS_FREEBSD_TARGETS := x86_64-unknown-freebsd
+CROSS_ALL_TARGETS := $(CROSS_MACOS_TARGETS) $(CROSS_LINUX_TARGETS) $(CROSS_WINDOWS_TARGETS) $(CROSS_FREEBSD_TARGETS)
+
+cross-setup: ## Install rustup targets needed for cross-compilation
+	rustup target add $(filter-out universal2-apple-darwin,$(CROSS_ALL_TARGETS))
+
+cross-compile: cross-setup ## Build release binaries for all supported targets (requires zig + cargo-zigbuild)
+	@for target in $(CROSS_ALL_TARGETS); do \
+		echo "==> building $$target"; \
+		cargo zigbuild --release --target $$target; \
+	done
+	@echo "Binaries written to target/<triple>/release/"
+
+cross-compile-macos: cross-setup ## Build macOS x86_64 and arm64 binaries
+	cargo zigbuild --release $(foreach t,$(CROSS_MACOS_TARGETS),--target $(t))
+
+cross-compile-linux: cross-setup ## Build Linux x86_64 + arm64 static-musl binaries
+	cargo zigbuild --release $(foreach t,$(CROSS_LINUX_TARGETS),--target $(t))
+
+cross-compile-windows: cross-setup ## Build Windows x86_64 binary
+	cargo zigbuild --release $(foreach t,$(CROSS_WINDOWS_TARGETS),--target $(t))
+
+cross-compile-freebsd: cross-setup ## Build FreeBSD x86_64 binary
+	cargo zigbuild --release $(foreach t,$(CROSS_FREEBSD_TARGETS),--target $(t))
+
+package: cross-compile ## Build and package all release artifacts (tar/zip + sha256)
+	@./scripts/package-release.sh
 
 fmt: ## Format all Rust code
 	cargo fmt --all
