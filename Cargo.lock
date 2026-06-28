@@ -1549,6 +1549,7 @@ dependencies = [
  "jsonschema",
  "nostr",
  "nostr-sdk",
+ "parking_lot",
  "predicates",
  "proptest",
  "rusqlite",
