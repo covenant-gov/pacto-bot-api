@@ -29,7 +29,7 @@ pub enum JsonRpcMessage {
     },
     /// A JSON-RPC error response.
     ///
-    /// Listed before [`Response`] so that untagged deserialization prefers
+    /// Listed before [`Self::Response`] so that untagged deserialization prefers
     /// `error` over the optional `result` field when both could match.
     #[serde(rename = "error")]
     Error {
