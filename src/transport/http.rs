@@ -5,22 +5,43 @@ use crate::transport::protocol::{
 };
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::Request;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderName, StatusCode, header::CONTENT_TYPE};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use axum::routing::{get, post};
+use hyper::body::Incoming;
+use hyper_util::rt::tokio::TokioTimer;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server;
 use secrecy::{ExposeSecret, SecretString};
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::net::SocketAddr;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
 use subtle::ConstantTimeEq;
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use tower::ServiceExt;
+use tracing::info;
 
 const SECRET_HEADER: HeaderName = HeaderName::from_static("x-pacto-bot-secret");
+const HANDLER_ID_HEADER: HeaderName = HeaderName::from_static("x-pacto-handler-id");
+
+/// Shared, runtime-reloadable HTTP secret token.
+pub type HttpToken = Arc<RwLock<SecretString>>;
 
 /// Localhost HTTP transport for JSON-RPC handlers.
 #[derive(Debug)]
@@ -28,6 +49,9 @@ pub struct HttpTransport {
     bind: String,
     data_dir: PathBuf,
     max_frame_size: usize,
+    max_connections: usize,
+    idle_timeout: Duration,
+    token: Option<HttpToken>,
 }
 
 impl HttpTransport {
@@ -37,12 +61,29 @@ impl HttpTransport {
             bind: bind.into(),
             data_dir: data_dir.as_ref().to_path_buf(),
             max_frame_size: MAX_FRAME_BYTES,
+            max_connections: 100,
+            idle_timeout: Duration::from_secs(60),
+            token: None,
         }
     }
 
     /// Override the maximum request body size.
     pub fn with_max_frame_size(mut self, max_frame_size: usize) -> Self {
         self.max_frame_size = max_frame_size;
+        self
+    }
+
+    /// Override the default resource limits.
+    pub fn with_limits(mut self, max_connections: usize, idle_timeout: Duration) -> Self {
+        self.max_connections = max_connections;
+        self.idle_timeout = idle_timeout;
+        self
+    }
+
+    /// Use an externally managed, reloadable token instead of loading one
+    /// from `data_dir/bot_secret_token` when the transport starts.
+    pub fn with_token(mut self, token: HttpToken) -> Self {
+        self.token = Some(token);
         self
     }
 
@@ -57,6 +98,7 @@ impl HttpTransport {
     pub async fn run(
         self,
         handler: MessageHandler,
+        disconnect_tx: mpsc::Sender<Option<String>>,
         shutdown: oneshot::Receiver<()>,
     ) -> Result<(), DaemonError> {
         let addr = SocketAddr::from_str(&self.bind).map_err(|e| {
@@ -71,7 +113,8 @@ impl HttpTransport {
         }
 
         let listener = TcpListener::bind(addr).await?;
-        self.run_with_listener(listener, handler, shutdown).await
+        self.run_with_listener(listener, handler, disconnect_tx, shutdown)
+            .await
     }
 
     /// Serve JSON-RPC requests on an already-bound loopback listener.
@@ -81,6 +124,7 @@ impl HttpTransport {
         self,
         listener: TcpListener,
         handler: MessageHandler,
+        _disconnect_tx: mpsc::Sender<Option<String>>,
         shutdown: oneshot::Receiver<()>,
     ) -> Result<(), DaemonError> {
         let addr = listener.local_addr().map_err(|e| {
@@ -93,33 +137,91 @@ impl HttpTransport {
             )));
         }
 
-        let token = load_or_create_token(&self.data_dir).await?;
+        let token = match self.token {
+            Some(token) => token,
+            None => Arc::new(RwLock::new(load_or_create_token(&self.data_dir).await?)),
+        };
 
         let state = AppState {
             handler,
             token,
             max_frame_size: self.max_frame_size,
+            outbound: Arc::new(TokioMutex::new(HashMap::new())),
         };
+
+        info!(addr = %addr, "localhost HTTP transport bound");
 
         let app = Router::new()
             .route("/", post(http_handler))
+            .route("/events", get(events_handler))
             .with_state(state);
 
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown.await;
-            })
-            .await?;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(self.max_connections));
+        let mut shutdown = shutdown;
 
-        Ok(())
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break Ok(()),
+                res = listener.accept() => {
+                    let (stream, _) = match res {
+                        Ok(pair) => pair,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "HTTP accept error; backing off");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                    };
+
+                    let permit = match semaphore.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            tokio::spawn(async move {
+                                reject_connection(stream).await;
+                            });
+                            continue;
+                        }
+                    };
+
+                    let app = app.clone();
+                    let idle_timeout = self.idle_timeout;
+                    tokio::spawn(async move {
+                        let _permit = permit;
+                        let io = TokioIo::new(stream);
+                        let service = hyper::service::service_fn(move |request: Request<Incoming>| {
+                            app.clone().oneshot(request)
+                        });
+
+                        let mut builder = server::conn::auto::Builder::new(TokioExecutor::new());
+                        builder.http1().timer(TokioTimer::new());
+                        builder.http1().header_read_timeout(idle_timeout);
+
+                        if let Err(err) = builder.serve_connection(io, service).await {
+                            tracing::debug!(error = %err, "HTTP connection closed with error");
+                        }
+                    });
+                }
+            }
+        }
     }
 }
+
+async fn reject_connection(mut stream: tokio::net::TcpStream) {
+    let response = b"HTTP/1.1 503 Service Unavailable\r\n\
+                      Content-Length: 0\r\n\
+                      Connection: close\r\n\r\n";
+    let _ = stream.write_all(response).await;
+}
+
+type OutboundMap = Arc<TokioMutex<HashMap<String, tokio::sync::mpsc::Receiver<JsonRpcMessage>>>>;
 
 #[derive(Clone)]
 struct AppState {
     handler: MessageHandler,
-    token: SecretString,
+    token: HttpToken,
     max_frame_size: usize,
+    /// Channels created during `handler.register` that the SSE endpoint can
+    /// take over to stream daemon-to-handler notifications.
+    outbound: OutboundMap,
 }
 
 async fn http_handler(
@@ -127,7 +229,8 @@ async fn http_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    if !verify_secret(&headers, &state.token) {
+    let token = state.token.read().await;
+    if !verify_secret(&headers, &token) {
         return (
             StatusCode::UNAUTHORIZED,
             [(CONTENT_TYPE, "text/plain")],
@@ -154,27 +257,30 @@ async fn http_handler(
         let response = match parse_message(line) {
             Ok(msg) => {
                 let id = msg.id().cloned();
-                let method_name = msg.method().map(|s| s.to_string());
+                let method_name = msg.method().map(|s: &str| s.to_string());
 
-                // HTTP is request/response only.  Registration and handler
-                // responses require a persistent outbound channel for async
-                // daemon→handler notifications; creating them over HTTP would
-                // leave a dead registration that dispatch can never reach.
-                if matches!(
-                    method_name.as_deref().and_then(|m| parse_method(m).ok()),
-                    Some(Method::HandlerRegister) | Some(Method::HandlerResponse)
-                ) {
-                    let err = method_name.map_or_else(
-                        || DaemonError::MethodNotFound,
-                        DaemonError::MethodNotSupported,
-                    );
-                    id.map(|id| JsonRpcMessage::error(id, err.into()))
+                let method = method_name.as_deref().and_then(|m| parse_method(m).ok());
+
+                if method == Some(Method::HandlerRegister) {
+                    handle_register(state.clone(), msg, id).await
                 } else {
-                    // No persistent connection over which the daemon can push
-                    // async notifications, so we pass a disconnected outbound
-                    // sender and no handler id.
+                    let handler_id = headers
+                        .get(&HANDLER_ID_HEADER)
+                        .and_then(|h| h.to_str().ok());
+                    // Mutating methods require a per-request handler identity
+                    // because HTTP has no per-connection registration state.
+                    if handler_id.is_none() && is_mutating_method(method) {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            [(CONTENT_TYPE, "text/plain")],
+                            Vec::new(),
+                        );
+                    }
+                    // Non-registration requests do not need a persistent
+                    // outbound channel, so we pass a disconnected sender.
                     let (out_tx, _out_rx) = tokio::sync::mpsc::channel(1);
-                    match (state.handler)(msg, out_tx, None).await {
+                    let handler_id_owned = handler_id.map(|s| s.to_string());
+                    match (state.handler)(msg, out_tx, handler_id_owned).await {
                         Ok(resp) => resp,
                         Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
                     }
@@ -202,6 +308,78 @@ async fn http_handler(
     )
 }
 
+async fn handle_register(
+    state: AppState,
+    msg: JsonRpcMessage,
+    id: Option<Value>,
+) -> Option<JsonRpcMessage> {
+    let (out_tx, out_rx) = tokio::sync::mpsc::channel(64);
+
+    let response = match (state.handler)(msg, out_tx, None).await {
+        Ok(resp) => resp,
+        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+    };
+
+    if let Some(JsonRpcMessage::Response {
+        result: Some(result),
+        ..
+    }) = &response
+    {
+        if let Some(handler_id) = result.get("handler_id").and_then(Value::as_str) {
+            state
+                .outbound
+                .lock()
+                .await
+                .insert(handler_id.to_string(), out_rx);
+        }
+    }
+
+    response
+}
+
+async fn events_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
+) -> impl IntoResponse {
+    let token = state.token.read().await;
+    if !verify_secret(&headers, &token) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+
+    let mut outbound = state.outbound.lock().await;
+    let receiver = match outbound.remove(&query.handler_id) {
+        Some(rx) => rx,
+        None => {
+            return (StatusCode::NOT_FOUND, "handler not registered").into_response();
+        }
+    };
+
+    let stream = ReceiverStream::new(receiver).map(|msg| {
+        let event_type = msg.method().unwrap_or("message").to_string();
+        let data = serialize_message(&msg).unwrap_or_default();
+        Ok::<_, std::convert::Infallible>(SseEvent::default().event(event_type).data(data))
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new())
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    handler_id: String,
+}
+
+/// Returns true for methods that mutate daemon or bot state and therefore
+/// require a registered handler identity over the stateless HTTP transport.
+fn is_mutating_method(method: Option<Method>) -> bool {
+    matches!(
+        method,
+        Some(Method::AgentSendDm) | Some(Method::AgentSetProfile) | Some(Method::AgentError)
+    )
+}
+
 fn verify_secret(headers: &HeaderMap, token: &SecretString) -> bool {
     let Some(header) = headers.get(&SECRET_HEADER) else {
         return false;
@@ -211,10 +389,16 @@ fn verify_secret(headers: &HeaderMap, token: &SecretString) -> bool {
     };
     let expected = token.expose_secret().as_bytes();
     let provided = provided.as_bytes();
-    if expected.len() != provided.len() {
-        return false;
+
+    // Compare in constant time without short-circuiting on length mismatch.
+    // The loop always runs for the expected secret length so that timing
+    // does not reveal whether the provided token had the correct length.
+    let mut result = expected.len().ct_eq(&provided.len());
+    for (i, e) in expected.iter().enumerate() {
+        let p = provided.get(i).copied().unwrap_or(0);
+        result &= e.ct_eq(&p);
     }
-    bool::from(expected.ct_eq(provided))
+    bool::from(result)
 }
 
 async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonError> {
@@ -242,8 +426,27 @@ async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonErr
             let token = hex::encode(bytes);
 
             let tmp = data_dir.join("bot_secret_token.tmp");
-            tokio::fs::write(&tmp, token.as_bytes()).await?;
-            set_file_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            // Create the temp file with owner-only permissions from the start
+            // so the secret never exists in a group/other-readable state.
+            #[cfg(unix)]
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(DaemonError::Io)?;
+            #[cfg(not(unix))]
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&tmp)
+                .map_err(DaemonError::Io)?;
+            let mut file = tokio::fs::File::from_std(file);
+            tokio::io::AsyncWriteExt::write_all(&mut file, token.as_bytes()).await?;
+            tokio::io::AsyncWriteExt::flush(&mut file).await?;
+            drop(file);
             tokio::fs::rename(&tmp, &path).await?;
         }
         Err(e) => return Err(DaemonError::Io(e)),
@@ -254,16 +457,45 @@ async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonErr
     Ok(SecretString::new(token.into()))
 }
 
-fn set_file_permissions(path: &Path, permissions: std::fs::Permissions) -> Result<(), DaemonError> {
-    #[cfg(unix)]
-    {
-        std::fs::set_permissions(path, permissions)?;
-        Ok(())
+/// Load or create the HTTP secret token and return it as a shared,
+/// runtime-reloadable handle.
+pub async fn init_token(data_dir: &Path) -> Result<HttpToken, DaemonError> {
+    let secret = load_or_create_token(data_dir).await?;
+    Ok(Arc::new(RwLock::new(secret)))
+}
+
+/// Load an existing token from `data_dir/bot_secret_token`, enforcing
+/// owner-only permissions. Unlike [`load_or_create_token`], this does not
+/// create a missing file.
+async fn load_token(data_dir: &Path) -> Result<SecretString, DaemonError> {
+    let path = data_dir.join("bot_secret_token");
+
+    match tokio::fs::metadata(&path).await {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    return Err(DaemonError::Config(format!(
+                        "HTTP secret token file {} has overly permissive mode {:03o}; expected 0o600 or stricter",
+                        path.display(),
+                        mode
+                    )));
+                }
+            }
+        }
+        Err(e) => return Err(DaemonError::Io(e)),
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        let _ = permissions;
-        Ok(())
-    }
+
+    let contents = tokio::fs::read_to_string(&path).await?;
+    let token = contents.trim().to_string();
+    Ok(SecretString::new(token.into()))
+}
+
+/// Re-read the token file and atomically update the in-memory secret.
+pub async fn reload_token(token: &HttpToken, data_dir: &Path) -> Result<(), DaemonError> {
+    let new_secret = load_token(data_dir).await?;
+    let mut guard = token.write().await;
+    *guard = new_secret;
+    Ok(())
 }

@@ -1,16 +1,18 @@
 use crate::config::BotConfig;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
-use crate::transport::protocol::JsonRpcMessage;
+use crate::transport::protocol::{AgentStatusParams, JsonRpcMessage, MetricsResponse};
 use chrono::{DateTime, Utc};
 #[cfg(test)]
 use secrecy::SecretString;
-use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::mpsc::Sender;
 
 /// Capability a handler may request for a bot.
 pub type Capability = String;
+
+/// Validated registration request fields returned by [`HandlerRegistry::validate_request`].
+type ValidatedRegistration = (Vec<String>, Vec<EventType>, Vec<Capability>);
 
 /// Lightweight handle to a handler connection for outbound JSON-RPC notifications.
 #[derive(Debug, Clone)]
@@ -33,6 +35,11 @@ impl ConnectionHandle {
             .try_send(msg)
             .map_err(|_| DaemonError::HandlerNotRegistered)
     }
+
+    /// Returns true if the peer side of this channel is still open.
+    pub fn is_alive(&self) -> bool {
+        !self.sender.is_closed()
+    }
 }
 
 /// Reference to a registered handler.
@@ -50,6 +57,17 @@ pub struct HandlerRef {
 }
 
 impl HandlerRef {
+    /// Returns true if this handler currently has a live connection.
+    pub fn is_connected(&self) -> bool {
+        self.connection.as_ref().is_some_and(|c| c.is_alive())
+    }
+
+    /// Drop the live connection, turning this registration into a persisted,
+    /// disconnected entry until the handler reconnects.
+    pub fn disconnect(&mut self) {
+        self.connection = None;
+    }
+
     /// Returns true if this handler should receive events for the given bot and event type.
     pub fn matches(&self, bot_id: &str, event_type: EventType) -> bool {
         self.bot_ids.contains(&bot_id.to_string()) && self.event_types.contains(&event_type)
@@ -71,11 +89,27 @@ impl HandlerRef {
     }
 
     /// Send an `agent.status` notification to this handler if it has a live connection.
-    pub fn send_status(&self, state: &str) -> Result<(), DaemonError> {
-        let msg = JsonRpcMessage::notification("agent.status", Some(json!({ "state": state })));
+    pub fn send_status(&self, state: &str, identity: Option<&str>) -> Result<(), DaemonError> {
+        let params = AgentStatusParams {
+            state: state.to_string(),
+            identity: identity.map(String::from),
+            capabilities: self.capabilities.clone(),
+        };
+        let msg =
+            JsonRpcMessage::notification("agent.status", Some(serde_json::to_value(&params)?));
         match &self.connection {
             Some(conn) => conn.send(msg),
-            None => Err(DaemonError::HandlerNotRegistered),
+            None => Ok(()),
+        }
+    }
+
+    /// Send an `agent.metrics` notification to this handler if it has a live connection.
+    pub fn send_metrics(&self, response: &MetricsResponse) -> Result<(), DaemonError> {
+        let msg =
+            JsonRpcMessage::notification("agent.metrics", Some(serde_json::to_value(response)?));
+        match &self.connection {
+            Some(conn) => conn.send(msg),
+            None => Ok(()),
         }
     }
 }
@@ -102,35 +136,15 @@ impl HandlerRegistry {
         capabilities: Vec<Capability>,
         bot_configs: &[BotConfig],
     ) -> Result<String, DaemonError> {
-        // Validate all bot_ids exist and that requested capabilities are a subset
-        // of each bot's configured capabilities.
-        for bot_id in &bot_ids {
-            let bot = bot_configs
-                .iter()
-                .find(|b| b.id == *bot_id)
-                .ok_or_else(|| DaemonError::UnknownBot(bot_id.clone()))?;
-            for cap in &capabilities {
-                if !bot.capabilities.contains(cap) {
-                    return Err(DaemonError::Config(format!(
-                        "capability {cap} not granted to bot {bot_id}"
-                    )));
-                }
-            }
-        }
-
-        // Validate event types are recognized.
-        let mut parsed_event_types = Vec::with_capacity(event_types.len());
-        for event_type in &event_types {
-            let parsed = parse_event_type(event_type)?;
-            parsed_event_types.push(parsed);
-        }
+        let (bot_ids, event_types, capabilities) =
+            Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
 
         let id = uuid::Uuid::new_v4().to_string();
         let handler = HandlerRef {
             id: id.clone(),
             connection: Some(connection),
             bot_ids,
-            event_types: parsed_event_types,
+            event_types,
             capabilities,
             registered_at: Utc::now(),
         };
@@ -139,6 +153,45 @@ impl HandlerRegistry {
         Ok(id)
     }
 
+    /// Register a new handler or reconnect an existing persisted one.
+    ///
+    /// If `handler_id` matches a known registration, the existing row is reused
+    /// (its connection and declared fields are updated). Otherwise a new
+    /// server-generated id is created.
+    pub fn reconnect(
+        &mut self,
+        handler_id: Option<String>,
+        connection: ConnectionHandle,
+        bot_ids: Vec<String>,
+        event_types: Vec<String>,
+        capabilities: Vec<Capability>,
+        bot_configs: &[BotConfig],
+    ) -> Result<String, DaemonError> {
+        if let Some(id) = &handler_id {
+            if let Some(existing) = self.handlers.get_mut(id) {
+                let (bot_ids, event_types, capabilities) =
+                    Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
+                existing.connection = Some(connection);
+                existing.bot_ids = bot_ids;
+                existing.event_types = event_types;
+                existing.capabilities = capabilities;
+                existing.registered_at = Utc::now();
+                return Ok(id.clone());
+            }
+        }
+
+        self.register(connection, bot_ids, event_types, capabilities, bot_configs)
+    }
+
+    /// Insert a persisted handler registration if it is not already present.
+    pub fn restore(&mut self, handler: HandlerRef) {
+        self.handlers.entry(handler.id.clone()).or_insert(handler);
+    }
+
+    /// Remove a handler from the registry and delete its persisted row.
+    ///
+    /// `handler_id` must be the connection-derived identifier assigned by the
+    /// daemon during registration; callers must not trust client-supplied ids.
     pub fn unregister(&mut self, handler_id: &str) -> Result<(), DaemonError> {
         self.handlers
             .remove(handler_id)
@@ -150,11 +203,15 @@ impl HandlerRegistry {
         self.handlers.get(handler_id)
     }
 
-    /// Find all handlers registered for the given bot and event type (fan-out).
+    pub fn get_handler_mut(&mut self, handler_id: &str) -> Option<&mut HandlerRef> {
+        self.handlers.get_mut(handler_id)
+    }
+
+    /// Find all *connected* handlers registered for the given bot and event type (fan-out).
     pub fn find(&self, bot_id: &str, event_type: EventType) -> Vec<HandlerRef> {
         self.handlers
             .values()
-            .filter(|h| h.matches(bot_id, event_type))
+            .filter(|h| h.is_connected() && h.matches(bot_id, event_type))
             .cloned()
             .collect()
     }
@@ -176,6 +233,34 @@ impl HandlerRegistry {
             .get(handler_id)
             .ok_or(DaemonError::HandlerNotRegistered)?;
         Ok(handler.is_authorized(bot_id, capability))
+    }
+
+    fn validate_request(
+        bot_ids: Vec<String>,
+        event_types: Vec<String>,
+        capabilities: Vec<Capability>,
+        bot_configs: &[BotConfig],
+    ) -> Result<ValidatedRegistration, DaemonError> {
+        for bot_id in &bot_ids {
+            let bot = bot_configs
+                .iter()
+                .find(|b| b.id == *bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.clone()))?;
+            for cap in &capabilities {
+                if !bot.capabilities.contains(cap) {
+                    return Err(DaemonError::Config(format!(
+                        "capability {cap} not granted to bot {bot_id}"
+                    )));
+                }
+            }
+        }
+
+        let mut parsed_event_types = Vec::with_capacity(event_types.len());
+        for event_type in &event_types {
+            parsed_event_types.push(parse_event_type(event_type)?);
+        }
+
+        Ok((bot_ids, parsed_event_types, capabilities))
     }
 }
 
@@ -204,7 +289,9 @@ mod tests {
     }
 
     fn dummy_handle() -> ConnectionHandle {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        // Keep the channel open so the handle appears alive to the registry.
+        std::mem::forget(rx);
         ConnectionHandle::new(tx)
     }
 
@@ -485,5 +572,43 @@ mod tests {
         let received_event: AgentEvent = serde_json::from_value(payload).expect("valid event");
         assert_eq!(received_event.bot_id, event.bot_id);
         assert_eq!(received_event.content, event.content);
+    }
+
+    #[tokio::test]
+    async fn status_notification_matches_schema_shape() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages", "SendMessages"])];
+        let mut registry = HandlerRegistry::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+
+        let handler_id = registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+                &bots,
+            )
+            .expect("register handler");
+
+        let handler = registry
+            .get_handler(&handler_id)
+            .expect("handler should exist");
+        handler
+            .send_status("ready", Some("npub1test"))
+            .expect("send should succeed");
+
+        let received = rx.recv().await.expect("should receive status");
+        let JsonRpcMessage::Notification { method, params, .. } = received else {
+            panic!("expected notification");
+        };
+        assert_eq!(method, "agent.status");
+        let payload = params.expect("params should be present");
+        let status: AgentStatusParams = serde_json::from_value(payload).expect("valid status");
+        assert_eq!(status.state, "ready");
+        assert_eq!(status.identity.as_deref(), Some("npub1test"));
+        assert_eq!(
+            status.capabilities,
+            vec!["ReadMessages".to_string(), "SendMessages".to_string()]
+        );
     }
 }

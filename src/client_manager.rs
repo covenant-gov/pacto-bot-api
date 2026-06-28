@@ -1,14 +1,17 @@
 use crate::bot_state::BotState;
 use crate::config::DaemonConfig;
+use crate::db::Database;
+use crate::diagnostics::{BotHealth, Diagnostics};
 use crate::errors::DaemonError;
 
 use crate::handlers::HandlerRegistry;
 use crate::nostr::NostrClient;
 use crate::signer::Signer;
-use nostr::PublicKey;
+use nostr::{PublicKey, Timestamp};
 #[cfg(test)]
 use secrecy::SecretString;
 use std::collections::HashMap;
+use tracing::warn;
 
 /// Manages multiple bot identities and provides npub/bot_id lookups.
 #[derive(Debug)]
@@ -23,7 +26,7 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
-    pub fn new(config: DaemonConfig, nostr_client: NostrClient) -> Result<Self, DaemonError> {
+    pub async fn new(config: DaemonConfig, nostr_client: NostrClient) -> Result<Self, DaemonError> {
         let mut bots = HashMap::with_capacity(config.bots.len());
         let mut bot_id_to_pubkey = HashMap::with_capacity(config.bots.len());
 
@@ -34,6 +37,9 @@ impl ClientManager {
             }
 
             let bot_state = BotState::new(bot_config)?;
+            // Live verification for bunker backends; local keys are checked
+            // synchronously during BotState construction.
+            bot_state.signer.verify_bunker_public_key().await?;
             let pubkey = bot_state.signer.public_key();
 
             bots.insert(pubkey, bot_state);
@@ -83,6 +89,38 @@ impl ClientManager {
             .and_then(|pubkey| self.bots.get_mut(&pubkey))
     }
 
+    /// Subscribe each bot to its gift-wrap filter, using the persisted cursor
+    /// as the `since` value so events older than the cursor are skipped.
+    ///
+    /// Must be called after signers are registered with the underlying
+    /// [`NostrClient`] so that incoming events can be decrypted.
+    pub async fn subscribe_bots(&mut self, db: &Database) -> Result<(), DaemonError> {
+        for (pubkey, bot) in self.bots.iter_mut() {
+            let since = match db.load_cursor(bot.bot_id())? {
+                Some((stored_npub, cursor)) if stored_npub == bot.npub() => {
+                    Some(Timestamp::from(cursor as u64))
+                }
+                Some((stored_npub, _cursor)) => {
+                    warn!(
+                        bot_id = %bot.bot_id(),
+                        stored_npub = %stored_npub,
+                        config_npub = %bot.npub(),
+                        "stored npub mismatch; ignoring persisted cursor"
+                    );
+                    None
+                }
+                None => None,
+            };
+
+            let sub_id = self
+                .nostr_client
+                .subscribe_bot_with_since(pubkey, since)
+                .await?;
+            bot.add_subscription(sub_id.to_string());
+        }
+        Ok(())
+    }
+
     /// Check whether the handler is registered for the bot and has the required capability.
     pub fn is_authorized(
         &self,
@@ -92,6 +130,18 @@ impl ClientManager {
     ) -> Result<bool, DaemonError> {
         self.handler_registry
             .is_authorized(handler_id, bot_id, capability)
+    }
+
+    /// Build a per-bot health snapshot for every configured identity.
+    pub fn bot_health_snapshots(&self) -> Vec<BotHealth> {
+        let mut bots: Vec<BotHealth> = self.bots.values().map(BotState::to_bot_health).collect();
+        bots.sort_by(|a, b| a.bot_id.cmp(&b.bot_id));
+        bots
+    }
+
+    /// Update the shared diagnostics aggregator with the current bot health snapshots.
+    pub fn update_diagnostics(&self, diagnostics: &Diagnostics) {
+        diagnostics.set_bots(self.bot_health_snapshots());
     }
 }
 
@@ -121,7 +171,9 @@ mod tests {
             bots: bot_configs,
         };
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap()
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap()
         })
     }
 
@@ -181,7 +233,9 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap_err()
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap_err()
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("duplicate bot_id"));
@@ -209,7 +263,9 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap_err()
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap_err()
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("invalid npub"));

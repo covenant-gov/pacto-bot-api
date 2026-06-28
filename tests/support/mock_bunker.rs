@@ -45,7 +45,10 @@ impl NostrConnectSignerActions for AutoApprove {
     ) -> bool {
         let method = req.method().to_string();
         let params = serde_json::to_value(req.params()).unwrap_or(serde_json::Value::Null);
-        let request = BunkerRequest { method, params };
+        let request = BunkerRequest {
+            method: method.clone(),
+            params,
+        };
 
         // Fire-and-forget recording: tests that need ordering can subscribe
         // to the broadcast channel instead of polling `requests()`.
@@ -53,6 +56,14 @@ impl NostrConnectSignerActions for AutoApprove {
             guard.push(request.clone());
         }
         let _ = self.request_tx.send(request);
+
+        // The `nostr-connect` client sends its request before subscribing to
+        // relay notifications. For in-process mock bunkers the response can
+        // arrive so quickly that the client misses it, so pause briefly before
+        // approving every request to give the client's notification receiver
+        // time to register.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         true
     }
 }

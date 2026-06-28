@@ -1,4 +1,5 @@
 use crate::config::BotConfig;
+use crate::diagnostics::BotHealth;
 use crate::errors::DaemonError;
 
 use crate::signer::SignerBackend;
@@ -42,6 +43,23 @@ impl BotState {
     /// Remove and return all tracked subscription IDs, leaving the list empty.
     pub fn clear_subscriptions(&mut self) -> Vec<String> {
         std::mem::take(&mut self.subscriptions)
+    }
+
+    /// Produce a non-sensitive health snapshot for this bot identity.
+    pub fn to_bot_health(&self) -> BotHealth {
+        let bunker_connected = matches!(
+            self.signer,
+            SignerBackend::BunkerLocal(_) | SignerBackend::BunkerRemote(_)
+        );
+        BotHealth {
+            bot_id: self.config.id.clone(),
+            npub: self.config.npub.clone(),
+            relay_count: self.config.relays.len() as u64,
+            relays: self.config.relays.clone(),
+            bunker_connected,
+            signer_backend: self.config.signing.backend_label().to_string(),
+            error: None,
+        }
     }
 }
 

@@ -106,6 +106,12 @@ Integration tests live in `tests/` and run against in-process mock relay and bun
 cargo nextest run --test integration
 ```
 
+Readable "example tests" that demonstrate common handler patterns are also in `tests/`:
+
+```bash
+cargo test --test example_http_handler --test example_multi_bot
+```
+
 Tests that need external services (a local Nostr relay, EVM node, or NIP-46 bunker) are gated behind `#[ignore]` and can be run selectively once those services are available:
 
 ```bash

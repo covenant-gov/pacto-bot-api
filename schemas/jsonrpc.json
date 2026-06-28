@@ -1,27 +1,307 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "pacto-bot-api JSON-RPC catalog",
-  "type": "object",
-  "properties": {
-    "openrpc": { "type": "string", "const": "1.3.1" },
-    "info": {
-      "type": "object",
-      "properties": {
-        "title": { "type": "string" },
-        "version": { "type": "string" }
+  "openrpc": "1.3.1",
+  "info": {
+    "title": "pacto-bot-api JSON-RPC catalog",
+    "version": "0.1.0"
+  },
+  "methods": [
+    {
+      "name": "handler.register",
+      "summary": "Register a handler connection for event delivery.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Bot identities this handler wants to serve."
+              },
+              "event_types": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Event types the handler wants to receive."
+              },
+              "capabilities": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Capabilities the handler requests."
+              }
+            },
+            "required": ["bot_ids", "event_types", "capabilities"]
+          }
+        }
+      ],
+      "result": {
+        "name": "registration",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "handler_id": {
+              "type": "string",
+              "description": "Server-generated UUID for this handler."
+            },
+            "registered_events": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Event types the handler is now subscribed to."
+            }
+          },
+          "required": ["handler_id", "registered_events"]
+        }
       }
     },
-    "methods": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "name": { "type": "string" },
-          "params": { "type": "array" },
-          "result": { "type": "object" }
-        },
-        "required": ["name"]
+    {
+      "name": "handler.unregister",
+      "summary": "Remove a handler from the routing table.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      ],
+      "result": {
+        "name": "unregister",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "unregistered": {
+              "type": "boolean",
+              "description": "True when the connection's handler was removed."
+            }
+          },
+          "required": ["unregistered"]
+        }
+      }
+    },
+    {
+      "name": "agent.send_dm",
+      "summary": "Send a direct message as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will send the message."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the recipient."
+              },
+              "content": {
+                "type": "string",
+                "description": "Plaintext message body."
+              },
+              "reply_to": {
+                "type": "string",
+                "description": "Optional hex event id this message replies to."
+              }
+            },
+            "required": ["bot_id", "recipient", "content"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": {
+          "type": "string",
+          "description": "Hex id of the published gift-wrap event."
+        }
+      }
+    },
+    {
+      "name": "agent.set_profile",
+      "summary": "Update the bot's Nostr kind:0 profile.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity whose profile will be updated."
+              },
+              "name": {
+                "type": "string",
+                "description": "Display name."
+              },
+              "about": {
+                "type": "string",
+                "description": "Free-form bio or description."
+              },
+              "picture": {
+                "type": "string",
+                "description": "URL to a profile picture."
+              }
+            },
+            "required": ["bot_id"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": {
+          "type": "string",
+          "description": "Hex id of the published kind:0 metadata event."
+        }
+      }
+    },
+    {
+      "name": "agent.error",
+      "summary": "Report an error encountered by a handler.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity the error relates to."
+              },
+              "message": {
+                "type": "string",
+                "description": "Human-readable, redacted error message."
+              },
+              "code": {
+                "type": "string",
+                "description": "Optional stable error code."
+              },
+              "data": {
+                "description": "Optional opaque structured context."
+              }
+            },
+            "required": ["bot_id", "message"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "handler.response",
+      "summary": "Handler reply to a delivered agent.event.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "event_id": {
+                "type": "string",
+                "description": "Hex event id the handler is responding to."
+              },
+              "action": {
+                "type": "string",
+                "enum": ["ack", "reply", "defer", "ignore"],
+                "description": "Terminal action the daemon should take."
+              },
+              "content": {
+                "type": "string",
+                "description": "Reply text when action is 'reply'."
+              }
+            },
+            "required": ["event_id", "action"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent.event",
+      "summary": "Notification of an incoming event for a registered bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity the event is for."
+              },
+              "event_id": {
+                "type": "string",
+                "description": "Hex id of the enclosing gift-wrap event."
+              },
+              "type": {
+                "type": "string",
+                "enum": ["dm_received"],
+                "description": "Event type."
+              },
+              "chat_id": {
+                "type": "string",
+                "description": "Conversation identifier, often the sender's npub."
+              },
+              "content": {
+                "type": "string",
+                "description": "Decrypted rumor content."
+              },
+              "rumor_id": {
+                "type": "string",
+                "description": "Hex id of the decrypted rumor."
+              },
+              "author": {
+                "type": "string",
+                "description": "Public key of the original message author."
+              },
+              "timestamp": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Unix timestamp of the rumor."
+              }
+            },
+            "required": ["bot_id", "event_id", "type", "content", "rumor_id", "author", "timestamp"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent.status",
+      "summary": "Daemon lifecycle status notification.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": ["initializing", "ready", "shutting_down", "stopped"],
+                "description": "Current daemon lifecycle state."
+              },
+              "identity": {
+                "type": "string",
+                "description": "Public key of the bot whose state changed, when applicable."
+              },
+              "capabilities": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Capabilities available to the handler."
+              }
+            },
+            "required": ["state"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent.metrics",
+      "summary": "Return a machine-readable health and metrics snapshot.",
+      "params": [],
+      "result": {
+        "name": "metrics",
+        "schema": {
+          "$ref": "metrics.json"
+        }
       }
     }
-  }
+  ]
 }

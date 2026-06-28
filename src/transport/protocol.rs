@@ -27,6 +27,17 @@ pub enum JsonRpcMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         params: Option<Value>,
     },
+    /// A JSON-RPC error response.
+    ///
+    /// Listed before [`Response`] so that untagged deserialization prefers
+    /// `error` over the optional `result` field when both could match.
+    #[serde(rename = "error")]
+    Error {
+        #[serde(default = "jsonrpc_version")]
+        jsonrpc: String,
+        id: Value,
+        error: JsonRpcError,
+    },
     /// A JSON-RPC response carrying a successful result.
     Response {
         #[serde(default = "jsonrpc_version")]
@@ -34,14 +45,6 @@ pub enum JsonRpcMessage {
         id: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result: Option<Value>,
-    },
-    /// A JSON-RPC error response.
-    #[serde(rename = "error")]
-    Error {
-        #[serde(default = "jsonrpc_version")]
-        jsonrpc: String,
-        id: Value,
-        error: JsonRpcError,
     },
     /// A JSON-RPC notification (no `id`).
     Notification {
@@ -140,6 +143,15 @@ pub fn serialize_message(msg: &JsonRpcMessage) -> Result<String, DaemonError> {
 }
 
 /// Known JSON-RPC methods in the daemon catalog.
+///
+/// This enum is intentionally hand-written rather than generated from
+/// `schemas/jsonrpc.json`. The wire representation of [`JsonRpcMessage`] is an
+/// untagged enum with helper constructors and frame-parsing behavior that are
+/// easier to express and review directly in Rust than through a generic
+/// code-generator. `schemas/jsonrpc.json` remains the source of truth for the
+/// method catalog and per-method parameter/result schemas; the
+/// `tests/schema_sync.rs` gate fails if a method is added to the schema without
+/// a matching variant here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
@@ -161,6 +173,23 @@ pub enum Method {
     AgentStatus,
     #[serde(rename = "agent.metrics")]
     AgentMetrics,
+}
+
+impl Method {
+    /// Return every catalog method in a stable order.
+    pub const fn all() -> &'static [Method] {
+        &[
+            Method::HandlerRegister,
+            Method::HandlerUnregister,
+            Method::AgentSendDm,
+            Method::AgentSetProfile,
+            Method::AgentError,
+            Method::HandlerResponse,
+            Method::AgentEvent,
+            Method::AgentStatus,
+            Method::AgentMetrics,
+        ]
+    }
 }
 
 impl FromStr for Method {
@@ -187,15 +216,83 @@ pub fn parse_method(method: &str) -> Result<Method, DaemonError> {
     method.parse()
 }
 
+/// Typed payload returned by the `handler.unregister` JSON-RPC method.
+///
+/// Matches `schemas/jsonrpc.json`: the result is an object with a single
+/// `unregistered` boolean field set to `true`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandlerUnregisterResponse {
+    /// Always `true` for a successful unregistration.
+    pub unregistered: bool,
+}
+
 /// Typed payload returned by the `agent.metrics` JSON-RPC method.
 ///
-/// The response is serialized as a flat object so that adding fields to
-/// [`crate::diagnostics::HealthSnapshot`] does not require changes to the
-/// wire format.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Matches `schemas/metrics.json` exactly: the schema declares eight
+/// non-negative integer counters and no required fields, so every field is
+/// optional on the wire. The daemon always populates every counter.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricsResponse {
-    #[serde(flatten)]
-    pub snapshot: crate::diagnostics::HealthSnapshot,
+    /// Daemon uptime in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<u64>,
+    /// Number of handlers currently registered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handlers_registered: Option<u64>,
+    /// Total incoming events accepted by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_received_total: Option<u64>,
+    /// Total events dispatched to handlers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_dispatched_total: Option<u64>,
+    /// Total events dropped due to rate limiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limited_total: Option<u64>,
+    /// Total relay reconnections observed across all bots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_reconnects_total: Option<u64>,
+    /// Total NIP-46 bunker signing failures observed across all bots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bunker_sign_failures_total: Option<u64>,
+    /// Total incoming events rejected due to failed signature verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invalid_events_total: Option<u64>,
+    /// Per-bot health summaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bots: Option<Vec<crate::diagnostics::BotHealth>>,
+}
+
+impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
+    fn from(snapshot: crate::diagnostics::HealthSnapshot) -> Self {
+        Self {
+            uptime_seconds: Some(snapshot.uptime_seconds),
+            handlers_registered: Some(snapshot.handlers_registered),
+            events_received_total: Some(snapshot.events_received_total),
+            events_dispatched_total: Some(snapshot.events_dispatched_total),
+            rate_limited_total: Some(snapshot.rate_limited_total),
+            relay_reconnects_total: Some(snapshot.relay_reconnects_total),
+            bunker_sign_failures_total: Some(snapshot.bunker_sign_failures_total),
+            invalid_events_total: Some(snapshot.invalid_events_total),
+            bots: Some(snapshot.bots),
+        }
+    }
+}
+
+/// Typed payload for the `agent.status` JSON-RPC notification.
+///
+/// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
+/// `agent.status` method: `state` is required, `identity` and `capabilities`
+/// are optional.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStatusParams {
+    /// Current daemon lifecycle state.
+    pub state: String,
+    /// Public key of the bot whose state changed, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    /// Capabilities available to the handler.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
 }
 
 #[cfg(test)]
@@ -256,5 +353,44 @@ mod tests {
     #[test]
     fn unknown_method_is_rejected() {
         assert!(parse_method("not.in.catalog").is_err());
+    }
+
+    #[test]
+    fn agent_status_params_round_trip() -> Result<(), DaemonError> {
+        let params = AgentStatusParams {
+            state: "ready".into(),
+            identity: Some("npub1test".into()),
+            capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        };
+        let msg =
+            JsonRpcMessage::notification("agent.status", Some(serde_json::to_value(&params)?));
+        let line = serialize_message(&msg)?;
+        let parsed = parse_message(&line)?;
+        assert_eq!(parsed.method(), Some("agent.status"));
+
+        let payload = match parsed {
+            JsonRpcMessage::Notification { params, .. } => params,
+            _ => None,
+        }
+        .expect("params should be present");
+        let parsed_params: AgentStatusParams = serde_json::from_value(payload)?;
+        assert_eq!(parsed_params.state, "ready");
+        assert_eq!(parsed_params.identity.as_deref(), Some("npub1test"));
+        assert_eq!(
+            parsed_params.capabilities,
+            vec!["ReadMessages".to_string(), "SendMessages".to_string()]
+        );
+
+        let minimal = AgentStatusParams {
+            state: "initializing".into(),
+            identity: None,
+            capabilities: vec![],
+        };
+        let minimal_json = serde_json::to_value(&minimal)?;
+        assert!(minimal_json.get("state").is_some());
+        assert!(minimal_json.get("identity").is_none());
+        assert!(minimal_json.get("capabilities").is_none());
+
+        Ok(())
     }
 }

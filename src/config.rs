@@ -23,6 +23,10 @@ pub struct GlobalDaemonConfig {
     pub socket_path: String,
     #[serde(default = "default_http_bind")]
     pub http_bind: String,
+    #[serde(default = "default_http_max_connections")]
+    pub http_max_connections: usize,
+    #[serde(default = "default_http_idle_timeout_secs")]
+    pub http_idle_timeout_secs: u64,
 }
 
 fn default_data_dir() -> String {
@@ -35,6 +39,14 @@ fn default_socket_path() -> String {
 
 fn default_http_bind() -> String {
     "127.0.0.1:9800".into()
+}
+
+fn default_http_max_connections() -> usize {
+    100
+}
+
+fn default_http_idle_timeout_secs() -> u64 {
+    60
 }
 
 /// Per-bot identity configuration.
@@ -64,6 +76,17 @@ pub enum SigningConfig {
     BunkerLocal { uri: SecretString },
     /// Production NIP-46 bunker reachable over `wss://`.
     BunkerRemote { uri: SecretString },
+}
+
+impl SigningConfig {
+    /// Public label for the signing backend used in diagnostics.
+    pub fn backend_label(&self) -> &'static str {
+        match self {
+            SigningConfig::Nsec { .. } => "nsec",
+            SigningConfig::BunkerLocal { .. } => "bunker_local",
+            SigningConfig::BunkerRemote { .. } => "bunker_remote",
+        }
+    }
 }
 
 impl DaemonConfig {
@@ -103,6 +126,7 @@ fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+
         let metadata = fs::metadata(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 DaemonError::Config(format!("config file not found: {}", path.display()))
@@ -118,6 +142,20 @@ fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
                 path.display(),
                 mode & 0o777
             )));
+        }
+
+        // Also reject if the parent directory is writable by group or other,
+        // since a world-writable directory would let anyone replace the file.
+        if let Some(parent) = path.parent() {
+            let parent_meta = fs::metadata(parent).map_err(DaemonError::Io)?;
+            let parent_mode = parent_meta.permissions().mode();
+            if parent_mode & 0o022 != 0 {
+                return Err(DaemonError::Config(format!(
+                    "config file directory {} must not be writable by group or other, found 0o{:o}",
+                    parent.display(),
+                    parent_mode & 0o777
+                )));
+            }
         }
     }
     #[cfg(not(unix))]
@@ -238,8 +276,11 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn write_config(content: &str) -> (tempfile::NamedTempFile, PathBuf) {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+    fn write_config(content: &str) -> (tempfile::TempDir, tempfile::NamedTempFile, PathBuf) {
+        // Create a restricted temp directory so the parent-directory permission
+        // check passes on CI runners where /tmp is world-writable.
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         file.write_all(content.as_bytes()).unwrap();
         let path = file.path().to_path_buf();
 
@@ -251,12 +292,12 @@ mod tests {
             fs::set_permissions(&path, perms).unwrap();
         }
 
-        (file, path)
+        (dir, file, path)
     }
 
     #[test]
     fn valid_single_bot_config() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [daemon]
 data_dir = "/tmp/pacto"
@@ -279,7 +320,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 
     #[test]
     fn valid_multi_bot_config() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -311,7 +352,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 
     #[test]
     fn duplicate_bot_id_error() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -331,7 +372,7 @@ signing = { backend = "nsec", nsec = "nsec1b" }
 
     #[test]
     fn missing_required_field_npub() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -345,7 +386,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
     #[test]
     fn missing_required_field_nsec() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -363,7 +404,7 @@ signing = { backend = "nsec" }
     fn env_var_expansion() {
         // SAFETY: test-only mutation of a unique environment variable name.
         unsafe { env::set_var("PACT_TEST_NSEC", "nsec1fromenv") };
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
@@ -384,7 +425,7 @@ signing = { backend = "nsec", nsec = "${PACT_TEST_NSEC}" }
     #[test]
     fn tilde_expansion() {
         let home = env::var("HOME").expect("HOME must be set for this test");
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [daemon]
 data_dir = "~/pacto-test"
@@ -402,7 +443,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
     #[test]
     fn bunker_remote_rejects_ws() {
-        let (_file, path) = write_config(
+        let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "bad-bot"
@@ -416,8 +457,24 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
     }
 
     #[test]
-    fn config_permissions_enforced() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+    fn config_accepts_0o600_permissions() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        // write_config already sets 0o600 on Unix.
+        DaemonConfig::load(&path).expect("0o600 config should load");
+    }
+
+    #[test]
+    fn config_rejects_0o644_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         file.write_all(
             br#"
 [[bots]]
@@ -439,5 +496,39 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
         let err = DaemonConfig::load(&path).unwrap_err();
         assert!(err.to_string().contains("must be readable only by owner"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn config_rejects_world_writable_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent.path().join("pacto-bot-api.toml");
+        fs::write(
+            &path,
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        )
+        .unwrap();
+
+        // Restrict the file, but leave the parent world-writable.
+        let mut file_perms = fs::metadata(&path).unwrap().permissions();
+        file_perms.set_mode(0o600);
+        fs::set_permissions(&path, file_perms).unwrap();
+
+        let mut dir_perms = fs::metadata(parent.path()).unwrap().permissions();
+        dir_perms.set_mode(0o777);
+        fs::set_permissions(parent.path(), dir_perms).unwrap();
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must not be writable by group or other")
+        );
     }
 }

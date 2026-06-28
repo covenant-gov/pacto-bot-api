@@ -13,15 +13,16 @@ use nostr::nips::{nip44, nip59};
 use nostr::secp256k1::schnorr::Signature;
 use nostr::{
     Event, EventBuilder, EventId, Filter, JsonUtil, Keys, Kind, PublicKey, SubscriptionId,
-    UnsignedEvent,
+    Timestamp, UnsignedEvent,
 };
 use nostr_sdk::{Client, RelayPoolNotification};
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
 use crate::signer::Signer;
@@ -34,6 +35,7 @@ type BotSigners = HashMap<PublicKey, (String, Arc<dyn Signer>)>;
 pub struct NostrClient {
     client: Client,
     signers: Arc<RwLock<BotSigners>>,
+    diagnostics: Option<Diagnostics>,
 }
 
 impl std::fmt::Debug for NostrClient {
@@ -51,10 +53,21 @@ impl NostrClient {
         let this = Self {
             client,
             signers: Arc::new(RwLock::new(HashMap::new())),
+            diagnostics: None,
         };
         this.add_relays(&relays).await?;
         this.client.connect().await;
         Ok(this)
+    }
+
+    /// Attach a diagnostics aggregator to the client.
+    ///
+    /// Signature verification failures during gift-wrap processing are recorded
+    /// here. [`Diagnostics`] is internally reference counted, so the same
+    /// instance can be shared with the dispatch layer.
+    pub fn with_diagnostics(mut self, diagnostics: Diagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
     }
 
     /// Add relays to the underlying pool. Empty strings are skipped.
@@ -77,15 +90,28 @@ impl NostrClient {
         self.signers.write().await.insert(pubkey, (bot_id, signer));
     }
 
-    /// Subscribe to kind 1059 gift wraps addressed to `npub`.
-    pub async fn subscribe_bot(&self, npub: &PublicKey) -> Result<SubscriptionId, DaemonError> {
-        let filter = Filter::new().kind(Kind::GiftWrap).pubkey(*npub);
+    /// Subscribe to kind 1059 gift wraps addressed to `npub`, optionally
+    /// restricted to events with `created_at` >= `since`.
+    pub async fn subscribe_bot_with_since(
+        &self,
+        npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError> {
+        let mut filter = Filter::new().kind(Kind::GiftWrap).pubkey(*npub);
+        if let Some(since) = since {
+            filter = filter.since(since);
+        }
         let output = self
             .client
             .subscribe(filter, None)
             .await
             .map_err(|e| DaemonError::Nostr(format!("subscribe failed: {e}")))?;
         Ok(output.val)
+    }
+
+    /// Subscribe to kind 1059 gift wraps addressed to `npub`.
+    pub async fn subscribe_bot(&self, npub: &PublicKey) -> Result<SubscriptionId, DaemonError> {
+        self.subscribe_bot_with_since(npub, None).await
     }
 
     /// Unsubscribe a previously created bot subscription.
@@ -163,10 +189,50 @@ impl NostrClient {
         Ok(*output.id())
     }
 
+    /// Publish a kind:0 metadata event for the bot.
+    ///
+    /// Only fields that are `Some` are included in the metadata JSON.
+    pub async fn set_profile(
+        &self,
+        signer: &dyn Signer,
+        name: Option<&str>,
+        about: Option<&str>,
+        picture: Option<&str>,
+    ) -> Result<EventId, DaemonError> {
+        let mut metadata = serde_json::Map::new();
+        if let Some(name) = name {
+            let _ = metadata.insert("name".to_string(), json!(name));
+        }
+        if let Some(about) = about {
+            let _ = metadata.insert("about".to_string(), json!(about));
+        }
+        if let Some(picture) = picture {
+            let _ = metadata.insert("picture".to_string(), json!(picture));
+        }
+        let content = serde_json::to_string(&Value::Object(metadata)).map_err(DaemonError::Json)?;
+
+        let unsigned = UnsignedEvent::new(
+            signer.public_key(),
+            nostr::Timestamp::now(),
+            Kind::Metadata,
+            Vec::new(),
+            content,
+        );
+        let event = sign_unsigned_event(signer, unsigned).await?;
+
+        let output = self
+            .client
+            .send_event(&event)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("failed to publish profile event: {e}")))?;
+
+        Ok(*output.id())
+    }
+
     /// Decrypt a single incoming gift-wrap event using the registered bot signer.
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
-        Self::process_gift_wrap(&snapshot, event).await
+        Self::process_gift_wrap(&snapshot, event, self.diagnostics.as_ref()).await
     }
 
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
@@ -174,19 +240,34 @@ impl NostrClient {
         let (tx, rx) = unbounded_channel();
         let client = self.client.clone();
         let signers = Arc::clone(&self.signers);
+        let diagnostics = self.diagnostics.clone();
 
         tokio::spawn(async move {
             let _ = client
                 .handle_notifications(|notification| {
                     let tx: UnboundedSender<Result<AgentEvent, DaemonError>> = tx.clone();
                     let signers = Arc::clone(&signers);
+                    let diagnostics = diagnostics.clone();
                     async move {
                         match notification {
                             RelayPoolNotification::Event { event, .. } => {
                                 if event.kind == Kind::GiftWrap {
-                                    let snapshot = signers.read().await.clone();
-                                    let result = Self::process_gift_wrap(&snapshot, &event).await;
-                                    let _ = tx.send(result);
+                                    // Spawn each gift-wrap decryption in its own task so that
+                                    // one bot's slow signer (e.g. a NIP-46 bunker) does not block
+                                    // other bots from receiving DMs.
+                                    let tx = tx.clone();
+                                    let signers = Arc::clone(&signers);
+                                    let diagnostics = diagnostics.clone();
+                                    tokio::spawn(async move {
+                                        let snapshot = signers.read().await.clone();
+                                        let result = Self::process_gift_wrap(
+                                            &snapshot,
+                                            &event,
+                                            diagnostics.as_ref(),
+                                        )
+                                        .await;
+                                        let _ = tx.send(result);
+                                    });
                                 }
                                 Ok(false)
                             }
@@ -204,7 +285,17 @@ impl NostrClient {
     async fn process_gift_wrap(
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
         event: &Event,
+        diagnostics: Option<&Diagnostics>,
     ) -> Result<AgentEvent, DaemonError> {
+        if let Err(e) = event.verify() {
+            let message = format!("gift wrap signature verification failed: {e}");
+            if let Some(d) = diagnostics {
+                d.record_invalid_event();
+                d.record_error(Some("gift_wrap_verify_failed"), &message, None);
+            }
+            return Err(DaemonError::Nostr(message));
+        }
+
         let recipient = event
             .tags
             .public_keys()
@@ -223,6 +314,15 @@ impl NostrClient {
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt gift wrap: {e}")))?;
         let seal_event = Event::from_json(&seal_json)
             .map_err(|e| DaemonError::Nostr(format!("invalid seal event: {e}")))?;
+
+        if let Err(e) = seal_event.verify() {
+            let message = format!("seal signature verification failed: {e}");
+            if let Some(d) = diagnostics {
+                d.record_invalid_event();
+                d.record_error(Some("seal_verify_failed"), &message, None);
+            }
+            return Err(DaemonError::Nostr(message));
+        }
 
         // Seal is encrypted by the sender to the recipient.
         let rumor_json = signer
@@ -358,6 +458,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_profile_builds_metadata_event() {
+        let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
+        let (signer, _npub) = test_signer();
+
+        let event_id = client
+            .set_profile(
+                &signer,
+                Some("Bot Name"),
+                Some("About text"),
+                Some("https://example.com/pic.png"),
+            )
+            .await
+            .unwrap();
+        assert!(!event_id.to_hex().is_empty());
+    }
+
+    #[tokio::test]
     async fn decrypt_gift_wrap_maps_to_agent_event() {
         let client = NostrClient::new(vec![]).await.unwrap();
         let (bot_signer, _bot_npub) = test_signer();
@@ -379,7 +496,7 @@ mod tests {
         .unwrap();
 
         let signers = client.signers.read().await.clone();
-        let agent_event = NostrClient::process_gift_wrap(&signers, &event)
+        let agent_event = NostrClient::process_gift_wrap(&signers, &event, None)
             .await
             .unwrap();
         assert_eq!(agent_event.bot_id, "bot-1");
@@ -403,7 +520,7 @@ mod tests {
         .unwrap();
 
         let signers = client.signers.read().await.clone();
-        let err = NostrClient::process_gift_wrap(&signers, &event)
+        let err = NostrClient::process_gift_wrap(&signers, &event, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no signer registered"));

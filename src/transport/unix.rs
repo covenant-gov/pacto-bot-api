@@ -51,8 +51,10 @@ impl UnixTransport {
     pub async fn run(
         self,
         handler: MessageHandler,
+        disconnect_tx: mpsc::Sender<Option<String>>,
         shutdown: oneshot::Receiver<()>,
     ) -> Result<(), DaemonError> {
+        ensure_socket_directory(&self.socket_path).await?;
         remove_stale_socket(&self.socket_path).await?;
 
         let listener = UnixListener::bind(&self.socket_path).map_err(|e| {
@@ -80,11 +82,19 @@ impl UnixTransport {
                         }
                     };
                     let handler = handler.clone();
+                    let disconnect_tx = disconnect_tx.clone();
                     let max_frame_size = self.max_frame_size;
                     let idle_timeout = self.idle_timeout;
                     tokio::spawn(async move {
                         let _permit = permit;
-                        let _ = handle_connection(stream, handler, max_frame_size, idle_timeout).await;
+                        let _ = handle_connection(
+                            stream,
+                            handler,
+                            disconnect_tx,
+                            max_frame_size,
+                            idle_timeout,
+                        )
+                        .await;
                     });
                 }
             }
@@ -135,9 +145,42 @@ fn set_socket_permissions(
     Ok(())
 }
 
+/// Create the parent directory for the Unix socket with owner-only
+/// permissions (0o700) if it does not already exist, and tighten overly
+/// permissive directories to 0o700.
+async fn ensure_socket_directory(socket_path: &Path) -> Result<(), DaemonError> {
+    let Some(parent) = socket_path.parent() else {
+        return Ok(());
+    };
+
+    match tokio::fs::metadata(parent).await {
+        Ok(metadata) => {
+            #[cfg(unix)]
+            {
+                let mode = metadata.permissions().mode() & 0o777;
+                if mode & 0o077 != 0 {
+                    tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                        .await?;
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(parent).await?;
+            #[cfg(unix)]
+            {
+                tokio::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700)).await?;
+            }
+        }
+        Err(e) => return Err(DaemonError::Io(e)),
+    }
+
+    Ok(())
+}
+
 async fn handle_connection(
     stream: UnixStream,
     handler: MessageHandler,
+    disconnect_tx: mpsc::Sender<Option<String>>,
     max_frame_size: usize,
     idle_timeout: Duration,
 ) -> Result<(), DaemonError> {
@@ -165,6 +208,7 @@ async fn handle_connection(
     // Run the read loop in a scoped async block so `out_tx` is dropped before
     // we await the writer task. Otherwise a connection teardown can hang the
     // writer, which is blocked waiting for outbound messages.
+    let handler_id_for_loop = Arc::clone(&handler_id);
     let result = async move {
         loop {
             buf.clear();
@@ -199,7 +243,7 @@ async fn handle_connection(
             let response = match parse_message(&line) {
                 Ok(msg) => {
                     let id = msg.id().cloned();
-                    let current_handler_id = handler_id.lock().await.clone();
+                    let current_handler_id = handler_id_for_loop.lock().await.clone();
                     match handler(msg, out_tx.clone(), current_handler_id).await {
                         Ok(resp) => resp,
                         Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
@@ -215,7 +259,7 @@ async fn handle_connection(
                 // If this is a successful handler.register response, remember the
                 // handler id so subsequent calls on this connection are authorized.
                 if let Some(id) = r.get("handler_id").and_then(|v| v.as_str()) {
-                    *handler_id.lock().await = Some(id.to_string());
+                    *handler_id_for_loop.lock().await = Some(id.to_string());
                 }
             }
 
@@ -228,7 +272,15 @@ async fn handle_connection(
     }
     .await;
 
+    // Notify dispatch that this connection has ended so the handler
+    // registration (if any) can be removed. Do this before awaiting the
+    // writer task: the registry may hold the last outbound sender clone,
+    // and unregistering is what allows the writer to shut down.
+    let final_handler_id = handler_id.lock().await.clone();
+    let _ = disconnect_tx.send(final_handler_id).await;
+
     let _ = writer_handle.await;
+
     result
 }
 

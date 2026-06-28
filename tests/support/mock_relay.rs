@@ -195,9 +195,26 @@ impl MockRelay {
         match cmd {
             "EVENT" => {
                 if let Some(event_value) = arr.get(1) {
-                    if let Ok(event) = Event::from_json(event_value.to_string()) {
-                        self.store_event(&event).await;
-                        let _ = self.inner.new_event_tx.send(event);
+                    match Event::from_json(event_value.to_string()) {
+                        Ok(event) => {
+                            let event_id = event.id.to_hex();
+                            self.store_event(&event).await;
+                            let _ = self.inner.new_event_tx.send(event);
+                            let _ = out_tx.send(json!(["OK", event_id, true, ""]));
+                        }
+                        Err(e) => {
+                            let event_id = event_value
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string();
+                            let _ = out_tx.send(json!([
+                                "OK",
+                                event_id,
+                                false,
+                                format!("invalid: {e}")
+                            ]));
+                        }
                     }
                 }
             }

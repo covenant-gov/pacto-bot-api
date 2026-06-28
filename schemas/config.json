@@ -8,7 +8,9 @@
       "properties": {
         "data_dir": { "type": "string" },
         "socket_path": { "type": "string" },
-        "http_bind": { "type": "string" }
+        "http_bind": { "type": "string" },
+        "http_max_connections": { "type": "integer", "description": "Maximum concurrent HTTP connections" },
+        "http_idle_timeout_secs": { "type": "integer", "description": "Idle timeout for HTTP keep-alive connections in seconds" }
       }
     },
     "bots": {

@@ -1,6 +1,8 @@
+/// req(R6, R7, R8, R20, R21, R24, R25)
 use fs2::FileExt;
-use nostr::ToBech32;
+use nostr::{Timestamp, ToBech32};
 use pacto_bot_api::db::Database;
+use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -12,6 +14,23 @@ async fn spawn_until_ready(
     config: &Path,
 ) -> Result<std::process::Child, Box<dyn std::error::Error>> {
     common::spawn_daemon_until_ready(config).await
+}
+
+async fn wait_for_exit(
+    mut child: std::process::Child,
+    timeout_secs: u64,
+) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            return Err("timed out waiting for daemon to exit".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]
@@ -52,8 +71,64 @@ async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std:
 
     let config = common::make_config(&dir, vec![bot])?;
 
+    // Give the mock bunker time to subscribe before the daemon connects.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
     let child = spawn_until_ready(&config).await?;
     common::shutdown_daemon(child).await?;
+
+    bunker.stop().await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_exits_when_bunker_pubkey_mismatches() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+
+    // Configured npub differs from the live bunker pubkey.
+    let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("mismatch-bot", false)?;
+    let bunker = support::mock_bunker::MockBunker::new(bunker_keys, vec![relay.url()]).await?;
+    let uri = bunker
+        .uri_from_relays(&[relay.url()])
+        .ok_or("mock bunker produced no URI")?;
+    common::set_bunker_uri(&mut bot, &uri);
+    bot.relays = vec![relay.url()];
+
+    let config = common::make_config(&dir, vec![bot])?;
+
+    // Give the mock bunker time to subscribe before the daemon connects.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let log_path = dir.path().join("mismatch.log");
+    let log_file = std::fs::File::create(&log_path)?;
+    let mut child = std::process::Command::new(common::daemon_bin_path()?)
+        .arg("--config")
+        .arg(&config)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(log_file))
+        .env("PACTO_BUNKER_TIMEOUT_SECS", "5")
+        .spawn()?;
+
+    let status = tokio::task::spawn_blocking(move || child.wait())
+        .await?
+        .map_err(|e| format!("failed to wait for daemon: {e}"))?;
+
+    let log_tail = {
+        let log = std::fs::read_to_string(&log_path)?;
+        let start = log.len().saturating_sub(4000);
+        log[start..].to_string()
+    };
+
+    assert!(
+        !status.success(),
+        "daemon should exit with error on bunker pubkey mismatch"
+    );
+    assert!(
+        log_tail.contains("configured npub does not match live bunker public key"),
+        "log should report bunker pubkey mismatch: {log_tail}"
+    );
 
     bunker.stop().await;
     relay.stop().await;
@@ -176,5 +251,189 @@ async fn startup_resets_cursor_when_stored_npub_mismatches_config()
         cursor.is_none(),
         "cursor should be reset after npub mismatch"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+    let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    bot.relays = vec![relay.url()];
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    let socket_path = dir.path().join("pacto-bot-api.sock");
+    let db_path = dir.path().join("agent.db");
+
+    // Seed a persisted cursor in the past.
+    let cursor_time = Timestamp::now() - 300;
+    let db = Database::open(&db_path)?;
+    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_u64() as i64)?;
+    drop(db);
+
+    let child = spawn_until_ready(&config).await?;
+    let mut handler = common::HandlerClient::register(
+        &socket_path,
+        &["echo-bot"],
+        &["dm_received"],
+        &["ReadMessages"],
+    )
+    .await?;
+
+    let sender_keys = nostr::Keys::generate();
+
+    // An event older than the persisted cursor must not be redispatched.
+    let older = common::build_gift_wrap_with_timestamp(
+        &sender_keys,
+        &bot.npub,
+        "older than cursor",
+        cursor_time - 60,
+    )
+    .await?;
+    relay.inject_event(older).await;
+    assert!(
+        handler
+            .next_notification(std::time::Duration::from_millis(500))
+            .await
+            .is_err(),
+        "older event should not be dispatched"
+    );
+
+    // An event at or after the persisted cursor must still be dispatched.
+    let newer = common::build_gift_wrap_with_timestamp(
+        &sender_keys,
+        &bot.npub,
+        "newer than cursor",
+        cursor_time + 60,
+    )
+    .await?;
+    relay.inject_event(newer).await;
+    let notification = handler
+        .next_notification(std::time::Duration::from_secs(5))
+        .await?;
+    match notification {
+        JsonRpcMessage::Notification { params, .. } => {
+            let content = params
+                .as_ref()
+                .and_then(|p| p.get("content"))
+                .and_then(|v| v.as_str())
+                .ok_or("agent.event notification missing content")?;
+            assert_eq!(content, "newer than cursor");
+        }
+        _ => panic!("expected agent.event notification, got {notification:?}"),
+    }
+
+    common::shutdown_daemon(child).await?;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::error::Error>> {
+    use pacto_bot_api::events::EventType;
+
+    let dir = tempfile::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    let socket_path = dir.path().join("pacto-bot-api.sock");
+    let db_path = dir.path().join("agent.db");
+
+    // First daemon run: register a handler.
+    let child = spawn_until_ready(&config).await?;
+    let handler = common::HandlerClient::register(
+        &socket_path,
+        &["echo-bot"],
+        &["dm_received"],
+        &["ReadMessages"],
+    )
+    .await?;
+    let handler_id = handler.handler_id().to_string();
+    drop(handler);
+
+    let pid = child.id();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )?;
+    let _status = wait_for_exit(child, 30).await?;
+
+    // The registration row must survive the restart.
+    let db = Database::open(&db_path)?;
+    let loaded = db.load_handlers()?;
+    assert_eq!(loaded.len(), 1, "handler row should survive shutdown");
+    assert_eq!(loaded[0].id, handler_id);
+    assert_eq!(loaded[0].bot_ids, vec!["echo-bot"]);
+    assert_eq!(loaded[0].event_types, vec![EventType::DmReceived]);
+    assert_eq!(loaded[0].capabilities, vec!["ReadMessages"]);
+    assert!(
+        !loaded[0].is_connected(),
+        "loaded handler should be disconnected"
+    );
+    drop(db);
+
+    // Second daemon run: reconnect with the persisted handler_id.
+    let child = spawn_until_ready(&config).await?;
+    let reconnected = common::HandlerClient::register_with_id(
+        &socket_path,
+        Some(&handler_id),
+        &["echo-bot"],
+        &["dm_received"],
+        &["ReadMessages"],
+    )
+    .await?;
+    assert_eq!(
+        reconnected.handler_id(),
+        handler_id,
+        "reconnect should reuse persisted handler_id"
+    );
+    drop(reconnected);
+
+    let db = Database::open(&db_path)?;
+    let loaded = db.load_handlers()?;
+    assert_eq!(
+        loaded.len(),
+        1,
+        "reconnect should not duplicate persisted row"
+    );
+    drop(db);
+
+    let pid = child.id();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )?;
+    let _status = wait_for_exit(child, 30).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn unregister_deletes_persisted_handler_row() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    let socket_path = dir.path().join("pacto-bot-api.sock");
+    let db_path = dir.path().join("agent.db");
+
+    let child = spawn_until_ready(&config).await?;
+    let handler = common::HandlerClient::register(
+        &socket_path,
+        &["echo-bot"],
+        &["dm_received"],
+        &["ReadMessages"],
+    )
+    .await?;
+    handler.unregister().await?;
+    drop(handler);
+
+    let pid = child.id();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGINT,
+    )?;
+    let _status = wait_for_exit(child, 30).await?;
+
+    let db = Database::open(&db_path)?;
+    let loaded = db.load_handlers()?;
+    assert!(loaded.is_empty(), "unregister should delete persisted row");
     Ok(())
 }

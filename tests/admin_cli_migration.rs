@@ -1,5 +1,7 @@
 mod common;
+mod support;
 
+/// req(R10, R29, R31, R35)
 use assert_cmd::Command;
 use pacto_bot_api::db::Database;
 use pacto_bot_api::events::EventType;
@@ -195,6 +197,25 @@ fn diagnose_reports_config_and_lock_status() -> Result<(), Box<dyn Error>> {
     assert!(!report["data_dir"].as_str().unwrap_or("").is_empty());
     assert_eq!(report["bots"].as_array().map(|a| a.len()), Some(1));
     assert_eq!(report["db_cursor_count"], 0);
+
+    assert!(
+        report.get("socket").is_some(),
+        "report should include socket health"
+    );
+    assert_eq!(report["socket"]["exists"], false);
+    assert!(!report["socket"]["path"].as_str().unwrap_or("").is_empty());
+    assert!(
+        report.get("relay_connectivity").is_some(),
+        "report should include relay_connectivity"
+    );
+    assert!(
+        report.get("bunker_connectivity").is_some(),
+        "report should include bunker_connectivity"
+    );
+    assert!(
+        report.get("service_versions").is_some(),
+        "report should include service_versions"
+    );
     Ok(())
 }
 
@@ -268,5 +289,85 @@ fn validate_config_reports_npub_mismatch_with_db() -> Result<(), Box<dyn Error>>
     let output = cmd.assert().failure();
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
     assert!(stdout.contains("DB npub") && stdout.contains("does not match config npub"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diagnose_reports_relay_connectivity_with_mock_relay() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+    let relay_url = relay.url();
+
+    let (mut bot, _nsec) = common::generate_nsec_bot("relay-bot")?;
+    bot.relays.push(relay_url.clone());
+    let config = common::make_config(&dir, vec![bot])?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "diagnose",
+        "--format",
+        "json",
+    ]);
+    let output = cmd.assert().success();
+    let stdout = std::str::from_utf8(&output.get_output().stdout)?;
+    let report: serde_json::Value = serde_json::from_str(stdout)?;
+
+    let checks = report["relay_connectivity"]
+        .as_array()
+        .ok_or("relay_connectivity should be an array")?;
+    assert_eq!(checks.len(), 2);
+    let live_check = checks
+        .iter()
+        .find(|c| c["relay"] == relay_url)
+        .ok_or("expected check for mock relay")?;
+    assert_eq!(live_check["bot_id"], "relay-bot");
+    if live_check["reachable"] != true {
+        panic!(
+            "mock relay should be reachable; got error: {:?}",
+            live_check["error"]
+        );
+    }
+
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn diagnose_reports_bunker_connectivity_with_mock_relay() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+    let relay_url = relay.url();
+
+    let mut bot = common::generate_bunker_bot("bunker-bot", true)?;
+    let bunker_uri = format!(
+        "bunker://{}?relay={}",
+        nostr::Keys::generate().public_key().to_hex(),
+        relay_url
+    );
+    common::set_bunker_uri(&mut bot, &bunker_uri);
+    let config = common::make_config(&dir, vec![bot])?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "diagnose",
+        "--format",
+        "json",
+    ]);
+    let output = cmd.assert().success();
+    let stdout = std::str::from_utf8(&output.get_output().stdout)?;
+    let report: serde_json::Value = serde_json::from_str(stdout)?;
+
+    let checks = report["bunker_connectivity"]
+        .as_array()
+        .ok_or("bunker_connectivity should be an array")?;
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["bot_id"], "bunker-bot");
+    assert_eq!(checks[0]["reachable"], true);
+
+    relay.stop().await;
     Ok(())
 }

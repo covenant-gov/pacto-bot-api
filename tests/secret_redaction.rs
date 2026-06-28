@@ -1,5 +1,6 @@
 mod support;
 
+/// req(R34)
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
@@ -101,14 +102,14 @@ signing = {{ backend = "nsec", nsec = "{}" }}
 fn bunker_connection_error_does_not_leak_uri_marker() {
     let fixture = SensitiveFixture::new();
     let expected_keys = nostr::Keys::generate();
-    let other_keys = nostr::Keys::generate();
 
-    // A syntactically valid bunker URI whose remote signer pubkey does not
-    // match the configured bot pubkey. The URI embeds the synthetic marker so
-    // that any echo of the URI in the error would be detected.
+    // A syntactically valid bunker_remote URI that uses ws:// instead of the
+    // required wss://. The URI embeds the synthetic marker so that any echo of
+    // the URI in the error would be detected. (Static pubkey checks are gone;
+    // live verification happens during daemon startup.)
     let uri = format!(
-        "bunker://{}?relay=wss://relay-{}.example.com",
-        other_keys.public_key().to_hex(),
+        "bunker://{}?relay=ws://relay-{}.example.com",
+        expected_keys.public_key().to_hex(),
         fixture.bunker_uri_marker
     );
 
@@ -116,8 +117,8 @@ fn bunker_connection_error_does_not_leak_uri_marker() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("pubkey"),
-        "expected pubkey mismatch error, got: {msg}"
+        msg.contains("wss"),
+        "expected wss requirement error, got: {msg}"
     );
     assert_no_leak(&msg, &fixture);
 }
@@ -223,12 +224,12 @@ signing = {{ backend = "nsec", nsec = "" }}
 }
 
 #[test]
-#[ignore = "core-dump scan currently sees the test fixture string in-process; needs child-process isolation (TODO)"]
 fn simulated_core_dump_after_nsec_load_does_not_leak_marker() {
     let fixture = SensitiveFixture::new();
 
-    // Load the synthetic nsec into the local signer, exercising the existing
-    // secrecy / zeroize path.
+    // Load the synthetic nsec into the local signer, then drop it. The secret
+    // bytes are held in a Zeroizing container and cleared on drop, so no copy
+    // of the marker or raw secret bytes should remain in writable memory.
     let signer = LocalKey::parse(&fixture.nsec_marker).unwrap();
     drop(signer);
 
@@ -271,9 +272,10 @@ async fn start_http_server(
 
     let transport = HttpTransport::new("127.0.0.1:0", data_dir).with_max_frame_size(1024);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let (disconnect_tx, _disconnect_rx) = tokio::sync::mpsc::channel::<Option<String>>(1);
     tokio::spawn(async move {
         let _ = transport
-            .run_with_listener(listener, handler, shutdown_rx)
+            .run_with_listener(listener, handler, disconnect_tx, shutdown_rx)
             .await;
     });
 

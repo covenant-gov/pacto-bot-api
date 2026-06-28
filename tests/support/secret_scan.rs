@@ -11,6 +11,7 @@ use std::process::Command;
 use parking_lot::Mutex;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 /// A set of unique synthetic secret markers used to detect leaks.
 ///
@@ -20,6 +21,8 @@ pub struct SensitiveFixture {
     /// Synthetic `nsec` value. Kept as a 64-character hex string so it is valid
     /// for `LocalKey::parse` while still being easy to search for.
     pub nsec_marker: String,
+    /// Raw 32-byte secret key bytes corresponding to `nsec_marker`.
+    nsec_marker_bytes: [u8; 32],
     /// Synthetic bunker URI substring.
     pub bunker_uri_marker: String,
     /// Synthetic HTTP secret token.
@@ -28,13 +31,35 @@ pub struct SensitiveFixture {
 
 impl SensitiveFixture {
     /// Create a new fixture with fresh markers.
+    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
         let first = Uuid::new_v4().as_simple().to_string();
         let second = Uuid::new_v4().as_simple().to_string();
+
+        // Build the 64-character nsec marker in a single heap allocation so the
+        // only full copy is the live buffer.
+        let mut nsec_marker = String::with_capacity(64);
+        nsec_marker.push_str(&first);
+        nsec_marker.push_str(&second);
+
+        // Decode into a zeroizing temporary so the raw secret bytes are not
+        // left behind in a freed `Vec`.
+        let mut nsec_bytes_buf = Zeroizing::new([0u8; 32]);
+        hex::decode_to_slice(&nsec_marker, nsec_bytes_buf.as_mut())
+            .expect("UUID simple form is hex");
+        let nsec_marker_bytes = *nsec_bytes_buf;
+
+        let bunker_uuid = Uuid::new_v4().as_simple().to_string();
+        let bunker_uri_marker = String::from("pacto-test-bunker-") + &bunker_uuid;
+
+        let token_uuid = Uuid::new_v4().as_simple().to_string();
+        let http_token_marker = String::from("pacto-test-token-") + &token_uuid;
+
         Self {
-            nsec_marker: format!("{first}{second}"),
-            bunker_uri_marker: format!("pacto-test-bunker-{}", Uuid::new_v4()),
-            http_token_marker: format!("pacto-test-token-{}", Uuid::new_v4()),
+            nsec_marker,
+            nsec_marker_bytes,
+            bunker_uri_marker,
+            http_token_marker,
         }
     }
 }
@@ -71,6 +96,9 @@ pub fn assert_no_leak_bytes(haystack: &[u8], fixture: &SensitiveFixture) {
     let mut leaked = Vec::new();
     if contains_subsequence(haystack, fixture.nsec_marker.as_bytes()) {
         leaked.push("nsec");
+    }
+    if contains_subsequence(haystack, &fixture.nsec_marker_bytes) {
+        leaked.push("nsec_bytes");
     }
     if contains_subsequence(haystack, fixture.bunker_uri_marker.as_bytes()) {
         leaked.push("bunker_uri");
@@ -170,6 +198,10 @@ impl SensitiveFixture {
     pub fn scan_memory(&self) -> Option<Vec<u8>> {
         let exclusions = [
             (self.nsec_marker.as_ptr() as usize, self.nsec_marker.len()),
+            (
+                self.nsec_marker_bytes.as_ptr() as usize,
+                self.nsec_marker_bytes.len(),
+            ),
             (
                 self.bunker_uri_marker.as_ptr() as usize,
                 self.bunker_uri_marker.len(),

@@ -64,7 +64,9 @@ Handlers connect to the Unix socket at `$DATA_DIR/pacto-bot-api.sock` (default `
 
 Incoming DMs arrive as `agent.event` notifications; handlers reply with `agent.send_dm` or `handler.response`.
 
-See [`examples/`](examples/) for a reference Python echo handler.
+See [`examples/`](examples/) for a reference Python echo handler and a pointer
+to the Rust "example tests" under `tests/` (`example_http_handler.rs` and
+`example_multi_bot.rs`).
 
 ## Repository layout
 

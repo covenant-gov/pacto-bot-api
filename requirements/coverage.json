@@ -144,9 +144,8 @@
     "sources": ["src/diagnostics.rs", "src/admin.rs", "src/metrics_generated.rs"]
   },
   "R36": {
-    "tests": [],
-    "sources": [],
-    "justification": "Service-version probing is a best-effort Phase 2 capability against pacto-dev-env; the xtask DevEnvProbe command is currently a placeholder and not wired into daemon startup."
+    "tests": ["tests/dev_env_probe.rs"],
+    "sources": ["src/dev_env_probe.rs", "src/main.rs", "xtask/src/dev_env_probe.rs", "schemas/service-compatibility.json"]
   },
   "R37": {
     "tests": ["tests/diagnostics.rs", "tests/daemon_shutdown.rs"],

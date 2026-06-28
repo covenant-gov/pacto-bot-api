@@ -6,16 +6,32 @@ use nostr::secp256k1::schnorr::Signature;
 use nostr::{Event, Kind, PublicKey, Timestamp, ToBech32, UnsignedEvent};
 use nostr_sdk::Client;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig};
+use pacto_bot_api::diagnostics::{
+    BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
+    check_relay_connectivity,
+};
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::nip46;
 use pacto_bot_api::secrecy::ExposeSecret;
 use pacto_bot_api::signer::{Signer, SignerBackend};
+use pacto_bot_api::transport::protocol::{
+    JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
+};
 use rusqlite::Connection;
 
 #[cfg(test)]
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::io::AsyncReadExt;
+#[cfg(not(unix))]
+use tokio::io::AsyncWriteExt;
+#[cfg(unix)]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as IoWrite};
@@ -108,6 +124,11 @@ enum Command {
         #[arg(short, long, value_name = "FORMAT", default_value = "text")]
         format: String,
     },
+    /// Show daemon status, connectivity, and registered handlers.
+    Status {
+        #[arg(short, long, value_name = "FORMAT", default_value = "text")]
+        format: String,
+    },
 }
 
 #[tokio::main]
@@ -136,7 +157,8 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         }
         Command::ValidateConfig => cmd_validate_config(&cli.config, cli.data_dir),
         Command::RotateHttpToken => cmd_rotate_http_token(&cli.config, cli.data_dir),
-        Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format),
+        Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format).await,
+        Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
     }
 }
 
@@ -378,7 +400,7 @@ fn cmd_rotate_http_token(
     Ok(())
 }
 
-fn cmd_diagnose(
+async fn cmd_diagnose(
     config_path: &Path,
     data_dir_override: Option<PathBuf>,
     format: &str,
@@ -393,6 +415,11 @@ fn cmd_diagnose(
         .map(|c| resolve_data_dir(c, data_dir_override.clone()))
         .or_else(|| data_dir_override.as_deref().map(expand_path_buf));
 
+    let socket_path: Option<PathBuf> = config
+        .as_ref()
+        .map(|c| PathBuf::from(c.socket_path()))
+        .or_else(|| data_dir.as_ref().map(|d| d.join("pacto-bot-api.sock")));
+
     let mut errors = Vec::new();
     if let Some(err) = config_error {
         errors.push(err);
@@ -403,20 +430,56 @@ fn cmd_diagnose(
         .map(|p| is_daemon_lock_held(p))
         .unwrap_or(false);
 
+    let socket = socket_path
+        .as_deref()
+        .map(inspect_socket)
+        .unwrap_or_default();
+
+    let live_snapshot = match (&socket_path, &data_dir) {
+        (Some(socket), Some(dir)) => probe_live_metrics(socket, dir).await,
+        _ => None,
+    };
+
     let bots: Vec<BotDiagnosis> = config
         .as_ref()
         .map(|c| {
             c.bots
                 .iter()
-                .map(|b| BotDiagnosis {
-                    id: b.id.clone(),
-                    npub: b.npub.clone(),
-                    signing_backend: signing_backend_label(&b.signing),
-                    relay_count: b.relays.len(),
+                .map(|b| {
+                    let live_bunker_connected = live_snapshot.as_ref().and_then(|s| {
+                        s.bots
+                            .iter()
+                            .find(|bh| bh.bot_id == b.id)
+                            .map(|bh| bh.bunker_connected)
+                    });
+                    BotDiagnosis {
+                        id: b.id.clone(),
+                        npub: b.npub.clone(),
+                        signing_backend: signing_backend_label(&b.signing),
+                        relay_count: b.relays.len(),
+                        live_bunker_connected,
+                    }
                 })
                 .collect()
         })
         .unwrap_or_default();
+
+    let mut relay_connectivity = Vec::new();
+    let mut bunker_connectivity = Vec::new();
+    if let Some(ref cfg) = config {
+        for bot in &cfg.bots {
+            relay_connectivity.extend(check_relay_connectivity(bot).await);
+            if let Some(check) = check_bunker_connectivity(bot).await {
+                bunker_connectivity.push(check);
+            }
+        }
+    }
+
+    let service_versions = if let Some(ref cfg) = config {
+        probe_service_versions(&cfg.bots).await
+    } else {
+        ServiceVersions::default()
+    };
 
     let db_cursor_count = if let Some(ref dir) = data_dir {
         let db_path = dir.join(AGENT_DB_FILE);
@@ -438,14 +501,21 @@ fn cmd_diagnose(
         0
     };
 
+    let daemon_status = live_snapshot.as_ref().map(|s| daemon_status_str(s.status));
+
     let report = DiagnoseReport {
         config_valid,
         lock_held,
+        daemon_status,
         data_dir: data_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default(),
+        socket,
         bots,
+        relay_connectivity,
+        bunker_connectivity,
+        service_versions,
         db_cursor_count,
         errors,
     };
@@ -458,10 +528,419 @@ fn cmd_diagnose(
     Ok(())
 }
 
+async fn cmd_status(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    format: &str,
+) -> Result<(), DaemonError> {
+    let config = match DaemonConfig::load(config_path) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("warning: failed to load config: {e}");
+            None
+        }
+    };
+
+    let data_dir = config
+        .as_ref()
+        .map(|c| resolve_data_dir(c, data_dir_override.clone()))
+        .or_else(|| data_dir_override.as_deref().map(expand_path_buf));
+
+    let socket_path: Option<PathBuf> = config
+        .as_ref()
+        .map(|c| PathBuf::from(c.socket_path()))
+        .or_else(|| data_dir.as_ref().map(|d| d.join("pacto-bot-api.sock")));
+
+    let (daemon_running, live_metrics, live_snapshot) = match (&socket_path, &data_dir) {
+        #[cfg(unix)]
+        (Some(socket), Some(dir)) => match call_agent_metrics(socket).await {
+            Ok(metrics) => (true, Some(metrics), read_latest_report(dir)),
+            Err(_) => (false, None, read_latest_report(dir)),
+        },
+        #[cfg(not(unix))]
+        (_, Some(dir)) => (false, None, read_latest_report(dir)),
+        _ => (false, None, None),
+    };
+
+    let daemon_status = live_snapshot.as_ref().map(|s| daemon_status_str(s.status));
+    let uptime_seconds = live_metrics
+        .as_ref()
+        .and_then(|m| m.uptime_seconds)
+        .unwrap_or(0);
+    let handlers_registered = live_metrics
+        .as_ref()
+        .and_then(|m| m.handlers_registered)
+        .unwrap_or(0);
+
+    let mut bot_statuses = Vec::new();
+    if let Some(cfg) = &config {
+        for bot in &cfg.bots {
+            let relays = check_relay_connectivity(bot).await;
+            let bunker = check_bunker_connectivity(bot).await;
+            bot_statuses.push(BotStatus {
+                id: bot.id.clone(),
+                npub: bot.npub.clone(),
+                relays,
+                bunker,
+            });
+        }
+    }
+
+    let report = StatusReport {
+        daemon_running,
+        daemon_status,
+        uptime_seconds,
+        handlers_registered,
+        bots: bot_statuses,
+    };
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&report)?),
+        _ => print_status_text(&report)?,
+    }
+
+    Ok(())
+}
+
+fn read_latest_report(data_dir: &Path) -> Option<HealthSnapshot> {
+    let path = data_dir.join("reports").join("latest.json");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(snapshot) = serde_json::from_str::<HealthSnapshot>(&contents) {
+            return Some(snapshot);
+        }
+    }
+    None
+}
+
 fn find_bot<'a>(bots: &'a [BotConfig], bot_id: &str) -> Result<&'a BotConfig, DaemonError> {
     bots.iter()
         .find(|b| b.id == bot_id)
         .ok_or_else(|| DaemonError::UnknownBot(bot_id.to_string()))
+}
+
+fn inspect_socket(path: &Path) -> SocketHealth {
+    let exists = path.exists();
+    let mut mode = None;
+    let mut owner_readable = false;
+    let mut owner_writable = false;
+    if exists {
+        if let Ok(meta) = std::fs::metadata(path) {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let m = meta.permissions().mode();
+                mode = Some(m & 0o777);
+                owner_readable = m & 0o400 != 0;
+                owner_writable = m & 0o200 != 0;
+            }
+            #[cfg(not(unix))]
+            {
+                owner_readable = true;
+                owner_writable = !meta.permissions().readonly();
+            }
+        }
+    }
+    SocketHealth {
+        path: path.to_string_lossy().to_string(),
+        exists,
+        mode,
+        owner_readable,
+        owner_writable,
+    }
+}
+
+async fn probe_live_metrics(socket_path: &Path, data_dir: &Path) -> Option<HealthSnapshot> {
+    #[cfg(unix)]
+    // A successful `agent.metrics` response proves the daemon is running, but
+    // the response shape only contains counters. The full snapshot (status,
+    // per-bot health, recent errors) lives in the flushed report file.
+    let _ = call_agent_metrics(socket_path).await.ok();
+    read_latest_report(data_dir)
+}
+
+#[cfg(unix)]
+async fn call_agent_metrics(socket_path: &Path) -> Result<MetricsResponse, DaemonError> {
+    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
+    let (reader, mut writer) = stream.into_split();
+    let request = JsonRpcMessage::request(1.into(), "agent.metrics", None);
+    let line = format!("{}\n", serialize_message(&request)?);
+    writer.write_all(line.as_bytes()).await?;
+
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    let n = tokio::time::timeout(Duration::from_secs(2), reader.read_until(b'\n', &mut buf))
+        .await
+        .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
+    if n == 0 {
+        return Err(DaemonError::Config("unix socket closed".into()));
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+    let line = String::from_utf8(buf)
+        .map_err(|_| DaemonError::Config("metrics response is not valid UTF-8".into()))?;
+
+    match parse_message(&line)? {
+        JsonRpcMessage::Response {
+            result: Some(value),
+            ..
+        } => {
+            let metrics: MetricsResponse = serde_json::from_value(value)?;
+            Ok(metrics)
+        }
+        JsonRpcMessage::Response { result: None, .. } => {
+            Err(DaemonError::Config("empty metrics result".into()))
+        }
+        JsonRpcMessage::Error { error, .. } => Err(DaemonError::Config(format!(
+            "metrics error: {}",
+            error.message
+        ))),
+        _ => Err(DaemonError::Config("unexpected metrics response".into())),
+    }
+}
+
+fn daemon_status_str(status: DaemonStatus) -> String {
+    serde_json::to_value(status)
+        .ok()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| format!("{status:?}").to_lowercase())
+}
+
+fn is_pacto_dev_env() -> bool {
+    env::var("PACTO_DEV_ENV").map(|v| v == "1").unwrap_or(false)
+}
+
+async fn probe_service_versions(bots: &[BotConfig]) -> ServiceVersions {
+    if !is_pacto_dev_env() {
+        return ServiceVersions::default();
+    }
+    let relay = Some(probe_http_service("http://localhost:7000", "/", 2).await);
+    let evm_node = Some(probe_evm_node().await);
+    let bunker_port = match find_bunker_port(bots) {
+        Some(port) => Some(probe_tcp_service(&format!("127.0.0.1:{port}")).await),
+        None => None,
+    };
+    ServiceVersions {
+        relay,
+        evm_node,
+        bunker_port,
+    }
+}
+
+async fn probe_http_service(base_url: &str, path: &str, timeout_secs: u64) -> ServiceInfo {
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    match tokio::time::timeout(Duration::from_secs(timeout_secs), raw_http_get(&url)).await {
+        Ok(Ok((status, body))) => {
+            let reachable = status == 200;
+            let version = if reachable {
+                extract_version(&body)
+            } else {
+                None
+            };
+            ServiceInfo {
+                url: url.clone(),
+                reachable,
+                version,
+                error: if reachable {
+                    None
+                } else {
+                    Some(format!("HTTP {status}"))
+                },
+            }
+        }
+        Ok(Err(e)) => ServiceInfo {
+            url: url.clone(),
+            reachable: false,
+            version: None,
+            error: Some(e.to_string()),
+        },
+        Err(_) => ServiceInfo {
+            url: url.clone(),
+            reachable: false,
+            version: None,
+            error: Some("request timed out".to_string()),
+        },
+    }
+}
+
+async fn raw_http_get(url: &str) -> Result<(u16, String), DaemonError> {
+    let (host, port, path) = parse_http_url(url)?;
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect(&addr).await?;
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(DaemonError::Io)?;
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(DaemonError::Io)?;
+    parse_http_response(&buf)
+}
+
+async fn raw_http_post(url: &str, body: &str) -> Result<(u16, String), DaemonError> {
+    let (host, port, path) = parse_http_url(url)?;
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect(&addr).await?;
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(DaemonError::Io)?;
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .await
+        .map_err(DaemonError::Io)?;
+    parse_http_response(&buf)
+}
+
+fn parse_http_url(url: &str) -> Result<(String, u16, String), DaemonError> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .ok_or_else(|| DaemonError::Config(format!("not an http url: {url}")))?;
+    let (host_port, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match host_port.rfind(':') {
+        Some(idx) => {
+            let host = &host_port[..idx];
+            let port: u16 = host_port[idx + 1..]
+                .parse()
+                .map_err(|_| DaemonError::Config("invalid port".into()))?;
+            (host, port)
+        }
+        None => (host_port, 80),
+    };
+    Ok((host.to_string(), port, path.to_string()))
+}
+
+fn parse_http_response(buf: &[u8]) -> Result<(u16, String), DaemonError> {
+    let text = String::from_utf8_lossy(buf);
+    let status_line = text
+        .lines()
+        .next()
+        .ok_or_else(|| DaemonError::Config("empty http response".into()))?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| DaemonError::Config("invalid http status line".into()))?;
+    let status: u16 = status
+        .parse()
+        .map_err(|_| DaemonError::Config("invalid http status code".into()))?;
+    let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    Ok((status, body))
+}
+
+fn extract_version(body: &str) -> Option<String> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(v) = value.get("version").and_then(|v| v.as_str()) {
+            return Some(v.to_string());
+        }
+        if let Some(v) = value.get("name").and_then(|v| v.as_str()) {
+            return Some(v.to_string());
+        }
+    }
+    body.lines().next().map(|s| s.to_string())
+}
+
+async fn probe_evm_node() -> ServiceInfo {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "net_version",
+        "params": []
+    })
+    .to_string();
+    let url = "http://localhost:8545";
+    match tokio::time::timeout(Duration::from_secs(2), raw_http_post(url, &payload)).await {
+        Ok(Ok((status, body))) => {
+            let reachable = status == 200;
+            let version = if reachable {
+                serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("result")
+                            .and_then(|r| r.as_str())
+                            .map(|s| s.to_string())
+                    })
+            } else {
+                None
+            };
+            ServiceInfo {
+                url: url.to_string(),
+                reachable,
+                version,
+                error: if reachable {
+                    None
+                } else {
+                    Some(format!("HTTP {status}"))
+                },
+            }
+        }
+        Ok(Err(e)) => ServiceInfo {
+            url: url.to_string(),
+            reachable: false,
+            version: None,
+            error: Some(e.to_string()),
+        },
+        Err(_) => ServiceInfo {
+            url: url.to_string(),
+            reachable: false,
+            version: None,
+            error: Some("request timed out".to_string()),
+        },
+    }
+}
+
+async fn probe_tcp_service(addr: &str) -> ServiceInfo {
+    let result = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(addr)).await;
+    let reachable = matches!(result, Ok(Ok(_)));
+    ServiceInfo {
+        url: format!("tcp://{addr}"),
+        reachable,
+        version: None,
+        error: if reachable {
+            None
+        } else {
+            Some("connection refused or timed out".to_string())
+        },
+    }
+}
+
+fn find_bunker_port(bots: &[BotConfig]) -> Option<u16> {
+    for bot in bots {
+        if let SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } =
+            &bot.signing
+        {
+            if let Some(port) = extract_port_from_url(uri.expose_secret()) {
+                return Some(port);
+            }
+        }
+    }
+    None
+}
+
+fn extract_port_from_url(url: &str) -> Option<u16> {
+    let trimmed = url
+        .strip_prefix("ws://")
+        .or_else(|| url.strip_prefix("wss://"))?;
+    let host_port = trimmed.split('/').next()?;
+    let parts: Vec<&str> = host_port.split(':').collect();
+    if parts.len() == 2 {
+        parts[1].parse().ok()
+    } else {
+        None
+    }
 }
 
 fn resolve_data_dir(config: &DaemonConfig, override_path: Option<PathBuf>) -> PathBuf {
@@ -664,10 +1143,35 @@ struct HandlerExport {
 struct DiagnoseReport {
     config_valid: bool,
     lock_held: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_status: Option<String>,
     data_dir: String,
+    socket: SocketHealth,
     bots: Vec<BotDiagnosis>,
+    relay_connectivity: Vec<RelayCheck>,
+    bunker_connectivity: Vec<BunkerCheck>,
+    service_versions: ServiceVersions,
     db_cursor_count: i64,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StatusReport {
+    daemon_running: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_status: Option<String>,
+    uptime_seconds: u64,
+    handlers_registered: u64,
+    bots: Vec<BotStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BotStatus {
+    id: String,
+    npub: String,
+    relays: Vec<RelayCheck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bunker: Option<BunkerCheck>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -676,6 +1180,38 @@ struct BotDiagnosis {
     npub: String,
     signing_backend: String,
     relay_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    live_bunker_connected: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+struct SocketHealth {
+    path: String,
+    exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
+    owner_readable: bool,
+    owner_writable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+struct ServiceVersions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    relay: Option<ServiceInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evm_node: Option<ServiceInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bunker_port: Option<ServiceInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ServiceInfo {
+    url: String,
+    reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
@@ -822,15 +1358,73 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     let mut out = io::stdout().lock();
     writeln!(out, "config_valid: {}", report.config_valid).map_err(DaemonError::Io)?;
     writeln!(out, "lock_held: {}", report.lock_held).map_err(DaemonError::Io)?;
+    if let Some(status) = &report.daemon_status {
+        writeln!(out, "daemon_status: {status}").map_err(DaemonError::Io)?;
+    }
     writeln!(out, "data_dir: {}", report.data_dir).map_err(DaemonError::Io)?;
+    writeln!(out, "socket:").map_err(DaemonError::Io)?;
+    writeln!(
+        out,
+        "  path: {} exists: {} owner_readable: {} owner_writable: {}",
+        report.socket.path,
+        report.socket.exists,
+        report.socket.owner_readable,
+        report.socket.owner_writable
+    )
+    .map_err(DaemonError::Io)?;
+    if let Some(mode) = report.socket.mode {
+        writeln!(out, "  mode: 0o{mode:o}").map_err(DaemonError::Io)?;
+    }
     writeln!(out, "bots:").map_err(DaemonError::Io)?;
     for bot in &report.bots {
-        writeln!(
+        write!(
             out,
             "  - id: {}, npub: {}, signing_backend: {}, relays: {}",
             bot.id, bot.npub, bot.signing_backend, bot.relay_count
         )
         .map_err(DaemonError::Io)?;
+        if let Some(connected) = bot.live_bunker_connected {
+            writeln!(out, ", live_bunker_connected: {connected}").map_err(DaemonError::Io)?;
+        } else {
+            writeln!(out).map_err(DaemonError::Io)?;
+        }
+    }
+    writeln!(out, "relay_connectivity:").map_err(DaemonError::Io)?;
+    for check in &report.relay_connectivity {
+        writeln!(
+            out,
+            "  - bot_id: {}, relay: {}, reachable: {}",
+            check.bot_id, check.relay, check.reachable
+        )
+        .map_err(DaemonError::Io)?;
+    }
+    writeln!(out, "bunker_connectivity:").map_err(DaemonError::Io)?;
+    for check in &report.bunker_connectivity {
+        writeln!(
+            out,
+            "  - bot_id: {}, reachable: {}",
+            check.bot_id, check.reachable
+        )
+        .map_err(DaemonError::Io)?;
+    }
+    if is_pacto_dev_env() {
+        writeln!(out, "service_versions:").map_err(DaemonError::Io)?;
+        if let Some(relay) = &report.service_versions.relay {
+            writeln!(out, "  relay: {} reachable: {}", relay.url, relay.reachable)
+                .map_err(DaemonError::Io)?;
+        }
+        if let Some(evm) = &report.service_versions.evm_node {
+            writeln!(out, "  evm_node: {} reachable: {}", evm.url, evm.reachable)
+                .map_err(DaemonError::Io)?;
+        }
+        if let Some(bunker) = &report.service_versions.bunker_port {
+            writeln!(
+                out,
+                "  bunker_port: {} reachable: {}",
+                bunker.url, bunker.reachable
+            )
+            .map_err(DaemonError::Io)?;
+        }
     }
     writeln!(out, "db_cursor_count: {}", report.db_cursor_count).map_err(DaemonError::Io)?;
     if !report.errors.is_empty() {
@@ -839,6 +1433,66 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
             writeln!(out, "  - {err}").map_err(DaemonError::Io)?;
         }
     }
+    Ok(())
+}
+
+fn print_status_text(report: &StatusReport) -> Result<(), DaemonError> {
+    let mut out = io::stdout().lock();
+    writeln!(
+        out,
+        "daemon: {}",
+        if report.daemon_running {
+            "running"
+        } else {
+            "stopped"
+        }
+    )
+    .map_err(DaemonError::Io)?;
+    if let Some(status) = &report.daemon_status {
+        writeln!(out, "status: {status}").map_err(DaemonError::Io)?;
+    }
+    writeln!(out, "uptime: {}s", report.uptime_seconds).map_err(DaemonError::Io)?;
+    writeln!(out, "handlers: {}", report.handlers_registered).map_err(DaemonError::Io)?;
+
+    if !report.bots.is_empty() {
+        writeln!(out, "\nbots:").map_err(DaemonError::Io)?;
+        for bot in &report.bots {
+            writeln!(out, "  - id: {}", bot.id).map_err(DaemonError::Io)?;
+            writeln!(out, "    npub: {}", bot.npub).map_err(DaemonError::Io)?;
+            writeln!(out, "    relays:").map_err(DaemonError::Io)?;
+            if bot.relays.is_empty() {
+                writeln!(out, "      (none)").map_err(DaemonError::Io)?;
+            } else {
+                for check in &bot.relays {
+                    write!(out, "      - {}: ", check.relay).map_err(DaemonError::Io)?;
+                    if check.reachable {
+                        writeln!(out, "reachable").map_err(DaemonError::Io)?;
+                    } else if let Some(error) = &check.error {
+                        writeln!(out, "unreachable ({error})").map_err(DaemonError::Io)?;
+                    } else {
+                        writeln!(out, "unreachable").map_err(DaemonError::Io)?;
+                    }
+                }
+            }
+            match &bot.bunker {
+                Some(check) if check.reachable => {
+                    writeln!(out, "    bunker: connected").map_err(DaemonError::Io)?;
+                }
+                Some(check) => {
+                    write!(out, "    bunker: disconnected").map_err(DaemonError::Io)?;
+                    if let Some(error) = &check.error {
+                        writeln!(out, " ({error})").map_err(DaemonError::Io)?;
+                    } else {
+                        writeln!(out).map_err(DaemonError::Io)?;
+                    }
+                }
+                None => {
+                    writeln!(out, "    bunker: not configured").map_err(DaemonError::Io)?;
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1067,5 +1721,53 @@ mod tests {
     fn new_rejects_unknown_backend() {
         let err = cmd_new("x", "invalid", &[], &[], None).unwrap_err();
         assert!(err.to_string().contains("unknown backend"));
+    }
+
+    #[test]
+    fn inspect_socket_reports_missing_path() {
+        let path = Path::new("/nonexistent/pacto-bot-api.sock");
+        let health = inspect_socket(path);
+        assert_eq!(health.path, path.to_string_lossy());
+        assert!(!health.exists);
+        assert!(!health.owner_readable);
+        assert!(!health.owner_writable);
+        assert!(health.mode.is_none());
+    }
+
+    #[test]
+    fn inspect_socket_reports_temp_file_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.sock");
+        fs::write(&path, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+        let health = inspect_socket(&path);
+        assert!(health.exists);
+        assert!(health.owner_readable);
+        assert!(health.owner_writable);
+    }
+
+    #[test]
+    fn extract_port_from_url_parses_ws_port() {
+        assert_eq!(extract_port_from_url("ws://127.0.0.1:4848"), Some(4848));
+        assert_eq!(
+            extract_port_from_url("wss://relay.example:443/path"),
+            Some(443)
+        );
+        assert_eq!(extract_port_from_url("ws://relay.example"), None);
+    }
+
+    #[test]
+    fn daemon_status_str_uses_snake_case() {
+        assert_eq!(daemon_status_str(DaemonStatus::Ready), "ready");
+        assert_eq!(
+            daemon_status_str(DaemonStatus::ShuttingDown),
+            "shutting_down"
+        );
     }
 }

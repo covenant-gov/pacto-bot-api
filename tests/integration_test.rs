@@ -1,208 +1,14 @@
 mod common;
 mod support;
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
+/// req(R4, R5, R12, R13, R15, R17, R33)
 use std::time::Duration;
 
-use nostr::{EventBuilder, Keys, Kind, PublicKey};
-use pacto_bot_api::transport::protocol::{JsonRpcMessage, serialize_message};
+use nostr::{Keys, Kind, PublicKey};
+use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use serde_json::Value;
+use support::mock_bunker::MockBunker;
 use support::mock_relay::MockRelay;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
-use tokio::net::UnixStream;
-use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::time::timeout;
-
-/// Connect to `path` and retry until the socket accepts or `deadline` passes.
-async fn wait_for_socket(
-    path: &Path,
-    deadline: Duration,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let end = tokio::time::Instant::now() + deadline;
-    while tokio::time::Instant::now() < end {
-        if UnixStream::connect(path).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    Err("daemon socket did not become available".into())
-}
-
-/// A simple handler client connected to the daemon Unix socket.
-///
-/// Maintains a persistent connection, matches responses by JSON-RPC id, and
-/// delivers daemon notifications on a dedicated channel.
-struct HandlerClient {
-    outgoing_tx: mpsc::UnboundedSender<JsonRpcMessage>,
-    notification_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
-    pending: Arc<Mutex<HashMap<Value, oneshot::Sender<JsonRpcMessage>>>>,
-    handler_id: String,
-}
-
-impl HandlerClient {
-    async fn register(
-        path: &Path,
-        bot_ids: &[&str],
-        event_types: &[&str],
-        capabilities: &[&str],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        wait_for_socket(path, Duration::from_secs(10)).await?;
-        let stream = UnixStream::connect(path).await?;
-        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
-        let (notification_tx, notification_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
-        let pending: Arc<Mutex<HashMap<Value, oneshot::Sender<JsonRpcMessage>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
-        let pending_for_io = Arc::clone(&pending);
-        tokio::spawn(async move {
-            let mut stream = BufStream::new(stream);
-
-            async fn read_frame(
-                stream: &mut BufStream<UnixStream>,
-            ) -> Result<String, std::io::Error> {
-                let mut line = String::new();
-                stream.read_line(&mut line).await?;
-                Ok(line)
-            }
-
-            loop {
-                tokio::select! {
-                    Some(msg) = outgoing_rx.recv() => {
-                        let line = match serialize_message(&msg) {
-                            Ok(l) => l,
-                            Err(_) => continue,
-                        };
-                        if stream.write_all(line.as_bytes()).await.is_err() {
-                            break;
-                        }
-                        if stream.write_all(b"\n").await.is_err() {
-                            break;
-                        }
-                        if stream.flush().await.is_err() {
-                            break;
-                        }
-                    }
-                    result = read_frame(&mut stream) => {
-                        let line = match result {
-                            Ok(l) => l,
-                            Err(_) => break,
-                        };
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        let msg: JsonRpcMessage = match serde_json::from_str(trimmed) {
-                            Ok(m) => m,
-                            Err(_) => continue,
-                        };
-
-                        if let Some(id) = msg.id().cloned() {
-                            if let Some(tx) = pending_for_io.lock().await.remove(&id) {
-                                let _ = tx.send(msg);
-                                continue;
-                            }
-                        }
-                        let _ = notification_tx.send(msg);
-                    }
-                }
-            }
-        });
-
-        let mut client = Self {
-            outgoing_tx,
-            notification_rx,
-            pending,
-            handler_id: String::new(),
-        };
-
-        let resp = client
-            .call(JsonRpcMessage::request(
-                1.into(),
-                "handler.register",
-                Some(serde_json::json!({
-                    "bot_ids": bot_ids,
-                    "event_types": event_types,
-                    "capabilities": capabilities,
-                })),
-            ))
-            .await?;
-
-        let handler_id = match resp {
-            JsonRpcMessage::Response { result, .. } => result
-                .and_then(|r| r.get("handler_id")?.as_str().map(String::from))
-                .ok_or("handler.register response missing handler_id")?,
-            JsonRpcMessage::Error { error, .. } => {
-                return Err(format!("handler.register failed: {}", error.message).into());
-            }
-            _ => return Err("unexpected handler.register response".into()),
-        };
-
-        client.handler_id = handler_id;
-        Ok(client)
-    }
-
-    async fn call(
-        &self,
-        msg: JsonRpcMessage,
-    ) -> Result<JsonRpcMessage, Box<dyn std::error::Error>> {
-        let id = msg.id().cloned().ok_or("request missing id")?;
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
-        self.outgoing_tx
-            .send(msg)
-            .map_err(|_| "request channel closed")?;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        match timeout(deadline.duration_since(tokio::time::Instant::now()), rx).await {
-            Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(_)) => Err("response channel closed".into()),
-            Err(_) => Err("request timed out".into()),
-        }
-    }
-
-    async fn next_notification(
-        &mut self,
-        deadline: Duration,
-    ) -> Result<JsonRpcMessage, Box<dyn std::error::Error>> {
-        match timeout(deadline, self.notification_rx.recv()).await {
-            Ok(Some(msg)) => Ok(msg),
-            Ok(None) => Err("notification channel closed".into()),
-            Err(_) => Err("timed out waiting for notification".into()),
-        }
-    }
-
-    async fn send_response(
-        &self,
-        event_id: &str,
-        action: &str,
-        content: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut params = serde_json::json!({
-            "event_id": event_id,
-            "action": action,
-        });
-        if let Some(c) = content {
-            params["content"] = Value::String(c.into());
-        }
-        let msg = JsonRpcMessage::notification("handler.response", Some(params));
-        self.outgoing_tx
-            .send(msg)
-            .map_err(|_| "request channel closed")?;
-        Ok(())
-    }
-}
-
-/// Build a kind:1059 gift wrap from `sender` to `recipient_npub`.
-async fn build_gift_wrap(
-    sender: &Keys,
-    recipient_npub: &str,
-    content: &str,
-) -> Result<nostr::Event, Box<dyn std::error::Error>> {
-    let recipient = PublicKey::parse(recipient_npub)?;
-    let event = EventBuilder::private_msg(sender, recipient, content, Vec::new()).await?;
-    Ok(event)
-}
 
 /// Wait for the daemon to publish a kind:1059 gift wrap addressed to `sender_pubkey`.
 async fn wait_for_reply(
@@ -233,7 +39,7 @@ async fn full_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error:
     let daemon = common::spawn_daemon_until_ready(&config_path).await?;
 
     let socket_path = dir.path().join("pacto-bot-api.sock");
-    let mut handler = HandlerClient::register(
+    let mut handler = common::HandlerClient::register(
         &socket_path,
         &["echo-bot"],
         &["dm_received"],
@@ -243,7 +49,7 @@ async fn full_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error:
 
     // Sender keys represent the human/user sending a DM to the bot.
     let sender = Keys::generate();
-    let gift = build_gift_wrap(&sender, &bot_config.npub, "/echo hello").await?;
+    let gift = common::build_gift_wrap(&sender, &bot_config.npub, "/echo hello").await?;
     relay.inject_event(gift).await;
 
     // Wait for the daemon to dispatch the event to the handler.
@@ -288,6 +94,91 @@ async fn full_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test]
+async fn bunker_local_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error::Error>> {
+    let relay = MockRelay::start().await?;
+    let dir = tempfile::tempdir()?;
+
+    let (mut bot_config, bunker_keys) = common::generate_bunker_bot_with_keys("echo-bot", true)?;
+    let bunker = MockBunker::new(bunker_keys, vec![relay.url()]).await?;
+    let uri = bunker
+        .uri_from_relays(&[relay.url()])
+        .ok_or("mock bunker produced no URI")?;
+    common::set_bunker_uri(&mut bot_config, &uri);
+    bot_config.relays = vec![relay.url()];
+    bot_config.capabilities = vec!["ReadMessages".into(), "SendMessages".into()];
+
+    let config_path = common::make_config(&dir, vec![bot_config.clone()])?;
+    let log_path = dir.path().join("daemon.log");
+    let daemon = common::spawn_daemon_until_ready_with_log(&config_path, Some(&log_path)).await?;
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let socket_path = dir.path().join("pacto-bot-api.sock");
+        let mut handler = common::HandlerClient::register(
+            &socket_path,
+            &["echo-bot"],
+            &["dm_received"],
+            &["ReadMessages", "SendMessages"],
+        )
+        .await?;
+
+        // Give the bunker and daemon subscriptions time to settle.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let sender = Keys::generate();
+        let gift = common::build_gift_wrap(&sender, &bot_config.npub, "/echo bunker").await?;
+        relay.inject_event(gift).await;
+
+        let notification = handler.next_notification(Duration::from_secs(10)).await?;
+        let event_id = match &notification {
+            JsonRpcMessage::Notification { method, params, .. } if method == "agent.event" => {
+                let params = params.as_ref().ok_or("agent.event missing params")?;
+                let event_id = params
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .ok_or("agent.event missing event_id")?
+                    .to_string();
+                let content = params
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or("agent.event missing content")?;
+                assert_eq!(content, "/echo bunker");
+                event_id
+            }
+            _ => {
+                return Err(
+                    format!("expected agent.event notification, got {:?}", notification).into(),
+                );
+            }
+        };
+
+        handler
+            .send_response(&event_id, "reply", Some("bunker hello"))
+            .await?;
+
+        let replies = wait_for_reply(&relay, &sender.public_key(), Duration::from_secs(10)).await?;
+        assert!(
+            !replies.is_empty(),
+            "daemon should publish a reply gift wrap for a bunker_local bot"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    common::shutdown_daemon(daemon).await?;
+    bunker.stop().await;
+    relay.stop().await;
+
+    if let Err(e) = &result {
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        eprintln!("daemon log:\n{log}");
+        return Err(format!("{e}").into());
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
     let dir = tempfile::tempdir()?;
@@ -304,7 +195,7 @@ async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     let daemon = common::spawn_daemon_until_ready(&config_path).await?;
 
     let socket_path = dir.path().join("pacto-bot-api.sock");
-    let mut echo_handler = HandlerClient::register(
+    let mut echo_handler = common::HandlerClient::register(
         &socket_path,
         &["echo-bot"],
         &["dm_received"],
@@ -315,7 +206,7 @@ async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     let sender = Keys::generate();
 
     // DM for echo-bot should be delivered.
-    let echo_gift = build_gift_wrap(&sender, &echo_config.npub, "for echo").await?;
+    let echo_gift = common::build_gift_wrap(&sender, &echo_config.npub, "for echo").await?;
     relay.inject_event(echo_gift).await;
 
     let notification = echo_handler
@@ -324,7 +215,7 @@ async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(notification.method(), Some("agent.event"));
 
     // DM for other-bot should not be delivered to the echo-only handler.
-    let other_gift = build_gift_wrap(&sender, &other_config.npub, "for other").await?;
+    let other_gift = common::build_gift_wrap(&sender, &other_config.npub, "for other").await?;
     relay.inject_event(other_gift).await;
 
     let timeout_result = echo_handler
@@ -353,14 +244,14 @@ async fn handler_fan_out() -> Result<(), Box<dyn std::error::Error>> {
     let daemon = common::spawn_daemon_until_ready(&config_path).await?;
 
     let socket_path = dir.path().join("pacto-bot-api.sock");
-    let mut handler_a = HandlerClient::register(
+    let mut handler_a = common::HandlerClient::register(
         &socket_path,
         &["echo-bot"],
         &["dm_received"],
         &["ReadMessages", "SendMessages"],
     )
     .await?;
-    let mut handler_b = HandlerClient::register(
+    let mut handler_b = common::HandlerClient::register(
         &socket_path,
         &["echo-bot"],
         &["dm_received"],
@@ -369,7 +260,7 @@ async fn handler_fan_out() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     let sender = Keys::generate();
-    let gift = build_gift_wrap(&sender, &bot_config.npub, "fan out").await?;
+    let gift = common::build_gift_wrap(&sender, &bot_config.npub, "fan out").await?;
     relay.inject_event(gift).await;
 
     let notif_a = handler_a.next_notification(Duration::from_secs(5)).await?;

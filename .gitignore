@@ -12,7 +12,9 @@ node_modules/
 /data
 .env
 .env.local
-
+coverage-html/
+coverage.json
+lcov.info
 # Rust build artifacts
 /target
 

@@ -5,32 +5,43 @@ use std::time::{Duration, Instant};
 
 use nostr::EventId;
 use serde_json::Value;
-use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc};
+use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::client_manager::ClientManager;
 use crate::db::Database;
-use crate::diagnostics::{DaemonStatus, Diagnostics};
+use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
-use crate::transport::protocol::{JsonRpcMessage, Method, MetricsResponse, parse_method};
+use crate::transport::protocol::{
+    HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse, parse_method,
+};
 
 #[cfg(test)]
 use secrecy::SecretString;
 
 /// Maximum time to wait for handler responses before advancing the cursor.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(5);
+pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Default per-handler rate: 10 ops/sec.
 const HANDLER_RATE: f64 = 10.0;
 /// Default per-handler burst: 20 ops.
 const HANDLER_BURST: f64 = 20.0;
-/// Default per-bot aggregate rate: 30 ops/sec.
-const BOT_RATE: f64 = 30.0;
-/// Default per-bot aggregate burst: 60 ops.
-const BOT_BURST: f64 = 60.0;
+/// Default per-bot aggregate rate: 20 ops/sec.
+const BOT_RATE: f64 = 20.0;
+/// Default per-bot aggregate burst: 40 ops.
+const BOT_BURST: f64 = 40.0;
+
+/// Production default per-handler rate, exposed for tests.
+pub const DEFAULT_HANDLER_RATE: f64 = HANDLER_RATE;
+/// Production default per-handler burst, exposed for tests.
+pub const DEFAULT_HANDLER_BURST: f64 = HANDLER_BURST;
+/// Production default per-bot aggregate rate, exposed for tests.
+pub const DEFAULT_BOT_RATE: f64 = BOT_RATE;
+/// Production default per-bot aggregate burst, exposed for tests.
+pub const DEFAULT_BOT_BURST: f64 = BOT_BURST;
 
 /// Action a handler can take in response to an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,11 +173,12 @@ impl Default for RateLimiter {
 pub struct Dispatch {
     client_manager: Arc<RwLock<ClientManager>>,
     db: StdMutex<Database>,
-    diagnostics: Diagnostics,
+    pub diagnostics: Diagnostics,
     rate_limiter: RateLimiter,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
     handlers_registered: AtomicU64,
     last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
+    dispatch_timeout: Duration,
 }
 
 impl Dispatch {
@@ -184,6 +196,7 @@ impl Dispatch {
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
+            dispatch_timeout: DISPATCH_TIMEOUT,
         }
     }
 
@@ -202,7 +215,46 @@ impl Dispatch {
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
+            dispatch_timeout: DISPATCH_TIMEOUT,
         }
+    }
+
+    /// Override the dispatch timeout. Intended for tests only.
+    pub fn set_dispatch_timeout(&mut self, timeout: Duration) {
+        self.dispatch_timeout = timeout;
+    }
+
+    /// Return the current diagnostics health snapshot.
+    pub fn diagnostics_snapshot(&self) -> HealthSnapshot {
+        self.diagnostics.snapshot()
+    }
+
+    /// Number of handlers currently registered.
+    pub fn registered_handler_count(&self) -> u64 {
+        self.handlers_registered.load(Ordering::SeqCst)
+    }
+
+    /// Remove a handler from the registry and delete its persisted row.
+    ///
+    /// Used by the transport layer when a connection drops, as well as by
+    /// explicit `handler.unregister` requests.
+    pub async fn unregister_handler(&self, handler_id: &str) -> Result<(), DaemonError> {
+        let mut cm = self.client_manager.write().await;
+        cm.handler_registry.unregister(handler_id)?;
+
+        {
+            let db = self
+                .db
+                .lock()
+                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
+            db.delete_handler(handler_id)?;
+        }
+
+        self.handlers_registered.fetch_sub(1, Ordering::SeqCst);
+        self.diagnostics
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+
+        Ok(())
     }
 
     /// Dispatch an outgoing agent event to all matching handlers.
@@ -245,12 +297,16 @@ impl Dispatch {
                 let handler_id = handler.id.clone();
                 match handler.send_event(event) {
                     Ok(()) => diag.record_event_dispatched(),
-                    Err(e) => diag.record_error(&format!("handler {handler_id} send failed: {e}")),
+                    Err(e) => diag.record_error(
+                        Some("handler_send_failed"),
+                        &format!("handler {handler_id} send failed: {e}"),
+                        None,
+                    ),
                 }
             });
         }
 
-        let deadline = Instant::now() + DISPATCH_TIMEOUT;
+        let deadline = Instant::now() + self.dispatch_timeout;
         let mut responses = Vec::new();
         let mut any_defer = false;
 
@@ -288,8 +344,11 @@ impl Dispatch {
                     )
                     .await
                 {
-                    self.diagnostics
-                        .record_error(&format!("reply send failed: {e}"));
+                    self.diagnostics.record_error(
+                        Some("reply_send_failed"),
+                        &format!("reply send failed: {e}"),
+                        None,
+                    );
                 }
             }
         }
@@ -326,10 +385,47 @@ impl Dispatch {
         };
 
         for handler in handlers {
-            if let Err(e) = handler.send_status(state) {
+            if let Err(e) = handler.send_status(state, None) {
                 warn!(handler_id = %handler.id, error = %e, "failed to send status notification");
             }
         }
+    }
+
+    /// Broadcast an `agent.metrics` notification to all registered handlers.
+    ///
+    /// Uses the same payload shape as the `agent.metrics` response.
+    pub async fn broadcast_metrics(&self) {
+        let snapshot = self.diagnostics.snapshot();
+        let response = MetricsResponse::from(snapshot);
+
+        let handlers = {
+            let cm = self.client_manager.read().await;
+            cm.handler_registry.all_handlers()
+        };
+
+        for handler in handlers {
+            if let Err(e) = handler.send_metrics(&response) {
+                warn!(handler_id = %handler.id, error = %e, "failed to send metrics notification");
+            }
+        }
+    }
+
+    /// Spawn a background task that broadcasts `agent.metrics` notifications
+    /// to all registered handlers every `interval` until `shutdown` fires.
+    pub fn spawn_periodic_metrics(
+        self: Arc<Self>,
+        interval: Duration,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => self.broadcast_metrics().await,
+                    _ = shutdown.changed() => break,
+                }
+            }
+        })
     }
 
     /// Persist the latest cursor for every bot seen by this dispatch instance.
@@ -421,6 +517,11 @@ impl Dispatch {
                 .unwrap_or(Value::Array(vec![])),
         )?;
 
+        let preferred_id = params
+            .get("handler_id")
+            .and_then(Value::as_str)
+            .map(String::from);
+
         let connection = out_tx.map_or_else(
             || {
                 let (tx, _rx) = mpsc::channel(1);
@@ -434,8 +535,16 @@ impl Dispatch {
             cm.bots().map(|(_, b)| b.config.clone()).collect::<Vec<_>>()
         };
 
+        let existed = {
+            let cm = self.client_manager.read().await;
+            preferred_id
+                .as_ref()
+                .is_some_and(|id| cm.handler_registry.get_handler(id).is_some())
+        };
+
         let mut cm = self.client_manager.write().await;
-        let handler_id = cm.handler_registry.register(
+        let handler_id = cm.handler_registry.reconnect(
+            preferred_id,
             connection,
             bot_ids,
             event_types,
@@ -454,9 +563,23 @@ impl Dispatch {
             })
             .unwrap_or_default();
 
-        self.handlers_registered.fetch_add(1, Ordering::SeqCst);
-        self.diagnostics
-            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+        {
+            let handler = cm
+                .handler_registry
+                .get_handler(&handler_id)
+                .ok_or_else(|| DaemonError::HandlerNotRegistered)?;
+            let db = self
+                .db
+                .lock()
+                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
+            db.save_handler(handler)?;
+        }
+
+        if !existed {
+            self.handlers_registered.fetch_add(1, Ordering::SeqCst);
+            self.diagnostics
+                .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+        }
 
         Ok(Some(serde_json::json!({
             "handler_id": handler_id,
@@ -467,25 +590,17 @@ impl Dispatch {
     async fn handle_unregister(
         &self,
         handler_id: Option<&str>,
-        params: Option<&Value>,
+        _params: Option<&Value>,
     ) -> Result<Option<Value>, DaemonError> {
-        let id = handler_id
-            .map(|s| s.to_string())
-            .or_else(|| {
-                params
-                    .and_then(|p| p.get("handler_id").and_then(Value::as_str))
-                    .map(String::from)
-            })
-            .ok_or_else(|| DaemonError::Config("handler.unregister missing handler_id".into()))?;
+        let id = handler_id.ok_or_else(|| {
+            DaemonError::Config("handler.unregister requires a registered connection".into())
+        })?;
 
-        let mut cm = self.client_manager.write().await;
-        cm.handler_registry.unregister(&id)?;
+        self.unregister_handler(id).await?;
 
-        self.handlers_registered.fetch_sub(1, Ordering::SeqCst);
-        self.diagnostics
-            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
-
-        Ok(Some(Value::Object(Default::default())))
+        Ok(Some(serde_json::to_value(HandlerUnregisterResponse {
+            unregistered: true,
+        })?))
     }
 
     async fn handle_send_dm_msg(
@@ -523,19 +638,19 @@ impl Dispatch {
         reply_to: Option<&str>,
         handler_id: Option<&str>,
     ) -> Result<EventId, DaemonError> {
-        if let Some(hid) = handler_id {
-            let authorized = {
-                let cm = self.client_manager.read().await;
-                cm.is_authorized(hid, bot_id, "SendMessages")?
-            };
-            if !authorized {
-                return Err(DaemonError::UnauthorizedBot);
-            }
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendMessages")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
 
-            let now = Instant::now();
-            if !self.rate_limiter.check(hid, bot_id, now).await {
-                return Err(DaemonError::RateLimited);
-            }
+        let now = Instant::now();
+        if !self.rate_limiter.check(hid, bot_id, now).await {
+            self.diagnostics.record_rate_limited();
+            return Err(DaemonError::RateLimited);
         }
 
         let cm = self.client_manager.read().await;
@@ -560,25 +675,34 @@ impl Dispatch {
             .get("bot_id")
             .and_then(Value::as_str)
             .ok_or_else(|| DaemonError::Config("agent.set_profile missing bot_id".into()))?;
+        let name = params.get("name").and_then(Value::as_str);
+        let about = params.get("about").and_then(Value::as_str);
+        let picture = params.get("picture").and_then(Value::as_str);
 
-        if let Some(hid) = handler_id {
-            let authorized = {
-                let cm = self.client_manager.read().await;
-                cm.is_authorized(hid, bot_id, "ManageProfile")?
-            };
-            if !authorized {
-                return Err(DaemonError::UnauthorizedBot);
-            }
-
-            let now = Instant::now();
-            if !self.rate_limiter.check(hid, bot_id, now).await {
-                return Err(DaemonError::RateLimited);
-            }
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "ManageProfile")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
         }
 
-        // Publishing kind:0 events requires a new NostrClient API; defer to a
-        // follow-up unit once the client surface is ready.
-        Err(DaemonError::MethodNotFound)
+        let now = Instant::now();
+        if !self.rate_limiter.check(hid, bot_id, now).await {
+            self.diagnostics.record_rate_limited();
+            return Err(DaemonError::RateLimited);
+        }
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let event_id = cm
+            .nostr_client
+            .set_profile(&bot.signer, name, about, picture)
+            .await?;
+        Ok(Some(Value::String(event_id.to_hex())))
     }
 
     async fn handle_error(
@@ -596,18 +720,25 @@ impl Dispatch {
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("unknown error");
+        let code = params.get("code").and_then(Value::as_str);
+        let data = params.get("data");
 
-        if let Some(hid) = handler_id {
-            let authorized = {
-                let cm = self.client_manager.read().await;
-                cm.is_authorized(hid, bot_id, "ReadMessages")?
-            };
-            if !authorized {
-                return Err(DaemonError::UnauthorizedBot);
-            }
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "ReadMessages")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
         }
 
-        self.diagnostics.record_error(message);
+        let now = Instant::now();
+        if !self.rate_limiter.check(hid, bot_id, now).await {
+            self.diagnostics.record_rate_limited();
+            return Err(DaemonError::RateLimited);
+        }
+
+        self.diagnostics.record_error(code, message, data);
         Ok(None)
     }
 
@@ -641,7 +772,7 @@ impl Dispatch {
 
     async fn handle_metrics(&self) -> Result<Option<Value>, DaemonError> {
         let snapshot = self.diagnostics.snapshot();
-        let response = MetricsResponse { snapshot };
+        let response = MetricsResponse::from(snapshot);
         Ok(Some(serde_json::to_value(response)?))
     }
 
@@ -652,6 +783,40 @@ impl Dispatch {
             .lock()
             .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
         db.load_cursor(bot_id)
+    }
+
+    /// Access the diagnostics collector.
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    /// Restore persisted handler registrations as disconnected entries.
+    pub async fn restore_handlers(&self) -> Result<(), DaemonError> {
+        let handlers = {
+            let db = self
+                .db
+                .lock()
+                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
+            db.load_handlers()?
+        };
+
+        let count = handlers.len() as u64;
+        let mut cm = self.client_manager.write().await;
+        for handler in handlers {
+            cm.handler_registry.restore(handler);
+        }
+        self.handlers_registered.store(count, Ordering::SeqCst);
+        self.diagnostics.set_handlers_registered(count);
+        Ok(())
+    }
+
+    /// Mark a handler's live connection as dead without removing its persisted
+    /// registration. A later reconnect can reuse the stored row.
+    pub async fn disconnect_handler(&self, handler_id: &str) {
+        let mut cm = self.client_manager.write().await;
+        if let Some(handler) = cm.handler_registry.get_handler_mut(handler_id) {
+            handler.disconnect();
+        }
     }
 }
 
@@ -705,7 +870,7 @@ mod tests {
         };
         let nostr_client = NostrClient::new(vec![]).await.unwrap();
         let cm = Arc::new(RwLock::new(
-            ClientManager::new(config, nostr_client).unwrap(),
+            ClientManager::new(config, nostr_client).await.unwrap(),
         ));
         let dir = tempdir().unwrap();
         let db = Database::open(dir.path().join("test.db").as_path()).unwrap();
@@ -893,7 +1058,7 @@ mod tests {
             snapshot
                 .errors
                 .iter()
-                .any(|e| e.contains("something went wrong"))
+                .any(|e| e.message.contains("something went wrong"))
         );
     }
 }

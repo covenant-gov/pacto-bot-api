@@ -2,6 +2,23 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "pacto-bot-api metrics payload",
   "type": "object",
+  "definitions": {
+    "botHealth": {
+      "type": "object",
+      "properties": {
+        "bot_id": { "type": "string" },
+        "npub": { "type": "string" },
+        "relay_count": { "type": "integer", "minimum": 0 },
+        "relays": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "bunker_connected": { "type": "boolean" },
+        "signer_backend": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    }
+  },
   "properties": {
     "uptime_seconds": { "type": "integer", "minimum": 0 },
     "handlers_registered": { "type": "integer", "minimum": 0 },
@@ -9,6 +26,11 @@
     "events_dispatched_total": { "type": "integer", "minimum": 0 },
     "rate_limited_total": { "type": "integer", "minimum": 0 },
     "relay_reconnects_total": { "type": "integer", "minimum": 0 },
-    "bunker_sign_failures_total": { "type": "integer", "minimum": 0 }
+    "bunker_sign_failures_total": { "type": "integer", "minimum": 0 },
+    "invalid_events_total": { "type": "integer", "minimum": 0 },
+    "bots": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/botHealth" }
+    }
   }
 }

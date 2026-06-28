@@ -1,10 +1,15 @@
+use crate::config::{BotConfig, SigningConfig};
 use crate::errors::DaemonError;
 use chrono::{DateTime, Utc};
+use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockWriteGuard};
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
+use tokio_tungstenite::connect_async;
 
 /// Number of recent error messages to retain in a snapshot.
 const ERROR_BUFFER_CAPACITY: usize = 32;
@@ -30,13 +35,35 @@ pub enum DaemonStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BotHealth {
     /// Daemon-local bot label.
-    pub id: String,
+    pub bot_id: String,
     /// Bot Nostr public key (`npub1...`).
     pub npub: String,
     /// Number of configured relays for this bot.
     pub relay_count: u64,
+    /// Configured relay URLs for this bot.
+    pub relays: Vec<String>,
     /// Whether the NIP-46 bunker signer is currently connected.
     pub bunker_connected: bool,
+    /// Configured signer backend label (`nsec`, `bunker_local`, `bunker_remote`).
+    pub signer_backend: String,
+    /// Optional stable error state for the bot identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A single redacted error entry retained in diagnostics.
+///
+/// The `data` field is stored as its redacted JSON serialization so that
+/// arbitrary structured context can be preserved without leaking secrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorRecord {
+    /// Optional stable error code reported by the handler.
+    pub code: String,
+    /// Human-readable, redacted error message.
+    pub message: String,
+    /// Optional redacted JSON serialization of opaque structured context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// Aggregated health snapshot used by `agent.metrics` and
@@ -61,10 +88,12 @@ pub struct HealthSnapshot {
     pub relay_reconnects_total: u64,
     /// Total NIP-46 bunker signing failures observed across all bots.
     pub bunker_sign_failures_total: u64,
+    /// Total incoming events rejected due to failed signature verification.
+    pub invalid_events_total: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
-    /// Recent redacted error messages, oldest first.
-    pub errors: Vec<String>,
+    /// Recent redacted error records, oldest first.
+    pub errors: Vec<ErrorRecord>,
     /// UTC timestamp when this snapshot was produced.
     pub reported_at: DateTime<Utc>,
 }
@@ -82,6 +111,7 @@ impl Default for HealthSnapshot {
             rate_limited_total: 0,
             relay_reconnects_total: 0,
             bunker_sign_failures_total: 0,
+            invalid_events_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
             reported_at: now,
@@ -100,7 +130,8 @@ impl HealthSnapshot {
 struct Inner {
     snapshot: HealthSnapshot,
     startup_instant: Instant,
-    errors: VecDeque<String>,
+    errors: VecDeque<ErrorRecord>,
+    metrics_tx: watch::Sender<HealthSnapshot>,
 }
 
 /// Thread-safe diagnostics aggregator.
@@ -118,11 +149,13 @@ impl Default for Diagnostics {
 impl Diagnostics {
     /// Create a new diagnostics aggregator.
     pub fn new() -> Self {
+        let (metrics_tx, _) = watch::channel(HealthSnapshot::default());
         Self {
             inner: Arc::new(RwLock::new(Inner {
                 snapshot: HealthSnapshot::default(),
                 startup_instant: Instant::now(),
                 errors: VecDeque::with_capacity(ERROR_BUFFER_CAPACITY),
+                metrics_tx,
             })),
         }
     }
@@ -134,7 +167,9 @@ impl Diagnostics {
         let now = Utc::now();
         inner.snapshot.reported_at = now;
         inner.snapshot.uptime_seconds = inner.startup_instant.elapsed().as_secs();
-        inner.snapshot.clone()
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap.clone());
+        snap
     }
 
     /// Replace the per-bot health summaries.
@@ -172,6 +207,11 @@ impl Diagnostics {
         self.with_snapshot(|snapshot| snapshot.bunker_sign_failures_total += 1);
     }
 
+    /// Increment the counter for events rejected due to failed verification.
+    pub fn record_invalid_event(&self) {
+        self.with_snapshot(|snapshot| snapshot.invalid_events_total += 1);
+    }
+
     /// Set the number of registered handlers.
     pub fn set_handlers_registered(&self, count: u64) {
         self.with_snapshot(|snapshot| snapshot.handlers_registered = count);
@@ -179,16 +219,24 @@ impl Diagnostics {
 
     /// Record a recent error message.
     ///
-    /// The message is redacted before storage so that secrets (`nsec1...`,
-    /// query parameters such as `secret=...`, `token=...`) never appear in
-    /// snapshots or on-disk reports.
-    pub fn record_error(&self, message: &str) {
-        let redacted = redact_secrets(message);
+    /// The message and optional structured `data` are redacted before storage
+    /// so that secrets (`nsec1...`, query parameters such as `secret=...`,
+    /// `token=...`) never appear in snapshots or on-disk reports.
+    pub fn record_error(&self, code: Option<&str>, message: &str, data: Option<&Value>) {
+        let code = code.unwrap_or("unknown").to_string();
+        let redacted_message = redact_secrets(message);
+        let redacted_data =
+            data.map(|d| redact_secrets(&serde_json::to_string(d).unwrap_or_default()));
+        let record = ErrorRecord {
+            code,
+            message: redacted_message,
+            data: redacted_data,
+        };
         let mut inner = write_guard(&self.inner);
         if inner.errors.len() >= ERROR_BUFFER_CAPACITY {
             inner.errors.pop_front();
         }
-        inner.errors.push_back(redacted);
+        inner.errors.push_back(record);
         inner.snapshot.errors = inner.errors.iter().cloned().collect();
     }
 
@@ -209,17 +257,139 @@ impl Diagnostics {
         Ok(())
     }
 
+    /// Subscribe to live metrics updates.
+    ///
+    /// The returned receiver is notified every time the daemon updates the
+    /// health snapshot, including periodic metrics broadcasts.
+    pub fn subscribe_metrics(&self) -> watch::Receiver<HealthSnapshot> {
+        let inner = read_guard(&self.inner);
+        inner.metrics_tx.subscribe()
+    }
+
     fn with_snapshot<F>(&self, f: F)
     where
         F: FnOnce(&mut HealthSnapshot),
     {
         let mut inner = write_guard(&self.inner);
         f(&mut inner.snapshot);
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
+}
+
+/// Result of probing a single relay for WebSocket connectivity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayCheck {
+    /// Daemon-local bot label.
+    pub bot_id: String,
+    /// Relay URL that was probed.
+    pub relay: String,
+    /// Whether the relay accepted the WebSocket upgrade.
+    pub reachable: bool,
+    /// Optional error description when the relay is unreachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Result of probing a single NIP-46 bunker relay for connectivity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BunkerCheck {
+    /// Daemon-local bot label.
+    pub bot_id: String,
+    /// Whether the bunker relay accepted the WebSocket upgrade.
+    pub reachable: bool,
+    /// Optional error description when the bunker relay is unreachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Probe WebSocket connectivity for every configured relay of `bot`.
+pub async fn check_relay_connectivity(bot: &BotConfig) -> Vec<RelayCheck> {
+    let mut checks = Vec::new();
+    for relay in &bot.relays {
+        let trimmed = relay.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let result = tokio::time::timeout(Duration::from_secs(3), try_ws_connect(trimmed)).await;
+        let (reachable, error) = match result {
+            Ok(Ok(())) => (true, None),
+            Ok(Err(e)) => (false, Some(e.to_string())),
+            Err(_) => (false, Some("connection timed out".to_string())),
+        };
+        checks.push(RelayCheck {
+            bot_id: bot.id.clone(),
+            relay: trimmed.to_string(),
+            reachable,
+            error,
+        });
+    }
+    checks
+}
+
+/// Attempt a WebSocket upgrade to `url`.
+pub async fn try_ws_connect(url: &str) -> Result<(), DaemonError> {
+    if !url.starts_with("ws://") && !url.starts_with("wss://") {
+        return Err(DaemonError::Config(format!("not a websocket url: {url}")));
+    }
+    let _ = connect_async(url)
+        .await
+        .map_err(|e| DaemonError::Nostr(format!("ws connect failed: {e}")))?;
+    Ok(())
+}
+
+/// Probe WebSocket connectivity for the NIP-46 bunker relay of `bot`, if any.
+pub async fn check_bunker_connectivity(bot: &BotConfig) -> Option<BunkerCheck> {
+    let uri = match &bot.signing {
+        SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } => {
+            uri.expose_secret().to_string()
+        }
+        _ => return None,
+    };
+    let (reachable, error) = match parse_bunker_relay(&uri) {
+        Ok(relay) => {
+            match tokio::time::timeout(Duration::from_secs(3), try_ws_connect(&relay)).await {
+                Ok(Ok(())) => (true, None),
+                Ok(Err(e)) => (false, Some(e.to_string())),
+                Err(_) => (false, Some("connection timed out".to_string())),
+            }
+        }
+        Err(e) => (false, Some(e.to_string())),
+    };
+    Some(BunkerCheck {
+        bot_id: bot.id.clone(),
+        reachable,
+        error,
+    })
+}
+
+/// Extract the relay URL from a `bunker://` URI.
+pub fn parse_bunker_relay(uri: &str) -> Result<String, DaemonError> {
+    let after_scheme = uri.strip_prefix("bunker://").ok_or_else(|| {
+        DaemonError::Config(format!("bunker uri missing bunker:// scheme: {uri}"))
+    })?;
+    let idx = after_scheme
+        .find("?relay=")
+        .ok_or_else(|| DaemonError::Config(format!("bunker uri missing relay param: {uri}")))?;
+    let relay_start = idx + "?relay=".len();
+    let relay = after_scheme[relay_start..].split('&').next().unwrap_or("");
+    if relay.is_empty() {
+        return Err(DaemonError::Config(
+            "bunker uri relay param is empty".into(),
+        ));
+    }
+    Ok(relay.to_string())
 }
 
 fn write_guard<'a, T>(lock: &'a RwLock<T>) -> RwLockWriteGuard<'a, T> {
     match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
+    match lock.read() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -336,34 +506,57 @@ mod tests {
         let diag = Diagnostics::new();
         diag.set_bots(vec![
             BotHealth {
-                id: "bot-a".into(),
+                bot_id: "bot-a".into(),
                 npub: "npub1example".into(),
                 relay_count: 3,
+                relays: vec![
+                    "wss://a1.example".into(),
+                    "wss://a2.example".into(),
+                    "wss://a3.example".into(),
+                ],
                 bunker_connected: true,
+                signer_backend: "bunker_local".into(),
+                error: None,
             },
             BotHealth {
-                id: "bot-b".into(),
+                bot_id: "bot-b".into(),
                 npub: "npub1other".into(),
                 relay_count: 0,
+                relays: vec![],
                 bunker_connected: false,
+                signer_backend: "nsec".into(),
+                error: None,
             },
         ]);
 
         let snap = diag.snapshot();
         assert_eq!(snap.bots.len(), 2);
-        assert_eq!(snap.bots[0].id, "bot-a");
+        assert_eq!(snap.bots[0].bot_id, "bot-a");
         assert_eq!(snap.bots[1].relay_count, 0);
     }
 
     #[test]
     fn errors_are_redacted_in_snapshot() {
         let diag = Diagnostics::new();
-        diag.record_error("signing failed for nsec1deadbeef1234 on bot-a");
-        diag.record_error("bunker uri: bunker://relay.example?secret=supersecret&token=abc123");
+        diag.record_error(
+            Some("sign_failed"),
+            "signing failed for nsec1deadbeef1234 on bot-a",
+            None,
+        );
+        diag.record_error(
+            None,
+            "bunker uri: bunker://relay.example?secret=supersecret&token=abc123",
+            None,
+        );
 
         let snap = diag.snapshot();
         assert_eq!(snap.errors.len(), 2);
-        let joined = snap.errors.join(" ");
+        let joined = snap
+            .errors
+            .iter()
+            .map(|e| format!("{} {}", e.code, e.message))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(!joined.contains("nsec1deadbeef1234"));
         assert!(!joined.contains("supersecret"));
         assert!(!joined.contains("abc123"));
@@ -374,13 +567,16 @@ mod tests {
     fn error_buffer_drops_oldest_messages() {
         let diag = Diagnostics::new();
         for i in 0..ERROR_BUFFER_CAPACITY + 5 {
-            diag.record_error(&format!("error {i}"));
+            diag.record_error(None, &format!("error {i}"), None);
         }
         let snap = diag.snapshot();
         assert_eq!(snap.errors.len(), ERROR_BUFFER_CAPACITY);
-        assert!(snap.errors[0].contains("error 5"));
+        assert!(snap.errors[0].message.contains("error 5"));
         let last = snap.errors.iter().last();
-        assert!(last.is_some_and(|s| s.contains(&format!("error {}", ERROR_BUFFER_CAPACITY + 4))));
+        assert!(last.is_some_and(|e| {
+            e.message
+                .contains(&format!("error {}", ERROR_BUFFER_CAPACITY + 4))
+        }));
     }
 
     #[test]
@@ -390,10 +586,13 @@ mod tests {
         diag.set_status(DaemonStatus::Ready);
         diag.record_event_received();
         diag.set_bots(vec![BotHealth {
-            id: "bot-x".into(),
+            bot_id: "bot-x".into(),
             npub: "npub1x".into(),
             relay_count: 2,
+            relays: vec!["wss://x1.example".into(), "wss://x2.example".into()],
             bunker_connected: true,
+            signer_backend: "bunker_remote".into(),
+            error: None,
         }]);
 
         diag.flush_report(tmp.path())?;
@@ -411,8 +610,8 @@ mod tests {
     fn flushed_report_contains_no_secrets() -> Result<(), DaemonError> {
         let tmp = tempfile::tempdir()?;
         let diag = Diagnostics::new();
-        diag.record_error("leaked nsec1verysecretandlonghexstring");
-        diag.record_error("bunker secret=shh! token=do-not-leak");
+        diag.record_error(None, "leaked nsec1verysecretandlonghexstring", None);
+        diag.record_error(None, "bunker secret=shh! token=do-not-leak", None);
         diag.flush_report(tmp.path())?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
@@ -428,5 +627,17 @@ mod tests {
     fn redact_secrets_does_not_mutate_secret_free_input() {
         let input = "relay wss://relay.example connected for npub1public";
         assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn parse_bunker_relay_extracts_relay_url() {
+        let uri = "bunker://deadbeef?relay=ws://127.0.0.1:4848&secret=shh";
+        assert_eq!(parse_bunker_relay(uri).unwrap(), "ws://127.0.0.1:4848");
+    }
+
+    #[test]
+    fn parse_bunker_relay_rejects_missing_scheme() {
+        let err = parse_bunker_relay("http://deadbeef?relay=ws://x").unwrap_err();
+        assert!(err.to_string().contains("bunker://"));
     }
 }

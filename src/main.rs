@@ -3,11 +3,13 @@ use fs2::FileExt;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::DaemonConfig;
 use pacto_bot_api::db::Database;
+use pacto_bot_api::dev_env_probe::{log_warnings, run_probe};
 use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::signer::Signer;
 use pacto_bot_api::transport::TransportLayer;
+use pacto_bot_api::transport::http;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 #[cfg(unix)]
@@ -18,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::{RwLock, oneshot, watch};
 use tokio_stream::StreamExt;
 use tracing::{info, warn};
 
@@ -137,6 +139,29 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     fs::create_dir_all(&data_dir)
         .map_err(|e| format!("failed to create data directory {}: {e}", data_dir))?;
 
+    // Restrict the data directory to the owner. The Unix socket and secret
+    // token live (or may live) under this path.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let data_dir_path = Path::new(&data_dir);
+        let metadata = fs::metadata(data_dir_path)
+            .map_err(|e| format!("failed to stat data directory {}: {e}", data_dir))?;
+        let mode = metadata.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            fs::set_permissions(data_dir_path, std::fs::Permissions::from_mode(0o700)).map_err(
+                |e| format!("failed to set data directory permissions {}: {e}", data_dir),
+            )?;
+        }
+    }
+
+    // Best-effort dev-env service-version probe; mismatches are logged as
+    // warnings and never block daemon startup.
+    tokio::spawn(async move {
+        let results = run_probe().await;
+        log_warnings(&results);
+    });
+
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
     let lock_file = open_lock_file(&lock_path)
         .map_err(|e| format!("failed to open lock file {}: {e}", lock_path.display()))?;
@@ -186,12 +211,19 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         .into_iter()
         .collect();
 
+    let diagnostics = Diagnostics::new();
+    diagnostics.set_status(DaemonStatus::Initializing);
+
     let nostr_client = NostrClient::new(unique_relays)
         .await
-        .map_err(|e| format!("failed to initialize nostr client: {e}"))?;
+        .map_err(|e| format!("failed to initialize nostr client: {e}"))?
+        .with_diagnostics(diagnostics.clone());
 
     let mut client_manager = ClientManager::new(config.clone(), nostr_client.clone())
+        .await
         .map_err(|e| format!("failed to initialize client manager: {e}"))?;
+
+    client_manager.update_diagnostics(&diagnostics);
 
     // Register every bot signer so gift wraps addressed to its pubkey can be
     // decrypted. The NostrClient clone held by ClientManager shares the same
@@ -203,22 +235,12 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             .await;
     }
 
-    // Subscribe each bot to its gift-wrap filter and remember the subscription
-    // id in the bot state.
-    let pubkeys: Vec<_> = client_manager.bots().map(|(k, _)| *k).collect();
-    for pubkey in pubkeys {
-        let sub_id = nostr_client
-            .subscribe_bot(&pubkey)
-            .await
-            .map_err(|e| format!("failed to subscribe bot: {e}"))?;
-        let bot = client_manager
-            .get_bot_mut(&pubkey)
-            .ok_or("bot disappeared during subscription")?;
-        bot.add_subscription(sub_id.to_string());
-    }
-
-    let diagnostics = Diagnostics::new();
-    diagnostics.set_status(DaemonStatus::Initializing);
+    // Subscribe each bot to its gift-wrap filter, using the persisted cursor
+    // as the `since` bound, and remember the subscription id in the bot state.
+    client_manager
+        .subscribe_bots(&db)
+        .await
+        .map_err(|e| format!("failed to subscribe bots: {e}"))?;
 
     let dispatch = Arc::new(Dispatch::new(
         Arc::new(RwLock::new(client_manager)),
@@ -226,7 +248,52 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         diagnostics.clone(),
     ));
 
-    let transport = TransportLayer::new(&config, cli.enable_http);
+    if let Err(e) = dispatch.restore_handlers().await {
+        return Err(format!("failed to restore handler registrations: {e}"));
+    }
+
+    let (metrics_shutdown_tx, metrics_shutdown_rx) = watch::channel(false);
+    let metrics_handle = dispatch
+        .clone()
+        .spawn_periodic_metrics(Duration::from_secs(30), metrics_shutdown_rx);
+
+    let http_token = if cli.enable_http {
+        Some(
+            http::init_token(Path::new(&data_dir))
+                .await
+                .map_err(|e| format!("failed to initialize HTTP token: {e}"))?,
+        )
+    } else {
+        None
+    };
+
+    #[cfg(unix)]
+    if let Some(token) = http_token.clone() {
+        let data_dir_for_sighup = data_dir.clone();
+        tokio::spawn(async move {
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(error = %e, "failed to install SIGHUP handler");
+                    return;
+                }
+            };
+            loop {
+                if sighup.recv().await.is_none() {
+                    break;
+                }
+                match http::reload_token(&token, Path::new(&data_dir_for_sighup)).await {
+                    Ok(()) => info!("HTTP secret token reloaded"),
+                    Err(e) => warn!(error = %e, "failed to reload HTTP secret token"),
+                }
+            }
+        });
+    }
+
+    let mut transport = TransportLayer::new(&config, cli.enable_http);
+    if let Some(token) = http_token {
+        transport = transport.with_http_token(token);
+    }
     let coordinator = ShutdownCoordinator::start()?;
 
     let (transport_shutdown_tx, transport_shutdown_rx) = oneshot::channel();
@@ -252,9 +319,14 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             Some(event_result) = event_stream.next() => {
                 match event_result {
                     Ok(event) => {
-                        if let Err(e) = dispatch.dispatch_event(event).await {
-                            warn!(error = %e, "failed to dispatch event");
-                        }
+                        // Spawn each event dispatch so one bot's slow signer
+                        // or a long handler timeout does not block other bots.
+                        let dispatch = dispatch.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = dispatch.dispatch_event(event).await {
+                                warn!(error = %e, "failed to dispatch event");
+                            }
+                        });
                     }
                     Err(e) => warn!(error = %e, "nostr event error"),
                 }
@@ -264,6 +336,8 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
 
     info!("pacto-bot-api daemon shutting down");
     emit_agent_status(&diagnostics, &dispatch, DaemonStatus::ShuttingDown).await;
+
+    let _ = metrics_shutdown_tx.send(true);
 
     let force_rx = coordinator.force_rx;
     let graceful_shutdown = async {
@@ -281,6 +355,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
 
         let _ = transport_shutdown_tx.send(());
         let _ = transport_handle.await;
+        let _ = metrics_handle.await;
 
         nostr_client.disconnect().await;
 

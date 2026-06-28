@@ -1,9 +1,8 @@
 use crate::errors::DaemonError;
-use crate::handlers::{ConnectionHandle, HandlerRef};
+use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
-use tokio::sync::mpsc::channel;
 
 /// SQLite persistence handle for cursors and handler registrations.
 #[derive(Debug)]
@@ -138,8 +137,8 @@ impl Database {
 
     /// Load all persisted handler registrations.
     ///
-    /// Loaded handlers receive a disconnected connection handle; any attempt to
-    /// send events to them will fail until they reconnect and re-register.
+    /// Loaded handlers have no live connection; any attempt to send events to
+    /// them will fail until they reconnect and re-register.
     pub fn load_handlers(&self) -> Result<Vec<HandlerRef>, DaemonError> {
         let mut stmt = self.conn.prepare(
             "SELECT handler_id, bot_ids, event_types, capabilities, registered_at FROM handlers",
@@ -156,10 +155,9 @@ impl Database {
         let mut handlers = Vec::new();
         for row in rows {
             let (id, bot_ids, event_types, capabilities, registered_at) = row?;
-            let (sender, _receiver) = channel(1);
             handlers.push(HandlerRef {
                 id,
-                connection: Some(ConnectionHandle::new(sender)),
+                connection: None,
                 bot_ids: serde_json::from_str(&bot_ids)?,
                 event_types: serde_json::from_str(&event_types)?,
                 capabilities: serde_json::from_str(&capabilities)?,
@@ -181,7 +179,9 @@ impl Database {
 mod tests {
     use super::*;
     use crate::events::EventType;
+    use crate::handlers::ConnectionHandle;
     use rusqlite::Connection;
+    use tokio::sync::mpsc::channel;
 
     fn in_memory_db() -> Result<Database, DaemonError> {
         let conn = Connection::open_in_memory()?;
