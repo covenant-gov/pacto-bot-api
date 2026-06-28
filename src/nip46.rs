@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use nostr::PublicKey;
-use nostr::nips::nip46::NostrConnectURI;
 use nostr::key::Keys;
+use nostr::nips::nip46::NostrConnectURI;
 use nostr_connect::client::NostrConnect;
 
 use crate::errors::DaemonError;
@@ -72,7 +72,11 @@ mod tests {
         let expected = keys.public_key();
         let err = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(verify_bunker_public_key(&uri, &expected, Duration::from_secs(1)))
+            .block_on(verify_bunker_public_key(
+                &uri,
+                &expected,
+                Duration::from_secs(1),
+            ))
             .unwrap_err();
         assert!(err.to_string().contains("invalid bunker URI"));
     }

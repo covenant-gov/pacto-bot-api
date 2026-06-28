@@ -19,7 +19,9 @@ pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>
     let bot = BotConfig {
         id: id.to_string(),
         npub,
-        signing: SigningConfig::Nsec { nsec: SecretString::new(nsec.clone().into()) },
+        signing: SigningConfig::Nsec {
+            nsec: SecretString::new(nsec.clone().into()),
+        },
         relays: vec!["wss://127.0.0.1:65535".to_string()],
         capabilities: vec!["ReadMessages".to_string()],
     };
@@ -45,7 +47,9 @@ pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<
     Ok(BotConfig {
         id: id.to_string(),
         npub,
-        signing: SigningConfig::BunkerLocal { uri: SecretString::new(uri.into()) },
+        signing: SigningConfig::BunkerLocal {
+            uri: SecretString::new(uri.into()),
+        },
         relays: vec![],
         capabilities: vec![],
     })
@@ -74,7 +78,9 @@ pub fn generate_bunker_bot_with_keys(
     let bot = BotConfig {
         id: id.to_string(),
         npub,
-        signing: SigningConfig::BunkerLocal { uri: SecretString::new(uri.into()) },
+        signing: SigningConfig::BunkerLocal {
+            uri: SecretString::new(uri.into()),
+        },
         relays: vec![],
         capabilities: vec![],
     };

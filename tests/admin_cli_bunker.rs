@@ -12,11 +12,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
     let relay = support::mock_relay::MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("echo-bot", true)?;
-    let bunker = support::mock_bunker::MockBunker::new(
-        bunker_keys,
-        vec![relay.url()],
-    )
-    .await?;
+    let bunker = support::mock_bunker::MockBunker::new(bunker_keys, vec![relay.url()]).await?;
 
     let uri = bunker
         .uri_from_relays(&[relay.url()])
@@ -37,8 +33,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
     ]);
     // Run the CLI in a blocking task so this test's Tokio runtime keeps
     // polling the mock relay and bunker while the child process runs.
-    let output = tokio::task::spawn_blocking(move || cmd.assert().success())
-        .await?;
+    let output = tokio::task::spawn_blocking(move || cmd.assert().success()).await?;
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
     assert!(stdout.contains("bunker public key matches npub"));
 
@@ -54,11 +49,7 @@ async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
 
     // Generate a bot config whose configured npub does not match the bunker.
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("echo-bot", false)?;
-    let bunker = support::mock_bunker::MockBunker::new(
-        bunker_keys,
-        vec![relay.url()],
-    )
-    .await?;
+    let bunker = support::mock_bunker::MockBunker::new(bunker_keys, vec![relay.url()]).await?;
 
     let uri = bunker
         .uri_from_relays(&[relay.url()])

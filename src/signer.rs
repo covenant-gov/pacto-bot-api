@@ -14,11 +14,11 @@ use crate::errors::DaemonError;
 use nostr::key::Keys;
 use secrecy::ExposeSecret;
 
-#[cfg(test)]
-use secrecy::SecretString;
 use nostr::nips::nip46::NostrConnectURI;
 use nostr::secp256k1::Message;
 use nostr::{PublicKey, hashes::Hash as BitcoinHashesHash};
+#[cfg(test)]
+use secrecy::SecretString;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Abstract signer used by the daemon to obtain public keys and sign events.
@@ -92,13 +92,11 @@ impl SignerBackend {
                 Ok(SignerBackend::LocalKey(signer))
             }
             SigningConfig::BunkerLocal { uri } => {
-                let conn =
-                    BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, false)?;
+                let conn = BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, false)?;
                 Ok(SignerBackend::BunkerLocal(conn))
             }
             SigningConfig::BunkerRemote { uri } => {
-                let conn =
-                    BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, true)?;
+                let conn = BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, true)?;
                 Ok(SignerBackend::BunkerRemote(conn))
             }
         }
@@ -341,7 +339,13 @@ mod tests {
         let signer = LocalKey::parse(&nsec).unwrap();
         assert_eq!(signer.public_key(), keys.public_key());
 
-        let backend = SignerBackend::from_config(&SigningConfig::Nsec { nsec: SecretString::new(nsec.into()) }, &npub).unwrap();
+        let backend = SignerBackend::from_config(
+            &SigningConfig::Nsec {
+                nsec: SecretString::new(nsec.into()),
+            },
+            &npub,
+        )
+        .unwrap();
         assert!(matches!(backend, SignerBackend::LocalKey(_)));
     }
 
@@ -352,8 +356,13 @@ mod tests {
         let nsec = keys.secret_key().to_bech32().unwrap();
         let other_npub = other_keys.public_key().to_bech32().unwrap();
 
-        let err =
-            SignerBackend::from_config(&SigningConfig::Nsec { nsec: SecretString::new(nsec.into()) }, &other_npub).unwrap_err();
+        let err = SignerBackend::from_config(
+            &SigningConfig::Nsec {
+                nsec: SecretString::new(nsec.into()),
+            },
+            &other_npub,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("does not match"));
     }
 
@@ -366,8 +375,13 @@ mod tests {
             keys.public_key().to_hex()
         );
 
-        let backend =
-            SignerBackend::from_config(&SigningConfig::BunkerLocal { uri: SecretString::new(uri.into()) }, &npub).unwrap();
+        let backend = SignerBackend::from_config(
+            &SigningConfig::BunkerLocal {
+                uri: SecretString::new(uri.into()),
+            },
+            &npub,
+        )
+        .unwrap();
         assert!(matches!(backend, SignerBackend::BunkerLocal(_)));
     }
 
@@ -380,8 +394,13 @@ mod tests {
             keys.public_key().to_hex()
         );
 
-        let err =
-            SignerBackend::from_config(&SigningConfig::BunkerRemote { uri: SecretString::new(uri.into()) }, &npub).unwrap_err();
+        let err = SignerBackend::from_config(
+            &SigningConfig::BunkerRemote {
+                uri: SecretString::new(uri.into()),
+            },
+            &npub,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("wss://"));
     }
 
@@ -395,8 +414,13 @@ mod tests {
             other_keys.public_key().to_hex()
         );
 
-        let err =
-            SignerBackend::from_config(&SigningConfig::BunkerRemote { uri: SecretString::new(uri.into()) }, &npub).unwrap_err();
+        let err = SignerBackend::from_config(
+            &SigningConfig::BunkerRemote {
+                uri: SecretString::new(uri.into()),
+            },
+            &npub,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("does not match"));
     }
 

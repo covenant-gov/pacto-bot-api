@@ -2,12 +2,12 @@ use crate::bot_state::BotState;
 use crate::config::DaemonConfig;
 use crate::errors::DaemonError;
 
-#[cfg(test)]
-use secrecy::SecretString;
 use crate::handlers::HandlerRegistry;
 use crate::nostr::NostrClient;
 use crate::signer::Signer;
 use nostr::PublicKey;
+#[cfg(test)]
+use secrecy::SecretString;
 use std::collections::HashMap;
 
 /// Manages multiple bot identities and provides npub/bot_id lookups.
@@ -107,7 +107,9 @@ mod tests {
         BotConfig {
             id: id.into(),
             npub: keys.public_key().to_bech32().unwrap(),
-            signing: SigningConfig::Nsec { nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()) },
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
+            },
             relays: vec![],
             capabilities: vec!["ReadMessages".into()],
         }
@@ -194,7 +196,11 @@ mod tests {
                 npub: "not-a-valid-npub".into(),
                 signing: SigningConfig::Nsec {
                     nsec: SecretString::new(
-                        nostr::Keys::generate().secret_key().to_bech32().unwrap().into(),
+                        nostr::Keys::generate()
+                            .secret_key()
+                            .to_bech32()
+                            .unwrap()
+                            .into(),
                     ),
                 },
                 relays: vec![],

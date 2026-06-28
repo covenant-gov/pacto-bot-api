@@ -1,10 +1,10 @@
 use crate::config::BotConfig;
 use crate::errors::DaemonError;
-#[cfg(test)]
-use secrecy::SecretString;
 use crate::events::{AgentEvent, EventType};
 use crate::transport::protocol::JsonRpcMessage;
 use chrono::{DateTime, Utc};
+#[cfg(test)]
+use secrecy::SecretString;
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::mpsc::UnboundedSender;
@@ -191,7 +191,9 @@ mod tests {
         BotConfig {
             id: id.to_string(),
             npub: format!("npub1{id}"),
-            signing: SigningConfig::Nsec { nsec: SecretString::new("nsec1dummy".to_string().into()) },
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1dummy".to_string().into()),
+            },
             relays: vec![],
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
         }

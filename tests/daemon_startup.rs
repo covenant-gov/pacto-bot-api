@@ -38,8 +38,7 @@ async fn startup_succeeds_with_valid_config_and_acquires_lock()
 }
 
 #[tokio::test]
-async fn startup_succeeds_with_bunker_local_backend()
--> Result<(), Box<dyn std::error::Error>> {
+async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
 

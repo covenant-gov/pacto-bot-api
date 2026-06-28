@@ -1,9 +1,9 @@
 use crate::config::BotConfig;
 use crate::errors::DaemonError;
 
+use crate::signer::SignerBackend;
 #[cfg(test)]
 use secrecy::SecretString;
-use crate::signer::SignerBackend;
 
 /// Runtime state for a single configured bot identity.
 #[derive(Debug)]
@@ -58,7 +58,9 @@ mod tests {
         BotConfig {
             id: "test-bot".into(),
             npub,
-            signing: SigningConfig::Nsec { nsec: SecretString::new(nsec.into()) },
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new(nsec.into()),
+            },
             relays: vec![],
             capabilities: vec![],
         }

@@ -1,4 +1,7 @@
-#![allow(dead_code, reason = "support utilities used by future integration tests")]
+#![allow(
+    dead_code,
+    reason = "support utilities used by future integration tests"
+)]
 
 use nostr::Keys;
 
@@ -35,7 +38,8 @@ struct AutoApprove {
 }
 
 impl NostrConnectSignerActions for AutoApprove {
-    fn approve(&self,
+    fn approve(
+        &self,
         _public_key: &nostr::PublicKey,
         req: &nostr::nips::nip46::NostrConnectRequest,
     ) -> bool {
@@ -92,9 +96,7 @@ impl MockBunker {
     }
 
     /// Return the bunker URI using the first relay in `relays`.
-    pub fn uri_from_relays(&self,
-        relays: &[impl AsRef<str>],
-    ) -> Option<String> {
+    pub fn uri_from_relays(&self, relays: &[impl AsRef<str>]) -> Option<String> {
         relays.first().map(|r| self.uri(r.as_ref()))
     }
 
@@ -192,8 +194,12 @@ mod tests {
     #[tokio::test]
     async fn bunker_responds_to_get_public_key() {
         let keys = Keys::generate();
-        let relay = crate::support::mock_relay::MockRelay::start().await.unwrap();
-        let bunker = MockBunker::new(keys.clone(), vec![relay.url()]).await.unwrap();
+        let relay = crate::support::mock_relay::MockRelay::start()
+            .await
+            .unwrap();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .unwrap();
 
         // Give the signer a moment to bootstrap and subscribe.
         tokio::time::sleep(Duration::from_millis(100)).await;

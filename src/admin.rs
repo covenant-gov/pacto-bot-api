@@ -238,8 +238,7 @@ async fn cmd_test_bunker(config_path: &Path, bot_id: &str) -> Result<(), DaemonE
             let expected_pubkey = PublicKey::parse(&bot.npub)
                 .map_err(|e| DaemonError::Config(format!("invalid npub for bot: {e}")))?;
             let uri = uri.expose_secret();
-            nip46::verify_bunker_public_key(uri, &expected_pubkey, Duration::from_secs(30))
-                .await?;
+            nip46::verify_bunker_public_key(uri, &expected_pubkey, Duration::from_secs(30)).await?;
             println!("bunker public key matches npub for {bot_id}");
             Ok(())
         }
@@ -866,7 +865,9 @@ mod tests {
         BotConfig {
             id: id.to_string(),
             npub: npub.to_string(),
-            signing: SigningConfig::Nsec { nsec: SecretString::new(nsec.to_string().into()) },
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new(nsec.to_string().into()),
+            },
             relays: vec!["wss://relay.example.com".to_string()],
             capabilities: vec!["ReadMessages".to_string()],
         }

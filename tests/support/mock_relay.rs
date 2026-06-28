@@ -1,4 +1,7 @@
-#![allow(dead_code, reason = "support utilities used by future integration tests")]
+#![allow(
+    dead_code,
+    reason = "support utilities used by future integration tests"
+)]
 
 use futures::{SinkExt, StreamExt};
 use nostr::filter::MatchEventOptions;
@@ -214,10 +217,14 @@ impl MockRelay {
 
                 subscriptions.insert(sub_id.clone(), filter.clone());
 
-                // Send matching stored events.
+                // Send matching stored events. Ignore `since`/`until` for
+                // stored events so that late subscribers (e.g. a NIP-46 signer
+                // that subscribes after the client published a request) still
+                // receive relevant messages.
                 let events = self.inner.events.read().await.clone();
+                let opts = MatchEventOptions::new().since(false).until(false);
                 for event in events {
-                    if filter.match_event(&event, MatchEventOptions::new()) {
+                    if filter.match_event(&event, opts) {
                         let _ = out_tx.send(json!([
                             "EVENT",
                             sub_id.clone(),

@@ -25,7 +25,9 @@ fn bot_config(id: &str, keys: &nostr::Keys, capabilities: &[&str]) -> BotConfig 
     BotConfig {
         id: id.to_string(),
         npub: keys.public_key().to_bech32().unwrap(),
-        signing: SigningConfig::Nsec { nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()) },
+        signing: SigningConfig::Nsec {
+            nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
+        },
         relays: vec![],
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
     }
