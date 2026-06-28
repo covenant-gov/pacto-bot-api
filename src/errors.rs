@@ -128,10 +128,7 @@ mod tests {
             DaemonError::InvalidEventType("x".into()).to_json_rpc_code(),
             -32002
         );
-        assert_eq!(
-            DaemonError::Bunker("x".into()).to_json_rpc_code(),
-            -32003
-        );
+        assert_eq!(DaemonError::Bunker("x".into()).to_json_rpc_code(), -32003);
         assert_eq!(DaemonError::Nostr("x".into()).to_json_rpc_code(), -32004);
         assert_eq!(DaemonError::RateLimited.to_json_rpc_code(), -32005);
         assert_eq!(DaemonError::UnauthorizedBot.to_json_rpc_code(), -32006);

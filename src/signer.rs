@@ -31,12 +31,12 @@ impl SignerBackend {
                     public_key: String::new(),
                 })
             }
-            SigningConfig::BunkerLocal { uri } => Ok(SignerBackend::BunkerLocal {
-                uri: uri.clone(),
-            }),
-            SigningConfig::BunkerRemote { uri } => Ok(SignerBackend::BunkerRemote {
-                uri: uri.clone(),
-            }),
+            SigningConfig::BunkerLocal { uri } => {
+                Ok(SignerBackend::BunkerLocal { uri: uri.clone() })
+            }
+            SigningConfig::BunkerRemote { uri } => {
+                Ok(SignerBackend::BunkerRemote { uri: uri.clone() })
+            }
         }
     }
 }
@@ -45,9 +45,7 @@ impl Signer for SignerBackend {
     fn public_key(&self) -> String {
         match self {
             SignerBackend::LocalKey { public_key } => public_key.clone(),
-            SignerBackend::BunkerLocal { .. } | SignerBackend::BunkerRemote { .. } => {
-                String::new()
-            }
+            SignerBackend::BunkerLocal { .. } | SignerBackend::BunkerRemote { .. } => String::new(),
         }
     }
 }

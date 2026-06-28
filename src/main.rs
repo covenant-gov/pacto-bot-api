@@ -53,7 +53,11 @@ async fn main() {
         warn!("localhost HTTP transport is enabled; ensure the secret token is protected");
     }
 
-    if config.bots.iter().any(|b| matches!(b.signing, pacto_bot_api::config::SigningConfig::Nsec { .. })) {
+    if config
+        .bots
+        .iter()
+        .any(|b| matches!(b.signing, pacto_bot_api::config::SigningConfig::Nsec { .. }))
+    {
         warn!("local test key (nsec) in use — not for production");
     }
 

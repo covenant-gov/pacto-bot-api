@@ -15,10 +15,7 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
-    pub fn new(
-        config: DaemonConfig,
-        nostr_client: NostrClient,
-    ) -> Result<Self, DaemonError> {
+    pub fn new(config: DaemonConfig, nostr_client: NostrClient) -> Result<Self, DaemonError> {
         let mut bots = HashMap::new();
         let mut bot_id_map = HashMap::new();
 

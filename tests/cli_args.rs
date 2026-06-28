@@ -55,7 +55,8 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 #[test]
 fn daemon_invalid_config_path_exits_with_error() {
     let mut cmd = Command::cargo_bin("pacto-bot-api").unwrap();
-    cmd.arg("--config").arg("/nonexistent/path/pacto-bot-api.toml");
+    cmd.arg("--config")
+        .arg("/nonexistent/path/pacto-bot-api.toml");
     cmd.assert()
         .failure()
         .stderr(predicate::str::contains("failed to load config"));

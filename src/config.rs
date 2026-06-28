@@ -104,10 +104,7 @@ fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                DaemonError::Config(format!(
-                    "config file not found: {}",
-                    path.display()
-                ))
+                DaemonError::Config(format!("config file not found: {}", path.display()))
             } else {
                 DaemonError::Io(e)
             }
@@ -134,10 +131,7 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
     let mut seen = HashSet::new();
     for bot in bots {
         if !seen.insert(bot.id.clone()) {
-            return Err(DaemonError::Config(format!(
-                "duplicate bot_id: {}",
-                bot.id
-            )));
+            return Err(DaemonError::Config(format!("duplicate bot_id: {}", bot.id)));
         }
 
         match &bot.signing {

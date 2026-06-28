@@ -14,9 +14,8 @@ impl Database {
     }
 
     pub fn initialize(&self) -> Result<(), DaemonError> {
-        self.conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
-        )?;
+        self.conn
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
         Ok(())
     }
 }

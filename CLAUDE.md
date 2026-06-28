@@ -20,7 +20,7 @@ bd close <id>         # Complete work
 
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
 - Run `bd prime` for detailed command reference and session close protocol
-- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Use `bd remember` for persistent knowledge — do NOT create MEMORY.md files
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 
@@ -60,18 +60,31 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
+Run these checks before committing or pushing code changes:
 
 ```bash
-# Example:
-# npm install
-# npm test
+# Format (must pass)
+cargo fmt --all -- --check
+
+# Lint (must pass)
+cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+# Build (must pass)
+cargo build --workspace --bins
+
+# Test (must pass)
+cargo test --workspace --all-features --no-fail-fast
+
+# Optional: coverage report (CI enforces >80%)
+cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+_Project-specific architecture notes live in `AGENTS.md` and `docs/`._
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+- Follow Rust naming and style conventions; run `cargo fmt` to auto-fix formatting.
+- Treat compiler warnings as errors in CI (`RUSTFLAGS: -D warnings`).
+- Keep the daemon (`pacto-bot-api`) and admin CLI (`pacto-bot-admin`) concerns separate.
