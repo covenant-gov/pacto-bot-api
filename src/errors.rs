@@ -77,6 +77,9 @@ pub enum DaemonError {
 
     #[error("method not found")]
     MethodNotFound,
+
+    #[error("frame too large")]
+    FrameTooLarge,
 }
 
 impl DaemonError {
@@ -93,7 +96,7 @@ impl DaemonError {
             DaemonError::JsonRpc(e) => e.code,
             DaemonError::MethodNotFound => -32601,
             // Malformed input or bad params are treated as invalid request/params.
-            DaemonError::Json(_) | DaemonError::Io(_) => -32600,
+            DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
             DaemonError::Sqlite(_) => -32603,
         }
