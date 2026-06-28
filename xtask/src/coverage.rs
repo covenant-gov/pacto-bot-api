@@ -30,7 +30,10 @@ fn find_workspace_root() -> Result<PathBuf> {
             return Ok(dir);
         }
         if !dir.pop() {
-            anyhow::bail!("could not find workspace root containing {}", script.display());
+            anyhow::bail!(
+                "could not find workspace root containing {}",
+                script.display()
+            );
         }
     }
 }
