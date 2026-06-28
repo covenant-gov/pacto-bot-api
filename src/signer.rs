@@ -25,6 +25,20 @@ pub trait Signer: Send + Sync {
 
     /// Sign a serialized event payload, returning the signature hex.
     async fn sign_event(&self, payload: &[u8]) -> Result<String, DaemonError>;
+
+    /// Encrypt content for `public_key` using NIP-44.
+    async fn nip44_encrypt(
+        &self,
+        public_key: &PublicKey,
+        content: &str,
+    ) -> Result<String, DaemonError>;
+
+    /// Decrypt a NIP-44 payload received from `public_key`.
+    async fn nip44_decrypt(
+        &self,
+        public_key: &PublicKey,
+        payload: &str,
+    ) -> Result<String, DaemonError>;
 }
 
 /// Concrete signer backend selected from configuration.
@@ -100,6 +114,32 @@ impl Signer for SignerBackend {
             }
         }
     }
+
+    async fn nip44_encrypt(
+        &self,
+        public_key: &PublicKey,
+        content: &str,
+    ) -> Result<String, DaemonError> {
+        match self {
+            SignerBackend::LocalKey(s) => s.nip44_encrypt(public_key, content).await,
+            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => {
+                s.nip44_encrypt(public_key, content).await
+            }
+        }
+    }
+
+    async fn nip44_decrypt(
+        &self,
+        public_key: &PublicKey,
+        payload: &str,
+    ) -> Result<String, DaemonError> {
+        match self {
+            SignerBackend::LocalKey(s) => s.nip44_decrypt(public_key, payload).await,
+            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => {
+                s.nip44_decrypt(public_key, payload).await
+            }
+        }
+    }
 }
 
 /// Dev-only local nsec signer.
@@ -139,6 +179,30 @@ impl Signer for LocalKey {
         let message = Message::from_digest(*hash.as_byte_array());
         let sig = self.keys.0.sign_schnorr(&message);
         Ok(sig.to_string())
+    }
+
+    async fn nip44_encrypt(
+        &self,
+        public_key: &PublicKey,
+        content: &str,
+    ) -> Result<String, DaemonError> {
+        let signer: &dyn nostr::NostrSigner = &self.keys.0;
+        signer
+            .nip44_encrypt(public_key, content)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("NIP-44 encryption failed: {e}")))
+    }
+
+    async fn nip44_decrypt(
+        &self,
+        public_key: &PublicKey,
+        payload: &str,
+    ) -> Result<String, DaemonError> {
+        let signer: &dyn nostr::NostrSigner = &self.keys.0;
+        signer
+            .nip44_decrypt(public_key, payload)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("NIP-44 decryption failed: {e}")))
     }
 }
 
@@ -220,6 +284,26 @@ impl Signer for BunkerConnection {
         // TODO(#7y3): implement full NIP-46 sign_event flow over the bunker relay.
         Err(DaemonError::Bunker(
             "NIP-46 signing not yet implemented".into(),
+        ))
+    }
+
+    async fn nip44_encrypt(
+        &self,
+        _public_key: &PublicKey,
+        _content: &str,
+    ) -> Result<String, DaemonError> {
+        Err(DaemonError::Bunker(
+            "NIP-46 encryption not yet implemented".into(),
+        ))
+    }
+
+    async fn nip44_decrypt(
+        &self,
+        _public_key: &PublicKey,
+        _payload: &str,
+    ) -> Result<String, DaemonError> {
+        Err(DaemonError::Bunker(
+            "NIP-46 decryption not yet implemented".into(),
         ))
     }
 }

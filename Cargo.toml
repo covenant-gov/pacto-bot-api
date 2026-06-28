@@ -29,7 +29,7 @@ rusqlite = { version = "0.34", features = ["bundled"] }
 toml = "0.8"
 axum = "0.8"
 nostr-sdk = { version = "0.43", features = ["nip06", "nip44", "nip59"] }
-nostr = { version = "0.40", features = ["nip46"] }
+nostr = { version = "0.43", features = ["nip46", "nip44", "nip59"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -42,6 +42,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.2"
+tokio-stream = { version = "0.1", features = ["sync"] }
 hex = "0.4"
 subtle = "2"
 

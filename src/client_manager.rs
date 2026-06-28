@@ -118,7 +118,9 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: bot_configs,
         };
-        ClientManager::new(config, NostrClient::new(vec![]).unwrap()).unwrap()
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap()
+        })
     }
 
     #[test]
@@ -176,7 +178,9 @@ mod tests {
             ],
         };
 
-        let err = ClientManager::new(config, NostrClient::new(vec![]).unwrap()).unwrap_err();
+        let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap_err()
+        });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("duplicate bot_id"));
     }
@@ -196,7 +200,9 @@ mod tests {
             }],
         };
 
-        let err = ClientManager::new(config, NostrClient::new(vec![]).unwrap()).unwrap_err();
+        let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap()).unwrap_err()
+        });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("invalid npub"));
     }
