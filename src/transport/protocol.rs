@@ -187,6 +187,17 @@ pub fn parse_method(method: &str) -> Result<Method, DaemonError> {
     method.parse()
 }
 
+/// Typed payload returned by the `agent.metrics` JSON-RPC method.
+///
+/// The response is serialized as a flat object so that adding fields to
+/// [`crate::diagnostics::HealthSnapshot`] does not require changes to the
+/// wire format.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsResponse {
+    #[serde(flatten)]
+    pub snapshot: crate::diagnostics::HealthSnapshot,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
