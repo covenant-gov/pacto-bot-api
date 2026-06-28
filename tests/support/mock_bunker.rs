@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "support utilities used by future integration tests")]
+
 use nostr::{Event, Keys, PublicKey};
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
@@ -67,7 +69,7 @@ impl MockBunker {
             "id": uuid::Uuid::new_v4().to_string(),
             "result": self.keys.public_key().to_hex(),
         });
-        Ok(self.sign_response(content).await?)
+        self.sign_response(content).await
     }
 
     async fn sign_response(

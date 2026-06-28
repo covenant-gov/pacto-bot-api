@@ -1,3 +1,5 @@
+#![allow(dead_code, reason = "support utilities used by future integration tests")]
+
 use futures::{SinkExt, StreamExt};
 use nostr::filter::MatchEventOptions;
 use nostr::{Event, Filter, JsonUtil};
