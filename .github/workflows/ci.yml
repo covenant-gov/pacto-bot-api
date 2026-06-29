@@ -249,7 +249,8 @@ jobs:
           PACTO_BOT_ADMIN_BIN: ${{ github.workspace }}/target/debug/pacto-bot-admin
         run: |
           cd examples
-          python -m pytest -v
+          # Run only the contract harness; test_echo_bot.py still needs cargo.
+          python -m pytest test_examples_contract.py test_manifest_validation.py -v
 
       - name: Submit Examples Contract Tests status check
         if: always()
