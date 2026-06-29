@@ -71,24 +71,29 @@ pacto-bot-api --http-bind 127.0.0.1:8080
 python my_bot.py --transport http --http-bind 127.0.0.1:8080
 ```
 
-### Bunker mode (recommended for production)
+### Admin-managed bot identity
+
+For local development with a config file and admin CLI:
 
 ```bash
-# Initialize the bunker directory
-pacto bunker init --data-dir ~/.local/share/pacto
+# Create a new bot identity config snippet
+pacto-bot-admin new greeting-bot --backend nsec --relays ws://localhost:7000
 
-# Create a bot identity
-pacto bot create --bot-id greeting-bot --data-dir ~/.local/share/pacto
+# Add the generated snippet to pacto-bot-api.toml, then publish the profile
+pacto-bot-admin publish-profile greeting-bot
+
+# Rotate the daemon HTTP secret token
+pacto-bot-admin rotate-http-token --data-dir ~/.local/share/pacto-bot-api
 
 # Start the daemon
-pacto-bot-api --data-dir ~/.local/share/pacto --http-bind 127.0.0.1:8080
+pacto-bot-api --config pacto-bot-api.toml --data-dir ~/.local/share/pacto-bot-api --http-bind 127.0.0.1:8080
 
-# Run the bot with the secret stored by the admin CLI
-export PACTO_SECRET_TOKEN=$(cat ~/.local/share/pacto/bots/greeting-bot/secret_token)
-python my_bot.py --transport http --http-bind 127.0.0.1:8080
+# Run the bot with the rotated token
+export PACTO_SECRET_TOKEN=$(cat ~/.local/share/pacto-bot-api/bot_secret_token)
+python python/examples/greeting_bot.py --transport http --http-bind 127.0.0.1:8080
 ```
 
-In bunker mode each bot has its own `secret_token` file at `<data-dir>/bots/<bot-id>/secret_token`.
+Per-bot `secret_token` files and bunker-specific lifecycle commands (e.g., `pacto bot create`, `pacto bunker init`) are not yet implemented; use the global `bot_secret_token` file for now.
 
 ## The canonical bot loop
 
