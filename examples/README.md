@@ -9,6 +9,9 @@ demonstrate core daemon patterns live under `tests/` and are described below.
 | File | Purpose |
 |------|---------|
 | `echo_bot.py` | Reference handler using only the Python standard library. |
+| `pacto_sdk.py` | Single-file SDK seed for new example handlers. |
+| `greeting_bot.py` | ~30-line demonstration of `pacto_sdk.py`. |
+| `greeting_bot.manifest.json` | Contract manifest for `greeting_bot.py`. |
 | `conftest.py` | pytest fixtures: `daemon`, `handler_client`, `mock_relay`. |
 | `test_echo_bot.py` | Integration tests for handler registration and echo behavior. |
 | `test-config.toml` | Example daemon config with placeholder keys. |
@@ -44,6 +47,63 @@ Or install the example dependencies from the repository root:
 ```bash
 pip install -r examples/requirements.txt
 ```
+
+## SDK seed (`pacto_sdk.py`)
+
+`pacto_sdk.py` is a hand-written, standard-library-only helper that abstracts
+JSON-RPC framing, registration, lifecycle, command dispatch, and response
+helpers. New example bots should import it rather than copying the plumbing
+from `echo_bot.py`.
+
+> **Note:** This is a *manual seed*, not the eventual generated Python client.
+> The generated client will be derived from `schemas/jsonrpc.json` and is
+> deferred to
+> [`docs/plans/2026-06-28-001-feat-python-examples-ci-contract-tests-plan.md`](../docs/plans/2026-06-28-001-feat-python-examples-ci-contract-tests-plan.md).
+
+Example usage:
+
+```python
+from pacto_sdk import PactoClient, add_sdk_arguments
+
+async def hello(event, client):
+    return client.reply(event["event_id"], "Hello there!")
+
+async def main(argv=None):
+    parser = argparse.ArgumentParser(description="Greeting bot.")
+    add_sdk_arguments(parser)
+    args = parser.parse_args(argv)
+
+    client = PactoClient(
+        bot_id=args.bot_id,
+        socket_path=args.socket,
+        data_dir=args.data_dir,
+        transport=args.transport,
+        secret=args.secret,
+        http_bind=args.http_bind,
+    )
+    client.on("/hello", hello)
+    client.on_default(lambda event, client: client.ignore(event["event_id"]))
+    await client.run()
+```
+
+Command syntax parsed from `agent.event` content:
+
+```
+/command arg1 arg2 --flag value --bool
+```
+
+The leading `/` is stripped before registry lookup, so `client.on('/hello',
+handler)` matches both `/hello` and `hello`. Tokens starting with `--` are
+flags; if the next token does not start with `--` it becomes the flag value,
+otherwise the flag is treated as boolean `True`.
+
+Transport selection:
+
+- **Unix socket** (default): path is resolved from `--socket` / `$PACTO_SOCKET`,
+  `--data-dir` / `$PACTO_DATA_DIR`, or `~/.local/share/pacto-bot-api/pacto-bot-api.sock`.
+- **HTTP+SSE**: enabled with `--transport http` / `$PACTO_TRANSPORT=http`. The
+  default bind is `127.0.0.1:9800` (`$PACTO_HTTP_BIND`). The secret is read from
+  `--secret`, `$PACTO_SECRET_TOKEN`, or `<data_dir>/bot_secret_token`.
 
 ## Running the echo handler
 
