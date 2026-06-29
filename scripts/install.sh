@@ -3,17 +3,17 @@
 # Install the latest (or a specific) pacto-bot-api release from GitHub.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | bash
 #
 # Environment variables:
 #   INSTALL_PREFIX   installation prefix (default: /usr/local; binaries go to $INSTALL_PREFIX/bin)
 #   PACTO_VERSION    release to install, e.g. "0.1.0" or "v0.1.0" (default: latest)
-#   PACTO_REPO       owner/repo to download from (default: covenant-gov/pacto-bot-api)
+#   PACTO_REPO       owner/repo to download from (default: logicminds/pacto-bot-api)
 #   GITHUB_TOKEN     optional GitHub token to raise API rate limits
 #
 set -euo pipefail
 
-REPO="${PACTO_REPO:-covenant-gov/pacto-bot-api}"
+REPO="${PACTO_REPO:-logicminds/pacto-bot-api}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
 BIN_DIR="${INSTALL_PREFIX}/bin"
 REQUESTED_VERSION="${PACTO_VERSION:-latest}"
@@ -91,15 +91,24 @@ download() {
 }
 
 verify_checksum() {
-  local checksum_file="$1"
+  local archive_path="$1"
+  local checksum_file="$2"
+
+  local expected actual
+  expected=$(awk '{print $1}' "$checksum_file")
+  [ -n "$expected" ] || err "could not read expected checksum from ${checksum_file}"
 
   if command_exists sha256sum; then
-    (cd "$(dirname "$checksum_file")" && sha256sum -c "$(basename "$checksum_file")") >/dev/null
+    actual=$(sha256sum "$archive_path" | awk '{print $1}')
   elif command_exists shasum; then
-    (cd "$(dirname "$checksum_file")" && shasum -a 256 -c "$(basename "$checksum_file")") >/dev/null
+    actual=$(shasum -a 256 "$archive_path" | awk '{print $1}')
   else
     say "warning: neither sha256sum nor shasum found; skipping checksum verification"
     return 0
+  fi
+
+  if [ "$expected" != "$actual" ]; then
+    return 1
   fi
 }
 
@@ -167,7 +176,7 @@ main() {
   say "Downloading checksum ..."
   if download "$checksum_url" "$checksum_path" 2>/dev/null; then
     say "Verifying checksum ..."
-    verify_checksum "$checksum_path" || err "checksum verification failed"
+    verify_checksum "$archive_path" "$checksum_path" || err "checksum verification failed"
   else
     say "warning: no checksum file found; skipping verification"
   fi
@@ -192,6 +201,9 @@ main() {
     say ""
     "${BIN_DIR}/pacto-bot-admin" --version || true
   fi
+
+  rm -rf "$tmpdir"
+  trap - EXIT
 }
 
 main "$@"
