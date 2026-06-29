@@ -1,0 +1,209 @@
+# Pacto Bot Operator's Guide
+
+This guide covers running and operating a `pacto-bot-api` daemon and its bots.
+It is intended for bot operators who configure identities, manage state, and monitor health.
+
+- The **admin CLI** (`pacto-bot-admin`) manages bot lifecycle, configuration, diagnostics, and state migration.
+- The **daemon** (`pacto-bot-api`) is the long-lived runtime that connects to Nostr relays, handles NIP-17/44/59 DMs, and routes events to handler processes.
+- **Handlers** are separate processes written in any language that connect over the daemon's JSON-RPC API.
+
+## Admin CLI reference
+
+Global options apply to every subcommand:
+
+- `--config <PATH>` — path to the bot configuration file (default: `pacto-bot-api.toml`).
+- `--data-dir <DIR>` — directory for runtime data (database, socket, token).
+- `--llm-help` — print this operator's guide and exit.
+
+### `new`
+
+Create a new bot identity config snippet.
+
+Examples:
+```bash
+pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000 --capabilities ReadMessages --capabilities SendMessages
+
+pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?relay=wss://relay.nsec.app
+```
+
+Notes:
+- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.
+- `--relays` — relay URLs for the bot.
+- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.
+- `--uri` — bunker URI (required for bunker backends; omit to prompt).
+
+### `publish-profile`
+
+Publish a bot profile (kind:0) event.
+
+Examples:
+```bash
+pacto-bot-admin publish-profile echo-bot
+```
+
+Notes:
+Requires the bot to exist in the config file.
+
+### `test-bunker`
+
+Test a NIP-46 bunker connection and verify the returned pubkey matches config.
+
+Examples:
+```bash
+pacto-bot-admin test-bunker echo-bot
+```
+
+Notes:
+Exits 0 on pubkey match and non-zero on mismatch or connection failure.
+
+### `export`
+
+Export bot daemon-local state to JSON.
+
+Examples:
+```bash
+pacto-bot-admin export echo-bot > echo-bot-state.json
+```
+
+Notes:
+Refuses to run while the daemon is running. Does not export nsec or bunker URI.
+
+### `import`
+
+Import bot daemon-local state from JSON.
+
+Examples:
+```bash
+pacto-bot-admin import echo-bot echo-bot-state.json
+```
+
+Notes:
+Refuses to run while the daemon is running.
+
+### `validate-config`
+
+Validate the daemon configuration file.
+
+Examples:
+```bash
+pacto-bot-admin validate-config
+```
+
+Notes:
+Checks config file permissions, bot uniqueness, and consistency with agent.db.
+
+### `rotate-http-token`
+
+Rotate the HTTP secret token used by the optional localhost HTTP transport.
+
+Examples:
+```bash
+pacto-bot-admin rotate-http-token
+```
+
+Notes:
+The daemon must be restarted or sent SIGHUP to reload the token.
+
+### `diagnose`
+
+Emit structured daemon diagnostics.
+
+Examples:
+```bash
+pacto-bot-admin diagnose
+pacto-bot-admin diagnose --format json
+```
+
+Notes:
+`--format` accepts `text` or `json`.
+
+### `status`
+
+Show daemon status, connectivity, and registered handlers.
+
+Examples:
+```bash
+pacto-bot-admin status
+pacto-bot-admin status --format json
+```
+
+Notes:
+`--format` accepts `text` or `json`.
+
+## Daemon configuration
+
+The daemon reads bot identities from `pacto-bot-api.toml`. The file must be readable only by the owner (`0o600` or stricter).
+
+Example config:
+
+```toml
+[[bots]]
+id = "echo-bot"
+npub = "npub1..."
+signing = { backend = "nsec", nsec = "<NSEC>" }
+relays = ["ws://localhost:7000"]
+capabilities = ["ReadMessages", "SendMessages"]
+
+[[bots]]
+id = "secure-bot"
+npub = "npub1..."
+signing = { backend = "bunker_remote", uri = "<BUNKER_URI>" }
+relays = ["wss://relay.example.com"]
+capabilities = ["ReadMessages"]
+```
+
+Signing backends:
+
+- `nsec` — dev-only local test key. Use `PACT_BOT_NSEC` environment variable or the config file.
+- `bunker_local` — NIP-46 bunker on the same machine.
+- `bunker_remote` — production NIP-46 bunker reachable over `wss://`.
+
+Run the daemon with:
+
+```bash
+pacto-bot-api --config pacto-bot-api.toml
+# Optional HTTP transport on 127.0.0.1:9800
+pacto-bot-api --config pacto-bot-api.toml --enable-http
+```
+
+## Handler JSON-RPC basics
+
+Handlers connect to the daemon over the Unix socket at `$DATA_DIR/pacto-bot-api.sock` or the optional localhost HTTP transport at `127.0.0.1:9800`.
+HTTP requests must include the `X-Pacto-Bot-Secret` header.
+
+### Register a handler
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"handler.register","params":{"bot_ids":["echo-bot"],"event_types":["dm_received"],"capabilities":["ReadMessages","SendMessages"]}}
+```
+
+### Receive an event
+
+The daemon forwards decrypted DMs as `agent.event` notifications:
+
+```json
+{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"echo-bot","type":"dm_received","content":"hello","author":"<npub>","rumor_id":"<id>","event_id":"<id>"}}
+```
+
+### Reply to a DM
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"agent.send_dm","params":{"bot_id":"echo-bot","recipient":"<npub>","content":"hello back"}}
+```
+
+Handlers must declare capabilities at registration. The daemon rejects calls that exceed those capabilities.
+
+## When to use which
+
+- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, and checking status.
+- **Daemon (`pacto-bot-api`)** — use as the long-lived runtime: it owns relay connections, decrypts DMs, enforces capabilities, and persists cursors. Start it once and leave it running.
+- **Handler JSON-RPC** — use when writing bot logic in any language: connect a handler to the daemon's Unix socket or HTTP transport, register for events, and respond with `agent.send_dm` or `agent.set_profile`.
+
+Typical workflow:
+
+1. Use `pacto-bot-admin new` to create a bot identity.
+2. Add the generated config snippet to `pacto-bot-api.toml`.
+3. Run `pacto-bot-admin validate-config` to verify the file.
+4. Start `pacto-bot-api --config pacto-bot-api.toml`.
+5. Connect a handler over JSON-RPC and register for events.
+6. Use `pacto-bot-admin status` or `diagnose` to monitor health.

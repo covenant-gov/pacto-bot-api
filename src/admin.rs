@@ -43,15 +43,88 @@ use std::process;
 use std::str::FromStr;
 use std::time::Duration;
 
+use pacto_bot_api::guide;
+
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const BOT_SECRET_TOKEN_FILE: &str = "bot_secret_token";
 const AGENT_DB_FILE: &str = "agent.db";
 
 /// `pacto-bot-admin` command-line interface.
+const TOP_LEVEL_AFTER_HELP: &str = r#"Examples:
+  # Create a new dev bot with the nsec backend
+  pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000
+
+  # Publish the bot's kind:0 profile
+  pacto-bot-admin publish-profile echo-bot
+
+  # Test a bunker connection
+  pacto-bot-admin test-bunker echo-bot
+
+  # Show daemon status
+  pacto-bot-admin status
+
+For a complete operator's guide formatted for LLMs, run:
+  pacto-bot-admin --llm-help
+"#;
+
+const NEW_AFTER_HELP: &str = r#"Examples:
+  # Dev-only nsec backend (not for production)
+  pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000
+
+  # Local bunker backend
+  pacto-bot-admin new echo-bot --backend bunker_local --uri bunker://<key>@127.0.0.1:4848
+
+  # Remote bunker backend
+  pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<key>?relay=wss://relay.nsec.app
+
+Valid capabilities:
+  ReadMessages   Receive decrypted DMs and group messages
+  SendMessages   Send replies as the bot
+  ManageProfile  Update the bot's kind:0 profile
+"#;
+
+const PUBLISH_PROFILE_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin publish-profile echo-bot
+"#;
+
+const TEST_BUNKER_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin test-bunker echo-bot
+"#;
+
+const EXPORT_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin export echo-bot > echo-bot-state.json
+"#;
+
+const IMPORT_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin import echo-bot echo-bot-state.json
+"#;
+
+const VALIDATE_CONFIG_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin validate-config
+"#;
+
+const ROTATE_HTTP_TOKEN_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin rotate-http-token
+
+Note: The daemon must be restarted or sent SIGHUP to reload the token.
+"#;
+
+const DIAGNOSE_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin diagnose
+  pacto-bot-admin diagnose --format json
+"#;
+
+const STATUS_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin status
+  pacto-bot-admin status --format json
+"#;
+
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-admin")]
 #[command(about = "Pacto bot admin CLI")]
 #[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
+#[command(after_help = TOP_LEVEL_AFTER_HELP)]
+#[command(arg_required_else_help = true)]
 struct Cli {
     /// Path to the bot configuration file.
     #[arg(
@@ -67,19 +140,25 @@ struct Cli {
     #[arg(short, long, value_name = "DIR", global = true)]
     data_dir: Option<PathBuf>,
 
+    /// Print the LLM-readable operator's guide and exit.
+    #[arg(long, global = true)]
+    llm_help: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 #[allow(clippy::enum_variant_names)]
 enum Command {
     /// Create a new bot identity config snippet.
+    #[command(after_help = NEW_AFTER_HELP)]
     New {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
 
         /// Signing backend for the new bot.
+        /// Valid values: nsec (dev-only), bunker_local, bunker_remote.
         #[arg(short, long, value_name = "BACKEND", default_value = "nsec")]
         backend: String,
 
@@ -88,6 +167,7 @@ enum Command {
         relays: Vec<String>,
 
         /// Capabilities granted to handlers for the new bot.
+        /// Valid values: ReadMessages, SendMessages, ManageProfile.
         #[arg(long, value_name = "CAPABILITY")]
         capabilities: Vec<String>,
 
@@ -96,21 +176,25 @@ enum Command {
         uri: Option<String>,
     },
     /// Publish a bot profile (kind:0) event.
+    #[command(after_help = PUBLISH_PROFILE_AFTER_HELP)]
     PublishProfile {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
     },
     /// Test a NIP-46 bunker connection and pubkey match.
+    #[command(after_help = TEST_BUNKER_AFTER_HELP)]
     TestBunker {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
     },
     /// Export bot daemon-local state to JSON.
+    #[command(after_help = EXPORT_AFTER_HELP)]
     Export {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
     },
     /// Import bot daemon-local state from JSON.
+    #[command(after_help = IMPORT_AFTER_HELP)]
     Import {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
@@ -119,17 +203,29 @@ enum Command {
         state_file: String,
     },
     /// Validate the daemon configuration file.
+    #[command(after_help = VALIDATE_CONFIG_AFTER_HELP)]
     ValidateConfig,
     /// Rotate the HTTP secret token.
+    #[command(after_help = ROTATE_HTTP_TOKEN_AFTER_HELP)]
     RotateHttpToken,
     /// Emit structured daemon diagnostics.
+    #[command(after_help = DIAGNOSE_AFTER_HELP)]
     Diagnose {
+        /// Output format. Valid values: text, json.
         #[arg(short, long, value_name = "FORMAT", default_value = "text")]
         format: String,
     },
     /// Show daemon status, connectivity, and registered handlers.
+    #[command(after_help = STATUS_AFTER_HELP)]
     Status {
+        /// Output format. Valid values: text, json.
         #[arg(short, long, value_name = "FORMAT", default_value = "text")]
+        format: String,
+    },
+    /// Print documentation in the requested format.
+    Docs {
+        /// Output format. Valid values: llm.
+        #[arg(short, long, value_name = "FORMAT", default_value = "llm")]
         format: String,
     },
 }
@@ -144,7 +240,18 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), DaemonError> {
-    match cli.command {
+    if cli.llm_help {
+        print_llm_guide();
+        return Ok(());
+    }
+
+    let Some(command) = cli.command else {
+        return Err(DaemonError::Config(
+            "a subcommand is required; use --help for usage".into(),
+        ));
+    };
+
+    match command {
         Command::New {
             bot_id,
             backend,
@@ -162,6 +269,23 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         Command::RotateHttpToken => cmd_rotate_http_token(&cli.config, cli.data_dir),
         Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format).await,
         Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
+        Command::Docs { format } => cmd_docs(&format),
+    }
+}
+
+fn print_llm_guide() {
+    print!("{}", guide::render_llm_guide());
+}
+
+fn cmd_docs(format: &str) -> Result<(), DaemonError> {
+    match format {
+        "llm" => {
+            print_llm_guide();
+            Ok(())
+        }
+        other => Err(DaemonError::Config(format!(
+            "unsupported docs format: {other}; expected 'llm'"
+        ))),
     }
 }
 
