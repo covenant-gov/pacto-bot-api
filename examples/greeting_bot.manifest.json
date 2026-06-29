@@ -1,0 +1,47 @@
+{
+  "manifest_version": "1",
+  "bot_file": "greeting_bot.py",
+  "registration": true,
+  "shutdown": true,
+  "contract_pieces": [
+    {
+      "name": "hello_reply",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "echo-bot",
+        "event_id": "greet-0001",
+        "type": "dm_received",
+        "chat_id": null,
+        "content": "/hello",
+        "rumor_id": "rumor-greet-0001",
+        "author": "npub1sender",
+        "timestamp": 1700000000000
+      },
+      "expect_response": {
+        "event_id": "greet-0001",
+        "action": "reply",
+        "content": "Hello there! Welcome to Pacto."
+      }
+    },
+    {
+      "name": "ignore_unknown",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "echo-bot",
+        "event_id": "greet-0002",
+        "type": "dm_received",
+        "chat_id": null,
+        "content": "just chatting",
+        "rumor_id": "rumor-greet-0002",
+        "author": "npub1sender",
+        "timestamp": 1700000001000
+      },
+      "expect_response": {
+        "event_id": "greet-0002",
+        "action": "ignore"
+      }
+    }
+  ]
+}
