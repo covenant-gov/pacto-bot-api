@@ -19,6 +19,7 @@ pub fn run() -> Result<()> {
     generate_protocol(&schemas_dir, &root)?;
     generate_metrics(&schemas_dir, &root)?;
     generate_service_compatibility(&schemas_dir, &root)?;
+    generate_python(&root)?;
 
     println!("codegen: generated Rust types from schemas/");
     Ok(())
@@ -182,6 +183,29 @@ fn generate_service_compatibility(schemas_dir: &Path, root: &Path) -> Result<()>
 
     let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/service_compatibility_generated.rs"), out)?;
+    Ok(())
+}
+
+fn generate_python(root: &Path) -> Result<()> {
+    let script = root.join("python").join("scripts").join("generate.py");
+    if !script.exists() {
+        bail!("python generator script not found: {}", script.display());
+    }
+
+    let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
+    let status = std::process::Command::new(&python)
+        .arg(&script)
+        .current_dir(root)
+        .status()
+        .with_context(|| format!("failed to run python generator {}", script.display()))?;
+
+    if !status.success() {
+        bail!(
+            "python generator exited with status: {}",
+            status.code().unwrap_or(-1)
+        );
+    }
+
     Ok(())
 }
 

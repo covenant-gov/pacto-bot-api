@@ -189,7 +189,7 @@ async def _execute_contract(
     manifest: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    bot_id = "echo-bot"  # Configurable per-manifest could be added later.
+    bot_id = manifest.get("bot_id", "echo-bot")  # Default matches legacy manifests.
     diagnostics: list[str] = []
     bot_proc: subprocess.Popen[str] | None = None
 

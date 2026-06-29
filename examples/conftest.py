@@ -124,6 +124,7 @@ def _short_tmp_dir(tmp_path: Path, suffix: str = "") -> Path:
 def _write_config(
     tmp_path: Path,
     bot_keys: dict[str, str],
+    bot_id: str = "echo-bot",
     relay_url: str = "ws://127.0.0.1:5555",
 ) -> tuple[Path, Path, Path]:
     """Write a daemon config and return (config_path, data_dir, socket_path)."""
@@ -137,7 +138,7 @@ data_dir = {str(data_dir)!r}
 socket_path = {str(socket_path)!r}
 
 [[bots]]
-id = "echo-bot"
+id = {bot_id!r}
 npub = "{bot_keys['npub']}"
 signing = {{ backend = "nsec", nsec = "{bot_keys['nsec']}" }}
 relays = [{relay_url!r}]
@@ -201,16 +202,20 @@ def _manifest_schema() -> dict[str, Any]:
 
 
 def discover_bot_files(examples_dir: Path | None = None) -> list[Path]:
-    """Return every *_bot.py under examples/ except test files."""
-    if examples_dir is None:
-        examples_dir = _repo_root() / "examples"
+    """Return every *_bot.py under examples/ and python/examples/ except test files."""
+    if examples_dir is not None:
+        dirs = [examples_dir]
+    else:
+        root = _repo_root()
+        dirs = [root / "examples", root / "python" / "examples"]
     bots: list[Path] = []
-    for path in examples_dir.rglob("*_bot.py"):
-        if path.name.startswith("test_"):
-            continue
-        if any(part.startswith(".") for part in path.relative_to(examples_dir).parts):
-            continue
-        bots.append(path)
+    for directory in dirs:
+        for path in directory.rglob("*_bot.py"):
+            if path.name.startswith("test_"):
+                continue
+            if any(part.startswith(".") for part in path.relative_to(directory).parts):
+                continue
+            bots.append(path)
     return sorted(bots)
 
 
@@ -253,7 +258,7 @@ async def daemon_lifecycle(
     """
     bot_keys = _generate_bot_keys(bot_id)
     config_path, data_dir, socket_path = _write_config(
-        tmp_path, bot_keys, relay_url=relay_url
+        tmp_path, bot_keys, bot_id=bot_id, relay_url=relay_url
     )
 
     bin_arg = _daemon_bin()
@@ -582,7 +587,7 @@ async def daemon(
 ) -> AsyncGenerator[tuple[subprocess.Popen[bytes], Path], None]:
     """Spawn the Rust daemon and yield once its Unix socket is ready."""
     bot_keys = _generate_bot_keys("echo-bot")
-    config_path, data_dir, socket_path = _write_config(tmp_path, bot_keys)
+    config_path, data_dir, socket_path = _write_config(tmp_path, bot_keys, bot_id="echo-bot")
 
     cmd: list[str]
     bin_arg = _daemon_bin()

@@ -1,0 +1,28 @@
+{
+  "manifest_version": "1",
+  "bot_file": "joke_bot.py",
+  "bot_id": "joke-bot",
+  "registration": true,
+  "shutdown": true,
+  "contract_pieces": [
+    {
+      "name": "joke_defer",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "joke-bot",
+        "event_id": "joke-py-0001",
+        "type": "dm_received",
+        "chat_id": null,
+        "content": "/joke",
+        "rumor_id": "rumor-joke-py-0001",
+        "author": "npub1sender",
+        "timestamp": 1700000002000
+      },
+      "expect_response": {
+        "event_id": "joke-py-0001",
+        "action": "defer"
+      }
+    }
+  ]
+}
