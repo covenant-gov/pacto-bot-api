@@ -24,6 +24,12 @@ const TRACKED_GENERATED_FILES: &[&str] = &[
     "src/transport/protocol_generated.rs",
 ];
 
+/// Python files produced by `cargo xtask codegen` from `schemas/jsonrpc.json`.
+const TRACKED_GENERATED_PYTHON_FILES: &[&str] = &[
+    "python/src/pacto_bot_api/_generated/models.py",
+    "python/src/pacto_bot_api/_generated/client.py",
+];
+
 /// Schema files that are intentionally not represented by a generated Rust
 /// module, with a short justification. Every other file in `schemas/` must
 /// either be generated or appear here.
@@ -90,6 +96,43 @@ fn generated_types_match_schemas() {
             generated,
             committed,
             "generated file {} does not match committed version; run `cargo xtask codegen`",
+            generated_path.display()
+        );
+    }
+}
+
+#[test]
+fn generated_python_types_match_schemas() {
+    let root = workspace_root();
+
+    // Snapshot the committed Python generated files before codegen overwrites them.
+    let committed: Vec<String> = TRACKED_GENERATED_PYTHON_FILES
+        .iter()
+        .map(|path| {
+            let committed_path = root.join(path);
+            fs::read_to_string(&committed_path)
+                .unwrap_or_else(|e| panic!("failed to read {}: {}", committed_path.display(), e))
+        })
+        .collect();
+
+    // Run the codegen xtask against the current working tree.
+    let status = Command::new("cargo")
+        .args(["xtask", "codegen"])
+        .current_dir(&root)
+        .status()
+        .expect("failed to run cargo xtask codegen");
+    assert!(status.success(), "cargo xtask codegen failed");
+
+    // Compare freshly generated Python files to the committed snapshot.
+    for (path, committed) in TRACKED_GENERATED_PYTHON_FILES.iter().zip(committed) {
+        let generated_path = root.join(path);
+        let generated = fs::read_to_string(&generated_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", generated_path.display(), e));
+
+        assert_eq!(
+            generated,
+            committed,
+            "generated Python file {} does not match committed version; run `cargo xtask codegen`",
             generated_path.display()
         );
     }
