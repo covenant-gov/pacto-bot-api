@@ -34,6 +34,7 @@ paths = [
     "examples",
     "tests",
     "scripts",
+    "skills",
 ]
 
 [tool.pytest.ini_options]
