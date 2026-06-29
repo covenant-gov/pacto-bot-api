@@ -18,7 +18,9 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 
+import jsonschema
 import pytest
 import websockets
 import websockets.server
@@ -34,30 +36,61 @@ def _repo_root() -> Path:
 
 
 def _daemon_bin() -> str:
-    env = os.environ.get("CARGO_BIN_EXE_pacto-bot-api")
+    """Resolve the pacto-bot-api daemon binary.
+
+    Lookup order:
+      1. PACTO_BOT_API_BIN environment variable (used in CI).
+      2. CARGO_BIN_EXE_pacto-bot-api (set by Cargo when running tests).
+      3. target/debug/pacto-bot-api (local debug build).
+      4. cargo (local development fallback).
+    """
+    env = os.environ.get("PACTO_BOT_API_BIN") or os.environ.get("CARGO_BIN_EXE_pacto-bot-api")
     if env:
         return env
     binary = _repo_root() / "target" / "debug" / "pacto-bot-api"
     if binary.exists():
         return str(binary)
-    # Fall back to cargo run (slower but always works in a source checkout).
+    # Local-development fallback only.
+    return "cargo"
+
+
+def _admin_bin() -> str:
+    """Resolve the pacto-bot-admin binary.
+
+    Lookup order:
+      1. PACTO_BOT_ADMIN_BIN environment variable (used in CI).
+      2. CARGO_BIN_EXE_pacto-bot-admin (set by Cargo when running tests).
+      3. target/debug/pacto-bot-admin (local debug build).
+      4. cargo (local development fallback).
+    """
+    env = os.environ.get("PACTO_BOT_ADMIN_BIN") or os.environ.get("CARGO_BIN_EXE_pacto-bot-admin")
+    if env:
+        return env
+    binary = _repo_root() / "target" / "debug" / "pacto-bot-admin"
+    if binary.exists():
+        return str(binary)
+    # Local-development fallback only.
     return "cargo"
 
 
 def _generate_bot_keys(bot_id: str = "echo-bot") -> dict[str, str]:
     """Generate an npub/nsec pair using the Rust admin CLI."""
-    cmd = [
-        "cargo",
-        "run",
-        "--quiet",
-        "--bin",
-        "pacto-bot-admin",
-        "--",
-        "new",
-        bot_id,
-        "--backend",
-        "nsec",
-    ]
+    bin_arg = _admin_bin()
+    if bin_arg == "cargo":
+        cmd = [
+            "cargo",
+            "run",
+            "--quiet",
+            "--bin",
+            "pacto-bot-admin",
+            "--",
+            "new",
+            bot_id,
+            "--backend",
+            "nsec",
+        ]
+    else:
+        cmd = [bin_arg, "new", bot_id, "--backend", "nsec"]
     result = subprocess.run(
         cmd,
         cwd=_repo_root(),
@@ -149,6 +182,245 @@ async def _async_wait_for_socket(socket_path: Path, timeout: float = 15.0) -> No
                 pass
         await asyncio.sleep(0.05)
     raise TimeoutError(f"daemon socket did not appear: {socket_path}")
+
+
+# ---------------------------------------------------------------------------
+# Manifest helpers
+# ---------------------------------------------------------------------------
+
+
+_MANIFEST_SCHEMA: dict[str, Any] | None = None
+
+
+def _manifest_schema() -> dict[str, Any]:
+    global _MANIFEST_SCHEMA
+    if _MANIFEST_SCHEMA is None:
+        path = _repo_root() / "schemas" / "example-manifest.json"
+        _MANIFEST_SCHEMA = json.loads(path.read_text())
+    return _MANIFEST_SCHEMA
+
+
+def discover_bot_files(examples_dir: Path | None = None) -> list[Path]:
+    """Return every *_bot.py under examples/ except test files."""
+    if examples_dir is None:
+        examples_dir = _repo_root() / "examples"
+    bots: list[Path] = []
+    for path in examples_dir.rglob("*_bot.py"):
+        if path.name.startswith("test_"):
+            continue
+        if any(part.startswith(".") for part in path.relative_to(examples_dir).parts):
+            continue
+        bots.append(path)
+    return sorted(bots)
+
+
+def manifest_path_for_bot(bot_file: Path) -> Path:
+    return bot_file.with_suffix(".manifest.json")
+
+
+def load_manifest(bot_file: Path) -> dict[str, Any]:
+    manifest_path = manifest_path_for_bot(bot_file)
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"missing manifest for {bot_file.name}: expected {manifest_path}"
+        )
+    return json.loads(manifest_path.read_text())
+
+
+def validate_manifest(manifest: dict[str, Any], bot_file: Path) -> None:
+    try:
+        jsonschema.validate(instance=manifest, schema=_manifest_schema())
+    except jsonschema.ValidationError as exc:
+        raise AssertionError(
+            f"manifest validation failed for {bot_file.name}: {exc.message}"
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Daemon lifecycle helper
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def daemon_lifecycle(
+    tmp_path: Path,
+    bot_id: str = "echo-bot",
+    relay_url: str = "ws://127.0.0.1:5555",
+) -> AsyncGenerator[tuple[subprocess.Popen[bytes], Path, Path], None]:
+    """Spawn a fresh daemon and shut it down cleanly after the example run.
+
+    Yields (process, config_path, real_socket_path).
+    """
+    bot_keys = _generate_bot_keys(bot_id)
+    config_path, data_dir, socket_path = _write_config(
+        tmp_path, bot_keys, relay_url=relay_url
+    )
+
+    bin_arg = _daemon_bin()
+    if bin_arg == "cargo":
+        cmd = [
+            "cargo",
+            "run",
+            "--quiet",
+            "--bin",
+            "pacto-bot-api",
+            "--",
+            "--config",
+            str(config_path),
+            "--data-dir",
+            str(data_dir),
+        ]
+    else:
+        cmd = [
+            bin_arg,
+            "--config",
+            str(config_path),
+            "--data-dir",
+            str(data_dir),
+        ]
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=_repo_root(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        try:
+            await _async_wait_for_socket(socket_path, timeout=20.0)
+        except Exception as exc:
+            # Surface daemon stderr to make startup failures debuggable.
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+            stdout, stderr = proc.communicate(timeout=10.0)
+            raise RuntimeError(
+                f"daemon failed to start: {exc}\nSTDOUT:\n{stdout.decode(errors='replace')}\n"
+                f"STDERR:\n{stderr.decode(errors='replace')}"
+            ) from exc
+        yield proc, config_path, socket_path
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGINT)
+            try:
+                proc.wait(timeout=20.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5.0)
+        if socket_path.exists():
+            socket_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Transparent Unix-socket proxy
+# ---------------------------------------------------------------------------
+
+
+class SocketProxy:
+    """Forward traffic between a client-facing socket and the daemon socket.
+
+    Records JSON-RPC messages sent by the bot (client side) so the harness can
+    assert on bot-originated notifications such as handler.response. The proxy
+    can also inject daemon-to-bot messages, acting as a lightweight test helper
+    for ``agent.event`` style notifications without requiring a live relay.
+    """
+
+    def __init__(self, daemon_socket: Path) -> None:
+        self.daemon_socket = daemon_socket
+        self.proxy_socket: Path | None = None
+        self.server: asyncio.Server | None = None
+        self.bot_messages: list[dict[str, Any]] = []
+        self._lock = asyncio.Lock()
+        self._client_writer: asyncio.StreamWriter | None = None
+        self._stop = asyncio.Event()
+
+    async def start(self, proxy_socket: Path) -> None:
+        self.proxy_socket = proxy_socket
+        self.server = await asyncio.start_unix_server(
+            self._handle_client, path=str(proxy_socket)
+        )
+
+    async def stop(self) -> None:
+        self._stop.set()
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
+        if self.proxy_socket is not None and self.proxy_socket.exists():
+            self.proxy_socket.unlink(missing_ok=True)
+
+    async def inject_to_bot(self, msg: dict[str, Any]) -> None:
+        """Send a JSON-RPC message to the bot as if it came from the daemon."""
+        async with self._lock:
+            writer = self._client_writer
+        if writer is None:
+            raise RuntimeError("no bot is connected to the proxy")
+        line = (json.dumps(msg, separators=(",", ":")) + "\n").encode()
+        writer.write(line)
+        await writer.drain()
+
+    async def _handle_client(
+        self,
+        client_reader: asyncio.StreamReader,
+        client_writer: asyncio.StreamWriter,
+    ) -> None:
+        async with self._lock:
+            self._client_writer = client_writer
+        try:
+            daemon_reader, daemon_writer = await asyncio.open_unix_connection(
+                str(self.daemon_socket)
+            )
+        except OSError as exc:
+            client_writer.close()
+            await client_writer.wait_closed()
+            raise
+
+        async def client_to_daemon() -> None:
+            try:
+                while True:
+                    line = await client_reader.readline()
+                    if not line:
+                        break
+                    try:
+                        msg = json.loads(line.decode())
+                    except json.JSONDecodeError:
+                        msg = {"raw": line.decode(errors="replace")}
+                    async with self._lock:
+                        self.bot_messages.append(msg)
+                    daemon_writer.write(line)
+                    await daemon_writer.drain()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+            finally:
+                daemon_writer.close()
+                try:
+                    await daemon_writer.wait_closed()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+
+        async def daemon_to_client() -> None:
+            try:
+                while True:
+                    line = await daemon_reader.readline()
+                    if not line:
+                        break
+                    client_writer.write(line)
+                    await client_writer.drain()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+            finally:
+                client_writer.close()
+                try:
+                    await client_writer.wait_closed()
+                except (ConnectionResetError, BrokenPipeError):
+                    pass
+
+        try:
+            await asyncio.gather(
+                asyncio.create_task(client_to_daemon()),
+                asyncio.create_task(daemon_to_client()),
+            )
+        finally:
+            async with self._lock:
+                self._client_writer = None
 
 
 # ---------------------------------------------------------------------------

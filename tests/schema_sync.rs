@@ -27,10 +27,16 @@ const TRACKED_GENERATED_FILES: &[&str] = &[
 /// Schema files that are intentionally not represented by a generated Rust
 /// module, with a short justification. Every other file in `schemas/` must
 /// either be generated or appear here.
-const EXEMPT_SCHEMAS: &[(&str, &str)] = &[(
-    "version.json",
-    "response shape tracked by handwritten AgentVersionResponse in src/transport/protocol.rs",
-)];
+const EXEMPT_SCHEMAS: &[(&str, &str)] = &[
+    (
+        "version.json",
+        "response shape tracked by handwritten AgentVersionResponse in src/transport/protocol.rs",
+    ),
+    (
+        "example-manifest.json",
+        "Python-facing CI manifest schema; consumed by examples/conftest.py, not by Rust code",
+    ),
+];
 
 /// Hand-written Rust response types that must match a canonical schema.
 /// Each entry maps `(source_file, schema_file, schema_selector, rust_type)`

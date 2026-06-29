@@ -1,0 +1,60 @@
+{
+  "manifest_version": "1",
+  "bot_file": "echo_bot.py",
+  "registration": true,
+  "shutdown": true,
+  "contract_pieces": [
+    {
+      "name": "register",
+      "type": "rpc_call",
+      "method": "handler.register",
+      "params": {
+        "bot_ids": ["echo-bot"],
+        "event_types": ["dm_received"],
+        "capabilities": ["ReadMessages", "SendMessages"]
+      },
+      "expect": {
+        "registered_events": ["dm_received"]
+      }
+    },
+    {
+      "name": "echo_reply",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "echo-bot",
+        "event_id": "echo-0001",
+        "type": "dm_received",
+        "chat_id": null,
+        "content": "/echo hello world",
+        "rumor_id": "rumor-echo-0001",
+        "author": "npub1sender",
+        "timestamp": 1700000000000
+      },
+      "expect_response": {
+        "event_id": "echo-0001",
+        "action": "reply",
+        "content": "Echo: hello world"
+      }
+    },
+    {
+      "name": "ignore_non_echo",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "echo-bot",
+        "event_id": "echo-0002",
+        "type": "dm_received",
+        "chat_id": null,
+        "content": "just chatting",
+        "rumor_id": "rumor-echo-0002",
+        "author": "npub1sender",
+        "timestamp": 1700000001000
+      },
+      "expect_response": {
+        "event_id": "echo-0002",
+        "action": "ignore"
+      }
+    }
+  ]
+}

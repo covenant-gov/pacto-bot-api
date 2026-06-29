@@ -1,0 +1,7 @@
+# Global fallback for the repository. Update with the actual maintainer team.
+* @covenant-gov/pacto-maintainers
+
+# Manifest schema changes affect every example contract test and require
+# maintainer review (R18). The branch-protection rule for this path must also
+# be enabled by a repository admin.
+/schemas/example-manifest.json @covenant-gov/pacto-maintainers

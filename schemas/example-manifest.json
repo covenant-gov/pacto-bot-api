@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pacto.example/schemas/example-manifest.json",
+  "title": "pacto-bot-api example bot manifest",
+  "description": "Per-bot manifest declaring which JSON-RPC contract pieces an example bot exercises.",
+  "type": "object",
+  "required": ["manifest_version", "bot_file", "contract_pieces"],
+  "properties": {
+    "manifest_version": {
+      "type": "string",
+      "enum": ["1"],
+      "description": "Version of the manifest format. Independent of the daemon's JSON-RPC schema version."
+    },
+    "bot_file": {
+      "type": "string",
+      "description": "Filename of the bot this manifest describes, e.g. 'echo_bot.py'."
+    },
+    "registration": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the harness should call handler.register before contract pieces."
+    },
+    "shutdown": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the harness should send SIGINT for clean shutdown after contract pieces."
+    },
+    "contract_pieces": {
+      "type": "array",
+      "description": "Ordered contract pieces exercised by this example.",
+      "items": {
+        "$ref": "#/definitions/contract_piece"
+      },
+      "minItems": 1
+    }
+  },
+  "definitions": {
+    "contract_piece": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for this contract piece."
+        },
+        "type": {
+          "type": "string",
+          "enum": ["rpc_call", "notification", "event_response", "expected_error"],
+          "description": "Kind of contract piece."
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30,
+          "description": "Timeout for this contract piece in seconds."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "rpc_call" } }
+          },
+          "then": {
+            "required": ["method"],
+            "properties": {
+              "method": { "type": "string" },
+              "params": { "type": "object" },
+              "expect": {}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "notification" } }
+          },
+          "then": {
+            "required": ["method"],
+            "properties": {
+              "method": { "type": "string" },
+              "params": { "type": "object" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "event_response" } }
+          },
+          "then": {
+            "required": ["inject_event", "expect_response"],
+            "properties": {
+              "inject_event": {
+                "type": "object",
+                "description": "Parameters of the agent.event notification pushed to the bot."
+              },
+              "expect_response": {
+                "type": "object",
+                "description": "Expected parameters of a handler.response notification emitted by the bot."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "type": { "const": "expected_error" } }
+          },
+          "then": {
+            "required": ["method", "expect_error"],
+            "properties": {
+              "method": { "type": "string" },
+              "params": { "type": "object" },
+              "expect_error": {
+                "type": "object",
+                "required": ["code"],
+                "properties": {
+                  "code": { "type": "integer" },
+                  "message_contains": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
