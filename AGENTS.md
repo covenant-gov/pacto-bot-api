@@ -167,7 +167,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 | `cargo-nextest` | `laurigates/claude-plugins` | Fast, structured test runs with `cargo nextest` |
 | `ce-compound` | `everyinc/compound-engineering-plugin` | Document solved problems and project vocabulary in `docs/solutions/` |
 | `ce-compound-refresh` | `everyinc/compound-engineering-plugin` | Audit and refresh stale learnings against the codebase |
-| `pacto-python-bot` | `project-local` | Write Python bots using the generated `pacto_bot_api` SDK |
+| `python-pacto-bot` | `project-local` | Write Python bots for `pacto-bot-api` using the generated SDK |
 
 ### Security note
 
