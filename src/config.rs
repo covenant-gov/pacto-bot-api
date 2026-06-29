@@ -147,6 +147,13 @@ fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
         // Also reject if the parent directory is writable by group or other,
         // since a world-writable directory would let anyone replace the file.
         if let Some(parent) = path.parent() {
+            // A relative path like `pacto-bot-api.toml` reports an empty parent;
+            // treat it as the current directory.
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             let parent_meta = fs::metadata(parent).map_err(DaemonError::Io)?;
             let parent_mode = parent_meta.permissions().mode();
             if parent_mode & 0o022 != 0 {

@@ -16,6 +16,7 @@ pub mod diagnostics;
 pub mod dispatch;
 pub mod errors;
 pub mod events;
+pub mod guide;
 pub mod handlers;
 pub mod metrics_generated;
 pub mod nostr;

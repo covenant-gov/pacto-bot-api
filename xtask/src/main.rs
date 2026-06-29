@@ -1,6 +1,7 @@
 mod codegen;
 mod coverage;
 mod dev_env_probe;
+mod docs;
 mod secret_lint;
 
 use anyhow::Result;
@@ -26,6 +27,8 @@ enum Command {
     Coverage,
     /// Lint production source for plain-string secret fields.
     SecretLint,
+    /// Generate the LLM-readable operator's guide.
+    Docs,
 }
 
 fn main() -> Result<()> {
@@ -43,5 +46,6 @@ fn main() -> Result<()> {
         Command::DevEnvProbe => dev_env_probe::run(),
         Command::Coverage => coverage::run(),
         Command::SecretLint => secret_lint::run(),
+        Command::Docs => docs::run(),
     }
 }
