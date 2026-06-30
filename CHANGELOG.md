@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped `rusqlite` from 0.34.0 to 0.40.1.
 - Bumped `jsonschema` from 0.30.0 to 0.46.6.
 
+### Fixed
+
+- CI Docker image job no longer runs on pull requests; images are built and
+  pushed only on `main` branch pushes and release tags.
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
