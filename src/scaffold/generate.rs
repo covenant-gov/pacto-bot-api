@@ -1,6 +1,8 @@
 //! Project generation logic for the scaffold command.
 
-use crate::scaffold::safety::{OverwritePolicy, WriteDecision, decide_write, set_config_permissions};
+use crate::scaffold::safety::{
+    OverwritePolicy, WriteDecision, decide_write, set_config_permissions,
+};
 use crate::scaffold::template::{Template, Value as TemplateValue};
 use include_dir::{Dir, include_dir};
 use pacto_bot_api::config::BotConfig;
@@ -22,13 +24,11 @@ static TEMPLATES_DIR: Dir<'static> = include_dir!("templates");
 /// Embedded templates are stored in the binary, but the existing template
 /// rendering code expects a filesystem directory. A one-time extraction to a
 /// temporary directory bridges the two without restructuring the renderer.
-static EMBEDDED_TEMPLATES: LazyLock<Result<tempfile::TempDir, String>> =
-    LazyLock::new(|| {
-        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-        extract_embedded_dir(&TEMPLATES_DIR, temp.path())
-            .map_err(|e| e.to_string())?;
-        Ok(temp)
-    });
+static EMBEDDED_TEMPLATES: LazyLock<Result<tempfile::TempDir, String>> = LazyLock::new(|| {
+    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+    extract_embedded_dir(&TEMPLATES_DIR, temp.path()).map_err(|e| e.to_string())?;
+    Ok(temp)
+});
 
 fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| e.to_string())?;
@@ -103,10 +103,7 @@ pub fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
             )?;
         }
         ScaffoldMode::ExistingProject { bot_config } => {
-            append_config_entry(
-                &request.project_dir.join("pacto-bot-api.toml"),
-                bot_config,
-            )?;
+            append_config_entry(&request.project_dir.join("pacto-bot-api.toml"), bot_config)?;
         }
     }
 
@@ -205,7 +202,10 @@ fn bot_target_dir(project_dir: &Path, bot_id: &str) -> PathBuf {
 
 fn build_context(request: &ScaffoldRequest) -> HashMap<String, TemplateValue> {
     let mut ctx = HashMap::new();
-    ctx.insert("bot_id".to_string(), TemplateValue::from(request.bot_id.clone()));
+    ctx.insert(
+        "bot_id".to_string(),
+        TemplateValue::from(request.bot_id.clone()),
+    );
     ctx.insert(
         "bot_id_snake".to_string(),
         TemplateValue::from(bot_id_snake(&request.bot_id)),
@@ -286,7 +286,8 @@ fn append_config_entry(path: &Path, bot_config: &BotConfig) -> Result<(), Daemon
         .open(path)
         .map_err(DaemonError::Io)?;
     file.write_all(b"\n").map_err(DaemonError::Io)?;
-    file.write_all(snippet.as_bytes()).map_err(DaemonError::Io)?;
+    file.write_all(snippet.as_bytes())
+        .map_err(DaemonError::Io)?;
     println!("Appended [[bots]] entry to {}", path.display());
     Ok(())
 }
@@ -300,19 +301,28 @@ fn bot_config_to_snippet(bot_config: &BotConfig) -> Result<String, DaemonError> 
     match &bot_config.signing {
         pacto_bot_api::config::SigningConfig::Nsec { nsec } => {
             let nsec = nsec.expose_secret();
-            lines.push(format!("signing = {{ backend = \"nsec\", nsec = {nsec:?} }}"));
+            lines.push(format!(
+                "signing = {{ backend = \"nsec\", nsec = {nsec:?} }}"
+            ));
         }
         pacto_bot_api::config::SigningConfig::BunkerLocal { uri } => {
             let uri = uri.expose_secret();
-            lines.push(format!("signing = {{ backend = \"bunker_local\", uri = {uri:?} }}"));
+            lines.push(format!(
+                "signing = {{ backend = \"bunker_local\", uri = {uri:?} }}"
+            ));
         }
         pacto_bot_api::config::SigningConfig::BunkerRemote { uri } => {
             let uri = uri.expose_secret();
-            lines.push(format!("signing = {{ backend = \"bunker_remote\", uri = {uri:?} }}"));
+            lines.push(format!(
+                "signing = {{ backend = \"bunker_remote\", uri = {uri:?} }}"
+            ));
         }
     }
 
-    lines.push(format!("relays = {}", format_toml_array(&bot_config.relays)));
+    lines.push(format!(
+        "relays = {}",
+        format_toml_array(&bot_config.relays)
+    ));
     lines.push(format!(
         "capabilities = {}",
         format_toml_array(&bot_config.capabilities)
@@ -601,10 +611,7 @@ fn append_compose_services(
 }
 
 fn prompt_overwrite(path: &Path) -> Result<bool, DaemonError> {
-    println!(
-        "File {} already exists. Overwrite? [y/N]:",
-        path.display()
-    );
+    println!("File {} already exists. Overwrite? [y/N]:", path.display());
     let mut buf = String::new();
     std::io::stdin()
         .read_line(&mut buf)

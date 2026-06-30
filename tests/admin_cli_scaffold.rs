@@ -29,26 +29,50 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     cmd.assert().success();
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
-    assert!(project_dir.join("bots").join("echo-bot").join("echo_bot.py").is_file());
-    assert!(project_dir.join("bots").join("echo-bot").join("Dockerfile").is_file());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("echo_bot.py")
+            .is_file()
+    );
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("Dockerfile")
+            .is_file()
+    );
     assert!(project_dir.join("docker-compose.yml").is_file());
-    assert!(project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("README.md")
-        .is_file());
-    assert!(project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("systemd.service")
-        .is_file());
-    assert!(project_dir.join("bots").join("echo-bot").join("pyproject.toml").is_file());
-    assert!(project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("tests")
-        .join("test_bot.py")
-        .is_file());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("README.md")
+            .is_file()
+    );
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("systemd.service")
+            .is_file()
+    );
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("pyproject.toml")
+            .is_file()
+    );
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("tests")
+            .join("test_bot.py")
+            .is_file()
+    );
 
     let config = fs::read_to_string(project_dir.join("pacto-bot-api.toml"))?;
     assert!(config.contains("id = \"echo-bot\""));
@@ -64,23 +88,20 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     assert!(handler.contains("@bot.command(\"/echo\")"));
     assert!(handler.contains("@bot.default"));
 
-    let dockerfile = fs::read_to_string(
-        project_dir
-            .join("bots")
-            .join("echo-bot")
-            .join("Dockerfile"),
-    )?;
+    let dockerfile =
+        fs::read_to_string(project_dir.join("bots").join("echo-bot").join("Dockerfile"))?;
     assert!(dockerfile.contains("python:3.14-slim"));
 
-    let readme =
-        fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
+    let readme = fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(readme.contains("echo-bot"));
     assert!(!readme.contains("nsec1"));
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(project_dir.join("pacto-bot-api.toml"))?.permissions().mode();
+        let mode = fs::metadata(project_dir.join("pacto-bot-api.toml"))?
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "config must be 0o600");
     }
 
@@ -106,16 +127,20 @@ fn new_scaffold_no_tests_skips_test_files() -> Result<(), Box<dyn Error>> {
     cmd.current_dir(&temp);
     cmd.assert().success();
 
-    assert!(project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("echo_bot.py")
-        .is_file());
-    assert!(!project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("tests")
-        .exists());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("echo_bot.py")
+            .is_file()
+    );
+    assert!(
+        !project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("tests")
+            .exists()
+    );
 
     Ok(())
 }
@@ -184,12 +209,14 @@ fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Bo
             .join("echo_bot.py"),
     )?;
     assert_eq!(handler_before, handler_after);
-    assert!(project_dir
-        .join("bots")
-        .join("echo-bot")
-        .join("tests")
-        .join("test_bot.py")
-        .is_file());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("tests")
+            .join("test_bot.py")
+            .is_file()
+    );
 
     Ok(())
 }
@@ -247,11 +274,13 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
     ]);
     cmd.assert().success();
 
-    assert!(project_dir
-        .join("bots")
-        .join("price-bot")
-        .join("price_bot.py")
-        .is_file());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("price-bot")
+            .join("price_bot.py")
+            .is_file()
+    );
 
     let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
     assert!(compose.contains("price-bot:"));
@@ -286,10 +315,7 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
     cmd.assert().success();
 
     fs::write(
-        project_dir
-            .join("bots")
-            .join("echo-bot")
-            .join("README.md"),
+        project_dir.join("bots").join("echo-bot").join("README.md"),
         "# custom readme\n",
     )?;
 
@@ -303,8 +329,7 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
     ]);
     cmd.assert().success();
 
-    let readme =
-        fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
+    let readme = fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(!readme.contains("# custom readme"));
 
     let config = fs::read_to_string(project_dir.join("pacto-bot-api.toml"))?;

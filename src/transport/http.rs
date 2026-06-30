@@ -289,10 +289,10 @@ async fn http_handler(
             Err(e) => Some(JsonRpcMessage::error(Value::Null, e.into())),
         };
 
-        if let Some(resp) = response {
-            if let Ok(line) = serialize_message(&resp) {
-                responses.push(line);
-            }
+        if let Some(resp) = response
+            && let Ok(line) = serialize_message(&resp)
+        {
+            responses.push(line);
         }
     }
 
@@ -324,14 +324,13 @@ async fn handle_register(
         result: Some(result),
         ..
     }) = &response
+        && let Some(handler_id) = result.get("handler_id").and_then(Value::as_str)
     {
-        if let Some(handler_id) = result.get("handler_id").and_then(Value::as_str) {
-            state
-                .outbound
-                .lock()
-                .await
-                .insert(handler_id.to_string(), out_rx);
-        }
+        state
+            .outbound
+            .lock()
+            .await
+            .insert(handler_id.to_string(), out_rx);
     }
 
     response

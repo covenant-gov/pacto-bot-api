@@ -170,10 +170,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does_not_exist.txt");
         let policy = OverwritePolicy {
-                    force: false,
-                    interactive: false,
-                    skip_existing: false,
-                };
+            force: false,
+            interactive: false,
+            skip_existing: false,
+        };
 
         let decision = decide_write(&path, &policy, &[], &mut |_| Ok(true)).unwrap();
 
@@ -185,10 +185,10 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "hello").unwrap();
         let policy = OverwritePolicy {
-                    force: true,
-                    interactive: false,
-                    skip_existing: false,
-                };
+            force: true,
+            interactive: false,
+            skip_existing: false,
+        };
 
         let decision = decide_write(file.path(), &policy, &[], &mut |_| Ok(true)).unwrap();
 
@@ -200,10 +200,10 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "hello").unwrap();
         let policy = OverwritePolicy {
-                    force: false,
-                    interactive: true,
-                    skip_existing: false,
-                };
+            force: false,
+            interactive: true,
+            skip_existing: false,
+        };
         let decision =
             with_test_tty(|| decide_write(file.path(), &policy, &[], &mut |_| Ok(true)).unwrap());
 
@@ -215,10 +215,10 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "hello").unwrap();
         let policy = OverwritePolicy {
-                    force: false,
-                    interactive: true,
-                    skip_existing: false,
-                };
+            force: false,
+            interactive: true,
+            skip_existing: false,
+        };
 
         let decision =
             with_test_tty(|| decide_write(file.path(), &policy, &[], &mut |_| Ok(false)).unwrap());
@@ -232,10 +232,10 @@ mod tests {
         writeln!(file, "content").unwrap();
         let denylist = vec![file.path().to_path_buf()];
         let policy = OverwritePolicy {
-                    force: true,
-                    interactive: false,
-                    skip_existing: false,
-                };
+            force: true,
+            interactive: false,
+            skip_existing: false,
+        };
 
         let err = decide_write(file.path(), &policy, &denylist, &mut |_| Ok(true)).unwrap_err();
 
@@ -251,10 +251,10 @@ mod tests {
         let mut file = fs::File::create(&path).unwrap();
         writeln!(file, "[[bots]]").unwrap();
         let policy = OverwritePolicy {
-                    force: true,
-                    interactive: false,
-                    skip_existing: false,
-                };
+            force: true,
+            interactive: false,
+            skip_existing: false,
+        };
 
         let err = decide_write(&path, &policy, &[], &mut |_| Ok(true)).unwrap_err();
 
@@ -269,10 +269,10 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().unwrap();
         writeln!(file, "private_key = \"nsec1abcdef\"").unwrap();
         let policy = OverwritePolicy {
-                    force: true,
-                    interactive: false,
-                    skip_existing: false,
-                };
+            force: true,
+            interactive: false,
+            skip_existing: false,
+        };
 
         let err = decide_write(file.path(), &policy, &[], &mut |_| Ok(true)).unwrap_err();
 

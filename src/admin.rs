@@ -399,6 +399,7 @@ fn cmd_docs(format: &str) -> Result<(), DaemonError> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_new(
     bot_id: Option<&str>,
     backend: &str,
@@ -489,7 +490,10 @@ fn cmd_new(
             project_dir,
             mode: scaffold::generate::ScaffoldMode::NewProject { snippet },
         })?;
-        println!("Created scaffolded project for {} in {}", params.bot_id, project_dir_display);
+        println!(
+            "Created scaffolded project for {} in {}",
+            params.bot_id, project_dir_display
+        );
         return Ok(());
     }
 
@@ -571,7 +575,11 @@ fn prompt_language() -> Result<String, DaemonError> {
     println!("  1) python (default)");
     loop {
         let input = prompt_line("Choose language [1]: ")?;
-        let choice = if input.trim().is_empty() { "1" } else { input.trim() };
+        let choice = if input.trim().is_empty() {
+            "1"
+        } else {
+            input.trim()
+        };
         match choice {
             "1" | "python" => return Ok("python".to_string()),
             _ => println!("Invalid choice; enter 1 or 'python'."),
@@ -1263,10 +1271,10 @@ async fn cmd_status(
 
 fn read_latest_report(data_dir: &Path) -> Option<HealthSnapshot> {
     let path = data_dir.join("reports").join("latest.json");
-    if let Ok(contents) = std::fs::read_to_string(&path) {
-        if let Ok(snapshot) = serde_json::from_str::<HealthSnapshot>(&contents) {
-            return Some(snapshot);
-        }
+    if let Ok(contents) = std::fs::read_to_string(&path)
+        && let Ok(snapshot) = serde_json::from_str::<HealthSnapshot>(&contents)
+    {
+        return Some(snapshot);
     }
     None
 }
@@ -1285,21 +1293,19 @@ fn inspect_socket(path: &Path) -> SocketHealth {
     let mode: Option<u32> = None;
     let mut owner_readable = false;
     let mut owner_writable = false;
-    if exists {
-        if let Ok(meta) = std::fs::metadata(path) {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let m = meta.permissions().mode();
-                mode = Some(m & 0o777);
-                owner_readable = m & 0o400 != 0;
-                owner_writable = m & 0o200 != 0;
-            }
-            #[cfg(not(unix))]
-            {
-                owner_readable = true;
-                owner_writable = !meta.permissions().readonly();
-            }
+    if exists && let Ok(meta) = std::fs::metadata(path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let m = meta.permissions().mode();
+            mode = Some(m & 0o777);
+            owner_readable = m & 0o400 != 0;
+            owner_writable = m & 0o200 != 0;
+        }
+        #[cfg(not(unix))]
+        {
+            owner_readable = true;
+            owner_writable = !meta.permissions().readonly();
         }
     }
     SocketHealth {
@@ -1585,10 +1591,9 @@ fn find_bunker_port(bots: &[BotConfig]) -> Option<u16> {
     for bot in bots {
         if let SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } =
             &bot.signing
+            && let Some(port) = extract_port_from_url(uri.expose_secret())
         {
-            if let Some(port) = extract_port_from_url(uri.expose_secret()) {
-                return Some(port);
-            }
+            return Some(port);
         }
     }
     None
@@ -1619,10 +1624,10 @@ fn expand_path_buf(path: &Path) -> PathBuf {
 }
 
 fn expand_path(input: &str) -> PathBuf {
-    if let Some(rest) = input.strip_prefix("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(format!("{home}/{rest}"));
-        }
+    if let Some(rest) = input.strip_prefix("~/")
+        && let Ok(home) = env::var("HOME")
+    {
+        return PathBuf::from(format!("{home}/{rest}"));
     }
     PathBuf::from(input)
 }
