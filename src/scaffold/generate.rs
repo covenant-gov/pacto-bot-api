@@ -32,6 +32,8 @@ static EMBEDDED_TEMPLATES: LazyLock<Result<tempfile::TempDir, String>> = LazyLoc
 
 fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    // `include_dir` stores file paths relative to the included root, so all
+    // files are written underneath `dest` regardless of how deep we recurse.
     for file in dir.files() {
         let target = dest.join(file.path());
         if let Some(parent) = target.parent() {
@@ -40,7 +42,11 @@ fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<(), String> {
         fs::write(target, file.contents()).map_err(|e| e.to_string())?;
     }
     for subdir in dir.dirs() {
-        extract_embedded_dir(subdir, &dest.join(subdir.path()))?;
+        // Create the subdirectory explicitly so empty directories are preserved,
+        // but keep passing the same `dest` because nested file paths are still
+        // relative to the original included root.
+        fs::create_dir_all(dest.join(subdir.path())).map_err(|e| e.to_string())?;
+        extract_embedded_dir(subdir, dest)?;
     }
     Ok(())
 }
@@ -115,6 +121,17 @@ pub fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
         &policy,
         &denylist,
     )?;
+
+    render_project_templates(
+        &template_dir,
+        &request.project_dir,
+        &context,
+        &policy,
+        &denylist,
+    )?;
+
+    copy_sdk_and_build_wheel(&template_dir, &request.project_dir, &policy)?;
+    copy_skills(&template_dir, &request.project_dir, &policy)?;
 
     append_compose_services(
         &template_dir,
@@ -379,6 +396,145 @@ fn render_templates(
     Ok(())
 }
 
+/// Render project-level templates (README.md, AGENTS.md, ...) into the project
+/// root. These templates live under `<language>/project/` in the template tree.
+fn render_project_templates(
+    template_dir: &Path,
+    project_dir: &Path,
+    context: &HashMap<String, TemplateValue>,
+    policy: &OverwritePolicy,
+    denylist: &[PathBuf],
+) -> Result<(), DaemonError> {
+    let project_template_dir = template_dir.join("project");
+    if !project_template_dir.is_dir() {
+        return Ok(());
+    }
+
+    render_template_tree(
+        &project_template_dir,
+        project_dir,
+        &project_template_dir,
+        context,
+        policy,
+        denylist,
+    )?;
+
+    Ok(())
+}
+
+/// Copy the vendored SDK source to the project root and build a wheel from it.
+fn copy_sdk_and_build_wheel(
+    template_dir: &Path,
+    project_dir: &Path,
+    policy: &OverwritePolicy,
+) -> Result<(), DaemonError> {
+    let source = template_dir.join("sdk");
+    let target = project_dir.join("sdk");
+    if !source.is_dir() {
+        return Ok(());
+    }
+    if target.exists() && policy.skip_existing {
+        println!("Skipped {}", target.display());
+        return Ok(());
+    }
+    if target.exists() && !policy.force && policy.interactive {
+        if !prompt_overwrite_dir(&target)? {
+            println!("Skipped {}", target.display());
+            return Ok(());
+        }
+    }
+
+    copy_dir_all(&source, &target)?;
+    println!("Copied {}", target.display());
+
+    // Try to build a wheel from the vendored SDK. Failure is non-fatal: the
+    // source is present and can be built manually.
+    if build_wheel(&target).is_err() {
+        println!(
+            "Warning: failed to build SDK wheel; install the SDK manually with `python -m build --wheel ./sdk`"
+        );
+    }
+
+    Ok(())
+}
+
+/// Copy the agent skill directory to the project root.
+fn copy_skills(
+    template_dir: &Path,
+    project_dir: &Path,
+    policy: &OverwritePolicy,
+) -> Result<(), DaemonError> {
+    let source = template_dir.join("skills");
+    let target = project_dir.join("skills");
+    if !source.is_dir() {
+        return Ok(());
+    }
+    if target.exists() && policy.skip_existing {
+        println!("Skipped {}", target.display());
+        return Ok(());
+    }
+    if target.exists() && !policy.force && policy.interactive {
+        if !prompt_overwrite_dir(&target)? {
+            println!("Skipped {}", target.display());
+            return Ok(());
+        }
+    }
+
+    copy_dir_all(&source, &target)?;
+    println!("Copied {}", target.display());
+    Ok(())
+}
+
+fn build_wheel(sdk_dir: &Path) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("python")
+        .args(["-m", "build", "--wheel", &sdk_dir.to_string_lossy()])
+        .output()
+        .map_err(DaemonError::Io)?;
+    if !output.status.success() {
+        return Err(DaemonError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "wheel build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )));
+    }
+    println!("Built SDK wheel in {}", sdk_dir.join("dist").display());
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(dst).map_err(DaemonError::Io)?;
+    for entry in fs::read_dir(src).map_err(DaemonError::Io)? {
+        let entry = entry.map_err(DaemonError::Io)?;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        if file_name_str == "__pycache__" || file_name_str.ends_with(".pyc") {
+            continue;
+        }
+        let source = entry.path();
+        let target = dst.join(&file_name);
+        if source.is_dir() {
+            copy_dir_all(&source, &target)?;
+        } else {
+            fs::copy(&source, &target).map_err(DaemonError::Io)?;
+        }
+    }
+    Ok(())
+}
+
+fn prompt_overwrite_dir(path: &Path) -> Result<bool, DaemonError> {
+    println!(
+        "Directory {} already exists. Overwrite? [y/N]:",
+        path.display()
+    );
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(DaemonError::Io)?;
+    Ok(buf.trim().eq_ignore_ascii_case("y"))
+}
+
 fn render_template_tree(
     template_dir: &Path,
     target_dir: &Path,
@@ -402,7 +558,21 @@ fn render_template_tree(
             continue;
         }
 
-        let relative = source.strip_prefix(template_dir).map_err(|e| {
+        // Project-level templates (README.md, AGENTS.md, etc.) are rendered
+        // directly into the project root rather than under bots/<bot-id>/.
+        if current == template_dir && file_name == "project" && source.is_dir() {
+            continue;
+        }
+
+        // SDK and skills directories are copied as-is to the project root.
+        if current == template_dir
+            && (file_name == "sdk" || file_name == "skills")
+            && source.is_dir()
+        {
+            continue;
+        }
+
+        let relative = source.strip_prefix(current).map_err(|e| {
             DaemonError::Config(format!("failed to compute relative template path: {e}"))
         })?;
 
@@ -432,7 +602,7 @@ fn render_template_tree(
 
         if source.is_dir() {
             fs::create_dir_all(&target).map_err(DaemonError::Io)?;
-            render_template_tree(template_dir, target_dir, &source, context, policy, denylist)?;
+            render_template_tree(template_dir, &target, &source, context, policy, denylist)?;
         } else {
             render_template_file(&source, &target, context, policy, denylist)?;
         }
@@ -500,11 +670,23 @@ fn append_compose_services(
     let bot_service = serde_yaml::Mapping::from_iter([
         (
             serde_yaml::Value::String("build".to_string()),
-            serde_yaml::Value::String(format!("bots/{bot_id}")),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
+                (
+                    serde_yaml::Value::String("context".to_string()),
+                    serde_yaml::Value::String(".".to_string()),
+                ),
+                (
+                    serde_yaml::Value::String("dockerfile".to_string()),
+                    serde_yaml::Value::String(format!("./bots/{bot_id}/Dockerfile")),
+                ),
+            ])),
         ),
         (
             serde_yaml::Value::String("profiles".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("bot-only".to_string())]),
+            serde_yaml::Value::Sequence(vec![
+                serde_yaml::Value::String("bot-only".to_string()),
+                serde_yaml::Value::String("full".to_string()),
+            ]),
         ),
         (
             serde_yaml::Value::String("environment".to_string()),
@@ -542,55 +724,15 @@ fn append_compose_services(
                 ]),
             )]),
         ),
-    ]);
-
-    let full_service = serde_yaml::Mapping::from_iter([
         (
-            serde_yaml::Value::String("build".to_string()),
-            serde_yaml::Value::String(format!("bots/{bot_id}")),
-        ),
-        (
-            serde_yaml::Value::String("profiles".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("full".to_string())]),
-        ),
-        (
-            serde_yaml::Value::String("environment".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
-                (
-                    serde_yaml::Value::String("PACTO_TRANSPORT".to_string()),
-                    serde_yaml::Value::String("unix".to_string()),
-                ),
-                (
-                    serde_yaml::Value::String("PACTO_SOCKET_PATH".to_string()),
-                    serde_yaml::Value::String("/run/pacto-bot-api.sock".to_string()),
-                ),
-            ])),
-        ),
-        (
-            serde_yaml::Value::String("volumes".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
-                "pacto-socket:/run/pacto-bot-api:ro".to_string(),
-            )]),
-        ),
-        (
-            serde_yaml::Value::String("depends_on".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                serde_yaml::Value::String("daemon".to_string()),
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                    serde_yaml::Value::String("condition".to_string()),
-                    serde_yaml::Value::String("service_started".to_string()),
-                )])),
-            )])),
+            serde_yaml::Value::String("restart".to_string()),
+            serde_yaml::Value::String("on-failure".to_string()),
         ),
     ]);
 
     services.insert(
         serde_yaml::Value::String(bot_id.to_string()),
         serde_yaml::Value::Mapping(bot_service),
-    );
-    services.insert(
-        serde_yaml::Value::String(format!("{bot_id}-full")),
-        serde_yaml::Value::Mapping(full_service),
     );
 
     let updated = serde_yaml::to_string(&compose)

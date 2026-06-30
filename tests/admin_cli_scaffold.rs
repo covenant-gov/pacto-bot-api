@@ -284,7 +284,8 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
 
     let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
     assert!(compose.contains("price-bot:"));
-    assert!(compose.contains("price-bot-full:"));
+    assert!(compose.contains("bot-only"));
+    assert!(compose.contains("full"));
 
     let config = fs::read_to_string(&config_path)?;
     assert!(config.contains("id = \"echo-bot\""));
@@ -365,9 +366,9 @@ fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn
         if entry == project_dir.join("pacto-bot-api.toml") {
             continue;
         }
-        let content = fs::read_to_string(&entry)?;
+        let content = fs::read(&entry)?;
         assert!(
-            !content.contains(&nsec_value),
+            !content.windows(nsec_value.len()).any(|w| w == nsec_value.as_bytes()),
             "{} leaked nsec value",
             entry.display()
         );

@@ -28,3 +28,4 @@ venv/
 pacto-bot-api.toml
 # macOS
 .DS_Store
+python/dist/
