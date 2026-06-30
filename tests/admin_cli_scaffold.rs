@@ -376,6 +376,47 @@ fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[test]
+fn new_interactive_scaffold_prompts_and_creates_project() -> Result<(), Box<dyn Error>> {
+    let temp = tempfile::tempdir()?;
+    let project_dir = temp.path().join("interactive-bot-project");
+
+    let stdin = format!(
+        "interactive-bot\n1\n\n\n\n\n\ny\n{}\n\necho\ny\n",
+        project_dir.to_string_lossy()
+    );
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("new").write_stdin(stdin);
+    cmd.assert().success().stdout(predicate::str::contains(
+        "Created scaffolded project for interactive-bot",
+    ));
+
+    assert!(project_dir.join("pacto-bot-api.toml").is_file());
+    assert!(
+        project_dir
+            .join("bots")
+            .join("interactive-bot")
+            .join("interactive_bot.py")
+            .is_file()
+    );
+    assert!(
+        project_dir
+            .join("bots")
+            .join("interactive-bot")
+            .join("tests")
+            .join("test_bot.py")
+            .is_file()
+    );
+
+    let config = fs::read_to_string(project_dir.join("pacto-bot-api.toml"))?;
+    assert!(config.contains("id = \"interactive-bot\""));
+    assert!(config.contains("backend = \"nsec\""));
+    assert!(config.contains("nsec = \"nsec1"));
+
+    Ok(())
+}
+
 fn extract_nsec(path: &Path) -> Result<String, Box<dyn Error>> {
     let content = fs::read_to_string(path)?;
     let start = content

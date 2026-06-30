@@ -38,10 +38,11 @@ Notes:
 - `--relays` — relay URLs for the bot.
 - `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.
 - `--uri` — bunker URI (required for bunker backends; omit to prompt).
-- `--scaffold` — also generate a handler project for the new identity.
+- `--scaffold` — also generate a handler project for the new identity (non-interactive).
 - `--language` — handler language (default: `python`).
 - `--commands` — slash-command stubs to generate.
 - `--no-tests` — skip pytest files when using `--scaffold`.
+- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
 - Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.
 
 ### `scaffold`

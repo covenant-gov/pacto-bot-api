@@ -55,7 +55,7 @@ fn new_bunker_snippet_does_not_leak_nsec() -> Result<(), Box<dyn Error>> {
 fn new_interactive_outputs_valid_nsec_snippet() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new");
-    cmd.write_stdin("interactive-bot\n\n\n\n\n\n\ny\n");
+    cmd.write_stdin("interactive-bot\n\n\n\n\n\n\nn\ny\n");
     let output = cmd.assert().success();
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
 
@@ -71,7 +71,7 @@ fn new_interactive_outputs_valid_nsec_snippet() -> Result<(), Box<dyn Error>> {
 fn new_interactive_cancellation_prints_no_final_snippet() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new");
-    cmd.write_stdin("interactive-bot\n\n\n\n\n\n\nn\n");
+    cmd.write_stdin("interactive-bot\n\n\n\n\n\n\nn\nn\n");
     let output = cmd.assert().success();
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
 
@@ -85,7 +85,7 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new");
     // backend=3 (bunker_remote), provide URI, then defaults, confirm.
-    cmd.write_stdin("bunker-bot\n3\nbunker://abc?relay=wss://relay.example.com\n\n\n\n\n\n\ny\n");
+    cmd.write_stdin("bunker-bot\n3\nbunker://abc?relay=wss://relay.example.com\n\n\n\n\n\n\nn\ny\n");
     let output = cmd.assert().success();
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
 

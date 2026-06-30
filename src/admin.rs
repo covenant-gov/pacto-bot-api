@@ -436,7 +436,16 @@ fn cmd_new(
             display_name: None,
             about: None,
             picture: None,
+            scaffold: false,
+            project_dir: None,
         }
+    };
+
+    let scaffold = if interactive { params.scaffold } else { scaffold };
+    let project_dir: Option<&Path> = if interactive {
+        params.project_dir.as_deref()
+    } else {
+        project_dir
     };
 
     validate_backend(&params.backend)?;
@@ -609,6 +618,8 @@ struct NewBotParams {
     display_name: Option<String>,
     about: Option<String>,
     picture: Option<String>,
+    scaffold: bool,
+    project_dir: Option<PathBuf>,
 }
 
 fn run_interactive_new() -> Result<NewBotParams, DaemonError> {
@@ -632,6 +643,23 @@ fn run_interactive_new() -> Result<NewBotParams, DaemonError> {
     let about = prompt_optional("About text: ")?;
     let picture = prompt_optional("Picture URL: ")?;
 
+    let scaffold = prompt_yes_no("Scaffold a handler project?")?;
+    let project_dir = if scaffold {
+        let default = PathBuf::from(&bot_id);
+        let input = prompt_line(&format!(
+            "Project directory [{}]: ",
+            default.display()
+        ))?;
+        let dir = if input.trim().is_empty() {
+            default
+        } else {
+            PathBuf::from(input.trim())
+        };
+        Some(dir)
+    } else {
+        None
+    };
+
     Ok(NewBotParams {
         bot_id,
         backend,
@@ -641,6 +669,8 @@ fn run_interactive_new() -> Result<NewBotParams, DaemonError> {
         display_name,
         about,
         picture,
+        scaffold,
+        project_dir,
     })
 }
 
