@@ -79,9 +79,6 @@ async def test_command_handler_receives_parsed_args_and_sends_response(bot, tran
             "content": f"Hello {event.content}!",
         }
 
-    # Feed a registration response so run() can proceed.
-    transport.inject({"jsonrpc": "2.0", "id": "reg", "result": {"handler_id": "h-1", "registered_events": ["dm_received"]}})
-
     task = asyncio.create_task(bot._run(["--transport", "mock"]))
 
     # Wait for registration frame to be sent and inject response.

@@ -44,6 +44,7 @@ class MockTransport:
 async def mock_transport() -> MockTransport:
     """Yield a connected-ready mock transport and close it after the test."""
     transport = MockTransport()
+    await transport.connect()
     try:
         yield transport
     finally:

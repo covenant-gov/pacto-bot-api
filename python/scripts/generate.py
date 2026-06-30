@@ -230,11 +230,11 @@ def _emit_model_class(out: list[str], model: ModelDef) -> None:
     out.append(_indent_docstring(doc_lines, indent=4))
     out.append("\n")
 
+    out.append(f'    jsonrpc_method: ClassVar[str] = "{model.jsonrpc_method}"\n')
+
     if not model.fields:
         out.append("    pass\n\n")
         return
-
-    out.append(f'    jsonrpc_method: ClassVar[str] = "{model.jsonrpc_method}"\n')
 
     for f in model.fields:
         if f.description:
@@ -401,10 +401,10 @@ def _emit_request_method(
     return_type: str
     return_expr: str
     if result_kind == "model":
-        return_type = result_model
+        return_type = f"models.{result_model}"
         return_expr = f"return models.{result_model}.model_validate(result)"
     elif result_kind == "alias":
-        return_type = result_model
+        return_type = f"models.{result_model}"
         return_expr = "return result"
     else:
         return_type = "Any"
@@ -533,7 +533,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append(
         "        self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}\n"
     )
-    out.append("        self._notify_queue: asyncio.Queue[BaseModel] = asyncio.Queue()\n")
+    out.append("        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()\n")
     out.append("        self._read_task: asyncio.Task[None] | None = None\n")
     out.append("        self._closed = False\n\n")
 
@@ -545,8 +545,9 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     )
 
     out.append("    async def close(self) -> None:\n")
-    out.append('        \"\"\"Stop the read loop and close the transport.\"\"\"\n')
+    out.append('        """Stop the read loop and close the transport."""\n')
     out.append("        self._closed = True\n")
+    out.append("        await self._notify_queue.put(None)\n")
     out.append("        if self._read_task is not None:\n")
     out.append("            self._read_task.cancel()\n")
     out.append("            try:\n")
@@ -617,9 +618,12 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("            await self._notify_queue.put(models.AgentStatusParams.model_validate(params))\n\n")
 
     out.append("    async def notifications(self) -> Any:\n")
-    out.append('        \"\"\"Async iterator over incoming daemon notifications.\"\"\"\n')
+    out.append('        """Async iterator over incoming daemon notifications."""\n')
     out.append("        while not self._closed:\n")
-    out.append("            yield await self._notify_queue.get()\n\n")
+    out.append("            notification = await self._notify_queue.get()\n")
+    out.append("            if notification is None:\n")
+    out.append("                break\n")
+    out.append("            yield notification\n\n")
 
     for method in methods:
         method_name = method["name"]

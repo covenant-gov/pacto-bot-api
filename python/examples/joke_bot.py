@@ -2,8 +2,8 @@
 """Joke bot using the generated Pacto Python SDK.
 
 Demonstrates the ``defer`` handler action and a proactive ``agent.send_dm``
-call that delivers the punchline after the handler has already acknowledged
- the event.
+ call that delivers the punchline after the handler has already acknowledged
+the event.
 
 Capabilities required:
     - ReadMessages

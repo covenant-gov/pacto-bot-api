@@ -21,7 +21,7 @@ class PactoClient:
     def __init__(self, transport: Any) -> None:
         self.transport = transport
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._notify_queue: asyncio.Queue[BaseModel] = asyncio.Queue()
+        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()
         self._read_task: asyncio.Task[None] | None = None
         self._closed = False
 
@@ -33,6 +33,7 @@ class PactoClient:
     async def close(self) -> None:
         """Stop the read loop and close the transport."""
         self._closed = True
+        await self._notify_queue.put(None)
         if self._read_task is not None:
             self._read_task.cancel()
             try:
@@ -103,7 +104,10 @@ class PactoClient:
     async def notifications(self) -> Any:
         """Async iterator over incoming daemon notifications."""
         while not self._closed:
-            yield await self._notify_queue.get()
+            notification = await self._notify_queue.get()
+            if notification is None:
+                break
+            yield notification
 
     async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:
         """
@@ -126,7 +130,7 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def agent_metrics(self) -> AgentMetricsResult:
+    async def agent_metrics(self) -> models.AgentMetricsResult:
         """
         Call JSON-RPC method `agent.metrics`.
 
@@ -144,7 +148,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> AgentSendDmResult:
+    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResult:
         """
         Call JSON-RPC method `agent.send_dm`.
 
@@ -163,7 +167,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None) -> AgentSetProfileResult:
+    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None) -> models.AgentSetProfileResult:
         """
         Call JSON-RPC method `agent.set_profile`.
 
@@ -182,7 +186,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_version(self) -> AgentVersionResult:
+    async def agent_version(self) -> models.AgentVersionResult:
         """
         Call JSON-RPC method `agent.version`.
 
@@ -200,7 +204,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> HandlerRegisterResult:
+    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResult:
         """
         Call JSON-RPC method `handler.register`.
 
@@ -240,7 +244,7 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def handler_unregister(self) -> HandlerUnregisterResult:
+    async def handler_unregister(self) -> models.HandlerUnregisterResult:
         """
         Call JSON-RPC method `handler.unregister`.
 

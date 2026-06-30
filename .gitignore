@@ -25,6 +25,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-
+pacto-bot-api.toml
 # macOS
 .DS_Store

@@ -82,6 +82,7 @@ class AgentMetricsParams(BaseModel):
 
     jsonrpc_method: ``"agent.metrics"``
     """
+    jsonrpc_method: ClassVar[str] = "agent.metrics"
     pass
 
 class AgentSendDmParams(BaseModel):
@@ -159,6 +160,7 @@ class AgentVersionParams(BaseModel):
 
     jsonrpc_method: ``"agent.version"``
     """
+    jsonrpc_method: ClassVar[str] = "agent.version"
     pass
 
 class HandlerRegisterParams(BaseModel):
@@ -230,6 +232,7 @@ class HandlerUnregisterParams(BaseModel):
 
     jsonrpc_method: ``"handler.unregister"``
     """
+    jsonrpc_method: ClassVar[str] = "handler.unregister"
     pass
 
 class HandlerUnregisterResult(BaseModel):

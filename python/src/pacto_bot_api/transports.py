@@ -197,7 +197,6 @@ class HttpTransport:
             f"Host: {self.host}:{self.port}\r\n"
             f"X-Pacto-Bot-Secret: {self.secret}\r\n"
             "Accept: text/event-stream\r\n"
-            "Connection: close\r\n"
             "\r\n"
         )
         self._sse_writer.write(request.encode("utf-8"))
@@ -248,7 +247,7 @@ class HttpTransport:
             f"Host: {self.host}:{self.port}",
             f"X-Pacto-Bot-Secret: {self.secret}",
             "Content-Type: application/json",
-            f"Content-Length: {len(body)}",
+            f"Content-Length: {len(body.encode('utf-8'))}",
             "Connection: close",
         ]
         if method in self.MUTATING_METHODS and self.handler_id:
