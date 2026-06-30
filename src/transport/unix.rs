@@ -263,10 +263,10 @@ async fn handle_connection(
                 }
             }
 
-            if let Some(resp) = response {
-                if out_tx.send(resp).await.is_err() {
-                    return Ok(());
-                }
+            if let Some(resp) = response
+                && out_tx.send(resp).await.is_err()
+            {
+                return Ok(());
             }
         }
     }

@@ -1,0 +1,56 @@
+name: {{bot_id}}
+
+services:
+  {{bot_id}}:
+    build: ./bots/{{bot_id}}
+    profiles:
+      - bot-only
+    environment:
+      PACTO_TRANSPORT: unix
+      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
+    volumes:
+      - type: bind
+        source: /run/pacto-bot-api.sock
+        target: /run/pacto-bot-api.sock
+        read_only: true
+
+  {{bot_id}}-full:
+    build: ./bots/{{bot_id}}
+    profiles:
+      - full
+    environment:
+      PACTO_TRANSPORT: unix
+      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
+    volumes:
+      - pacto-socket:/run/pacto-bot-api:ro
+    depends_on:
+      daemon:
+        condition: service_started
+
+  daemon:
+    image: ghcr.io/covenant-gov/pacto-bot-api:latest
+    profiles:
+      - full
+    environment:
+      PACTO_DATA_DIR: /var/lib/pacto-bot-api
+      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
+    volumes:
+      - pacto-data:/var/lib/pacto-bot-api
+      - pacto-socket:/run/pacto-bot-api
+    command: ["pacto-bot-api"]
+
+  bunker:
+    image: pacto/pacto-bunker:latest
+    profiles:
+      - full
+    environment:
+      BUNKER_DATA_DIR: /var/lib/pacto-bunker
+    volumes:
+      - bunker-data:/var/lib/pacto-bunker
+    depends_on:
+      - daemon
+
+volumes:
+  pacto-socket:
+  pacto-data:
+  bunker-data:

@@ -167,17 +167,17 @@ impl HandlerRegistry {
         capabilities: Vec<Capability>,
         bot_configs: &[BotConfig],
     ) -> Result<String, DaemonError> {
-        if let Some(id) = &handler_id {
-            if let Some(existing) = self.handlers.get_mut(id) {
-                let (bot_ids, event_types, capabilities) =
-                    Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
-                existing.connection = Some(connection);
-                existing.bot_ids = bot_ids;
-                existing.event_types = event_types;
-                existing.capabilities = capabilities;
-                existing.registered_at = Utc::now();
-                return Ok(id.clone());
-            }
+        if let Some(id) = &handler_id
+            && let Some(existing) = self.handlers.get_mut(id)
+        {
+            let (bot_ids, event_types, capabilities) =
+                Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
+            existing.connection = Some(connection);
+            existing.bot_ids = bot_ids;
+            existing.event_types = event_types;
+            existing.capabilities = capabilities;
+            existing.registered_at = Utc::now();
+            return Ok(id.clone());
         }
 
         self.register(connection, bot_ids, event_types, capabilities, bot_configs)

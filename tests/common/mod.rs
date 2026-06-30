@@ -437,11 +437,11 @@ impl HandlerClient {
                             Err(_) => continue,
                         };
 
-                        if let Some(id) = msg.id().cloned() {
-                            if let Some(tx) = pending_for_io.lock().await.remove(&id) {
-                                let _ = tx.send(msg);
-                                continue;
-                            }
+                        if let Some(id) = msg.id().cloned()
+                            && let Some(tx) = pending_for_io.lock().await.remove(&id)
+                        {
+                            let _ = tx.send(msg);
+                            continue;
                         }
                         let _ = notification_tx.send(msg);
                     }
@@ -679,17 +679,14 @@ impl DevRelayClient {
                     msg = read_half.next() => {
                         match msg {
                             Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                                if let Ok(parts) = serde_json::from_str::<Vec<serde_json::Value>>(&text) {
-                                    if parts.len() >= 3
-                                        && parts[0] == "EVENT"
-                                        && parts[1].as_str() == Some(&sub_id_clone)
-                                    {
-                                        if let Ok(event) =
-                                            serde_json::from_value::<nostr::Event>(parts[2].clone())
-                                        {
-                                            let _ = event_tx.send(event);
-                                        }
-                                    }
+                                if let Ok(parts) = serde_json::from_str::<Vec<serde_json::Value>>(&text)
+                                    && parts.len() >= 3
+                                    && parts[0] == "EVENT"
+                                    && parts[1].as_str() == Some(&sub_id_clone)
+                                    && let Ok(event) =
+                                        serde_json::from_value::<nostr::Event>(parts[2].clone())
+                                {
+                                    let _ = event_tx.send(event);
                                 }
                             }
                             Some(Err(_)) => {

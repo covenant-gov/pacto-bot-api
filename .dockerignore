@@ -1,0 +1,37 @@
+# Build outputs
+/target
+/dist
+/coverage-html
+/lcov.info
+/coverage.json
+
+# Data directories
+/data
+/.local
+
+# Version control and CI
+/.git
+/.github
+
+# Documentation and examples (not needed for the daemon image)
+/docs
+/examples
+/python
+/tests
+
+# Templates are intentionally included in the build context: they are
+# embedded into the admin CLI at compile time via include_dir!.
+
+# Editor and local tooling
+/.idea
+/.vscode
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Beads tracker
+/.beads
+
+# Logs
+*.log

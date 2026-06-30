@@ -1,0 +1,16 @@
+[Unit]
+Description=Pacto bot {{bot_id}}
+After=network.target
+
+[Service]
+Type=simple
+User=pacto-bot
+Group=pacto-bot
+WorkingDirectory=/opt/{{bot_id}}
+ExecStart=/usr/local/bin/python3 {{bot_id_snake}}.py
+Restart=on-failure
+Environment="PACTO_TRANSPORT=unix"
+Environment="PACTO_SOCKET_PATH=/run/pacto-bot-api.sock"
+
+[Install]
+WantedBy=multi-user.target

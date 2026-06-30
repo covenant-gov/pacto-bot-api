@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-30
+
+### Added
+
+- `pacto-bot-admin scaffold` subcommand and `pacto-bot-admin new --scaffold`
+  flag for generating opinionated Python bot handler projects from templates
+  under `templates/python/`.
+- Multi-stage Dockerfile packaging both `pacto-bot-api` and `pacto-bot-admin`
+  binaries, running as a non-root `pacto` user with a `/var/lib/pacto-bot-api`
+  volume.
+- GHCR image publish jobs in CI on pushes to `main` and release tags.
+- `.dockerignore` to keep Docker build context small.
+
+### Changed
+
+- Interactive `pacto-bot-admin new` wizard now asks whether to scaffold a
+  handler project and where to place it; when scaffolding, the generated
+  `pacto-bot-api.toml` is written into the project directory.
+- `python-pacto-bot` skill now directs agents to start new Python bot projects
+  with `pacto-bot-admin new --scaffold` instead of hand-writing files.
+- Bumped `rusqlite` from 0.34.0 to 0.40.1.
+- Bumped `jsonschema` from 0.30.0 to 0.46.6.
+
 ## [0.2.0] - 2026-06-29
 
 ### Added
@@ -89,6 +112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/covenant-gov/pacto-bot-api/releases/tag/v0.1.0

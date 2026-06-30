@@ -39,15 +39,34 @@ fn render_cli_reference(out: &mut String) {
     render_command(
         out,
         "new",
-        "Create a new bot identity config snippet. Run with no positional arguments to start an interactive interview.",
+        "Create a new bot identity config snippet. Run with no positional arguments to start an interactive interview. Use `--scaffold` to also generate a complete handler project.",
         r#"# Interactive wizard
 pacto-bot-admin new
 
 # Non-interactive scripting
 pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000 --capabilities ReadMessages --capabilities SendMessages
 
-pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?relay=wss://relay.nsec.app"#,
-        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.",
+pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?relay=wss://relay.nsec.app
+
+# Create a bot and scaffold a Python handler project in one command
+pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo"#,
+        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
+- Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.",
+    );
+
+    render_command(
+        out,
+        "scaffold",
+        "Generate or update a handler project for an existing bot identity from the daemon config.",
+        r#"# Scaffold a project for an existing bot
+pacto-bot-admin scaffold echo-bot --commands echo
+
+# Add a second bot to an existing multi-bot project
+pacto-bot-admin scaffold price-bot --commands price
+
+# Add tests to an existing scaffolded bot without overwriting handler code
+pacto-bot-admin scaffold echo-bot --with-tests"#,
+        "- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--with-tests` — generate pytest files.\n- `--force` — overwrite existing files without prompting (never overwrites signing material or populated `pacto-bot-api.toml`).\n- `--project-dir` — target directory (default: current directory).\n- The bot identity must already exist in `pacto-bot-api.toml`.",
     );
 
     render_command(
@@ -214,6 +233,7 @@ mod tests {
         let guide = render_llm_guide();
         for sub in [
             "new",
+            "scaffold",
             "publish-profile",
             "test-bunker",
             "export",

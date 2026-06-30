@@ -334,8 +334,8 @@ impl Dispatch {
 
         // Process replies.
         for (handler_id, action) in &responses {
-            if let HandlerAction::Reply { content } = action {
-                if let Err(e) = self
+            if let HandlerAction::Reply { content } = action
+                && let Err(e) = self
                     .handle_send_dm(
                         &event.bot_id,
                         &event.author,
@@ -344,13 +344,12 @@ impl Dispatch {
                         Some(handler_id),
                     )
                     .await
-                {
-                    self.diagnostics.record_error(
-                        Some("reply_send_failed"),
-                        &format!("reply send failed: {e}"),
-                        None,
-                    );
-                }
+            {
+                self.diagnostics.record_error(
+                    Some("reply_send_failed"),
+                    &format!("reply send failed: {e}"),
+                    None,
+                );
             }
         }
 

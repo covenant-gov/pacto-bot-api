@@ -17,7 +17,7 @@ Global options apply to every subcommand:
 
 ### `new`
 
-Create a new bot identity config snippet. Run with no positional arguments to start an interactive interview.
+Create a new bot identity config snippet. Run with no positional arguments to start an interactive interview. Use `--scaffold` to also generate a complete handler project.
 
 Examples:
 ```bash
@@ -28,6 +28,9 @@ pacto-bot-admin new
 pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000 --capabilities ReadMessages --capabilities SendMessages
 
 pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?relay=wss://relay.nsec.app
+
+# Create a bot and scaffold a Python handler project in one command
+pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo
 ```
 
 Notes:
@@ -35,7 +38,36 @@ Notes:
 - `--relays` — relay URLs for the bot.
 - `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.
 - `--uri` — bunker URI (required for bunker backends; omit to prompt).
+- `--scaffold` — also generate a handler project for the new identity (non-interactive).
+- `--language` — handler language (default: `python`).
+- `--commands` — slash-command stubs to generate.
+- `--no-tests` — skip pytest files when using `--scaffold`.
+- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
 - Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.
+
+### `scaffold`
+
+Generate or update a handler project for an existing bot identity from the daemon config.
+
+Examples:
+```bash
+# Scaffold a project for an existing bot
+pacto-bot-admin scaffold echo-bot --commands echo
+
+# Add a second bot to an existing multi-bot project
+pacto-bot-admin scaffold price-bot --commands price
+
+# Add tests to an existing scaffolded bot without overwriting handler code
+pacto-bot-admin scaffold echo-bot --with-tests
+```
+
+Notes:
+- `--language` — handler language (default: `python`).
+- `--commands` — slash-command stubs to generate.
+- `--with-tests` — generate pytest files.
+- `--force` — overwrite existing files without prompting (never overwrites signing material or populated `pacto-bot-api.toml`).
+- `--project-dir` — target directory (default: current directory).
+- The bot identity must already exist in `pacto-bot-api.toml`.
 
 ### `publish-profile`
 

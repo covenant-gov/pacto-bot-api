@@ -1,0 +1,10 @@
+language = "python"
+version = "{{version}}"
+description = "Python bot template for {{bot_id}}"
+
+protected_files = []
+
+[placeholders]
+bot_id = "Bot identity id, e.g. echo-bot"
+bot_id_snake = "Snake-case bot id used for file/module names"
+commands = "List of slash-command names to stub out"
