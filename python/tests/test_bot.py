@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from pacto_bot_api import Bot, PactoClient
+from pacto_bot_api import Bot, PactoClient, parse_command
 from pacto_bot_api.transports import Transport, UnixTransport
 
 
@@ -218,6 +218,116 @@ async def test_unknown_command_without_default_ignores(bot, transport):
     responses = [f for f in transport.frames if f.get("method") == "handler.response"]
     assert len(responses) == 1
     assert responses[0]["params"] == {"event_id": "e-3", "action": "ignore"}
+
+    bot._request_shutdown()
+    await task
+
+
+def test_parse_command_is_exported():
+    """parse_command is available from the top-level package."""
+    assert parse_command("/hello world") == {
+        "command": "hello",
+        "args": ["world"],
+        "flags": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_replies_with_friendly_error_by_default(
+    transport: MockTransport,
+) -> None:
+    bot = Bot("test-bot", transport=transport)
+
+    @bot.command("/boom")
+    async def boom(_event, _b):
+        raise RuntimeError("intentional failure")
+
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-boom",
+            "type": "dm_received",
+            "chat_id": "npub1chat",
+            "content": "/boom",
+            "rumor_id": "r-boom",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+        },
+    })
+
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert responses[0]["params"]["event_id"] == "e-boom"
+    assert responses[0]["params"]["content"] == "Sorry, I couldn't process that."
+    assert "RuntimeError" not in str(responses[0]["params"])
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_silent_when_reply_on_error_disabled(
+    transport: MockTransport,
+) -> None:
+    bot = Bot("test-bot", transport=transport, reply_on_error=False)
+
+    @bot.command("/boom")
+    async def boom(_event, _b):
+        raise RuntimeError("intentional failure")
+
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-boom",
+            "type": "dm_received",
+            "chat_id": "npub1chat",
+            "content": "/boom",
+            "rumor_id": "r-boom",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+        },
+    })
+
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"] == {"event_id": "e-boom", "action": "ignore"}
 
     bot._request_shutdown()
     await task

@@ -114,7 +114,7 @@ Valid actions are:
 ## High-level `Bot` API
 
 ```python
-from pacto_bot_api import Bot
+from pacto_bot_api import Bot, parse_command
 
 bot = Bot(
     bot_id="my-bot",
@@ -122,6 +122,11 @@ bot = Bot(
     capabilities=["ReadMessages", "SendMessages"],
 )
 ```
+
+By default, unhandled handler exceptions reply with a friendly error message so
+users know the bot is alive. Disable this with `reply_on_error=False` or change
+the message with `error_message="..."`. The error text never includes raw
+exception details.
 
 ### Decorators
 
@@ -131,11 +136,21 @@ bot = Bot(
 
 Handlers receive `(event, bot)` and may be sync or async. Return a response dict or `None`.
 
+Use `parse_command(event.content)` to split a message into `command`, `args`, and `flags`.
+
 ### Helper methods on `Bot`
 
 - `await bot.send_dm(recipient, content, reply_to=None)` — send a DM as this bot.
 - `await bot.set_profile(name=None, about=None, picture=None)` — update the bot profile.
 - `bot.client` — access the low-level `PactoClient` for advanced use.
+
+### Optional extras
+
+Install the `http` extra to pull in `httpx` for bots that call external APIs:
+
+```bash
+pip install "pacto-bot-api[http]"
+```
 
 ### Transport resolution
 

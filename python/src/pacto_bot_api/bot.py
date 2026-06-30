@@ -59,10 +59,14 @@ class Bot:
         data_dir: str | None = None,
         secret: str | None = None,
         http_bind: str | None = None,
+        reply_on_error: bool = True,
+        error_message: str = "Sorry, I couldn't process that.",
     ) -> None:
         self.bot_id = bot_id
         self.event_types = list(event_types or ["dm_received"])
         self.capabilities = list(capabilities or ["ReadMessages", "SendMessages"])
+        self.reply_on_error = reply_on_error
+        self.error_message = error_message
 
         self._data_dir = _resolve_data_dir(data_dir)
         # Stash constructor-provided settings so CLI args can override them in run().
@@ -323,9 +327,16 @@ class Bot:
                 result = await result
         except Exception as exc:  # pragma: no cover - defensive
             self._log(f"handler error for {command}: {exc}")
-            await self._client.handler_response(
-                action="ignore", event_id=event.event_id
-            )
+            if self.reply_on_error:
+                await self._client.handler_response(
+                    action="reply",
+                    event_id=event.event_id,
+                    content=self.error_message,
+                )
+            else:
+                await self._client.handler_response(
+                    action="ignore", event_id=event.event_id
+                )
             return
 
         if result is None:
