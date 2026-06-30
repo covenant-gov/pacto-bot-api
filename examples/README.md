@@ -1,16 +1,18 @@
 # Pacto Reference Handlers and Examples
 
-This directory contains a reference Python handler (`echo_bot.py`) and pytest
-fixtures/tests for the `pacto-bot-api` daemon. Rust "example tests" that
-demonstrate core daemon patterns live under `tests/` and are described below.
+> **New bots should use the generated Python SDK.** See
+> [`python/README.md`](../python/README.md) and
+> [`python/examples/`](../python/examples/) for the current recommended starting
+> point. The files in this directory are a legacy standard-library seed used to
+> bootstrap the example test suite and the CI contract tests.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `echo_bot.py` | Reference handler using only the Python standard library. |
-| `pacto_sdk.py` | Single-file SDK seed for new example handlers. |
-| `greeting_bot.py` | ~30-line demonstration of `pacto_sdk.py`. |
+| `pacto_sdk.py` | Single-file SDK seed used by the legacy example tests. |
+| `greeting_bot.py` | ~30-line demonstration of `pacto_sdk.py` (legacy seed). |
 | `greeting_bot.manifest.json` | Contract manifest for `greeting_bot.py`. |
 | `conftest.py` | pytest fixtures: `daemon`, `handler_client`, `mock_relay`. |
 | `test_echo_bot.py` | Integration tests for handler registration and echo behavior. |
@@ -55,10 +57,9 @@ JSON-RPC framing, registration, lifecycle, command dispatch, and response
 helpers. New example bots should import it rather than copying the plumbing
 from `echo_bot.py`.
 
-> **Note:** This is a *manual seed*, not the eventual generated Python client.
-> The generated client will be derived from `schemas/jsonrpc.json` and is
-> deferred to
-> [`docs/plans/2026-06-28-001-feat-python-examples-ci-contract-tests-plan.md`](../docs/plans/2026-06-28-001-feat-python-examples-ci-contract-tests-plan.md).
+> **Note:** This is a *manual seed*, not the generated Python client. The
+> generated SDK is now available in [`python/`](../python/) and is derived from
+> `schemas/jsonrpc.json`. New bots should import from `pacto_bot_api` instead.
 
 Example usage:
 

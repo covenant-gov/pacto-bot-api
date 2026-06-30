@@ -285,6 +285,7 @@ mod tests {
             },
             relays: vec![],
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 

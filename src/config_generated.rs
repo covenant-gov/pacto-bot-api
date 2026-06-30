@@ -26,13 +26,22 @@ pub struct DaemonConfigGenerated {
 /// Per-bot identity configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BotConfigGenerated {
+    /// Description text for the bot profile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
     /// capabilities
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
+    /// Human-readable display name for the bot profile
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     /// id
     pub id: String,
     /// npub
     pub npub: String,
+    /// URL to the bot's profile picture
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
     /// relays
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relays: Option<Vec<String>>,

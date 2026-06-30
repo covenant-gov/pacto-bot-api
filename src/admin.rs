@@ -68,6 +68,9 @@ For a complete operator's guide formatted for LLMs, run:
 "#;
 
 const NEW_AFTER_HELP: &str = r#"Examples:
+  # Interactive wizard (prompts for backend, relays, capabilities, and optional profile fields)
+  pacto-bot-admin new
+
   # Dev-only nsec backend (not for production)
   pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000
 
@@ -154,8 +157,9 @@ enum Command {
     /// Create a new bot identity config snippet.
     #[command(after_help = NEW_AFTER_HELP)]
     New {
+        /// Bot identity name (omit to run the interactive wizard).
         #[arg(value_name = "BOT_ID")]
-        bot_id: String,
+        bot_id: Option<String>,
 
         /// Signing backend for the new bot.
         /// Valid values: nsec (dev-only), bunker_local, bunker_remote.
@@ -258,7 +262,7 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             relays,
             capabilities,
             uri,
-        } => cmd_new(&bot_id, &backend, &relays, &capabilities, uri),
+        } => cmd_new(bot_id.as_deref(), &backend, &relays, &capabilities, uri),
         Command::PublishProfile { bot_id } => cmd_publish_profile(&cli.config, &bot_id).await,
         Command::TestBunker { bot_id } => cmd_test_bunker(&cli.config, &bot_id).await,
         Command::Export { bot_id } => cmd_export(&cli.config, cli.data_dir, &bot_id),
@@ -290,14 +294,49 @@ fn cmd_docs(format: &str) -> Result<(), DaemonError> {
 }
 
 fn cmd_new(
-    bot_id: &str,
+    bot_id: Option<&str>,
     backend: &str,
     relays: &[String],
     capabilities: &[String],
     uri: Option<String>,
 ) -> Result<(), DaemonError> {
-    if bot_id.is_empty() {
-        return Err(DaemonError::Config("bot_id must not be empty".into()));
+    let interactive = bot_id.is_none();
+
+    let params = if interactive {
+        run_interactive_new()?
+    } else {
+        let bot_id = bot_id.unwrap_or_default();
+        validate_bot_id(bot_id)?;
+
+        let relays = if relays.is_empty() {
+            vec!["ws://localhost:7000".to_string()]
+        } else {
+            relays.to_vec()
+        };
+        let capabilities = if capabilities.is_empty() {
+            vec!["ReadMessages".to_string()]
+        } else {
+            capabilities.to_vec()
+        };
+
+        NewBotParams {
+            bot_id: bot_id.to_string(),
+            backend: backend.to_string(),
+            relays,
+            capabilities,
+            uri,
+            display_name: None,
+            about: None,
+            picture: None,
+        }
+    };
+
+    validate_backend(&params.backend)?;
+    for relay in &params.relays {
+        validate_relay_url(relay)?;
+    }
+    for cap in &params.capabilities {
+        validate_capability(cap)?;
     }
 
     let keys = Keys::generate();
@@ -310,33 +349,300 @@ fn cmd_new(
         .to_bech32()
         .map_err(|e| DaemonError::Nostr(format!("failed to encode nsec: {e}")))?;
 
-    let relays_toml = format_toml_array(relays);
-    let caps_toml = format_toml_array(capabilities);
+    let snippet = build_bot_snippet(&params, &npub, &nsec);
 
-    match backend {
-        "nsec" => {
-            println!("[[bots]]");
-            println!("id = {bot_id:?}");
-            println!("npub = {npub:?}");
-            println!("signing = {{ backend = \"nsec\", nsec = {nsec:?} }}");
-            println!("relays = {relays_toml}");
-            println!("capabilities = {caps_toml}");
-        }
-        "bunker_local" | "bunker_remote" => {
-            let uri = uri.map_or_else(prompt_uri, Ok)?;
-            println!("[[bots]]");
-            println!("id = {bot_id:?}");
-            println!("npub = {npub:?}");
-            println!("signing = {{ backend = {backend:?}, uri = {uri:?} }}");
-            println!("relays = {relays_toml}");
-            println!("capabilities = {caps_toml}");
-        }
-        _ => {
-            return Err(DaemonError::Config(format!("unknown backend: {backend}")));
+    if interactive {
+        println!("\nPreview of the config snippet that will be generated:\n");
+        println!("{snippet}");
+        if !prompt_yes_no("Create this bot identity?")? {
+            println!("Cancelled.");
+            return Ok(());
         }
     }
 
+    println!("{snippet}");
     Ok(())
+}
+
+/// Parameters collected for a new bot identity.
+#[derive(Debug, Clone)]
+struct NewBotParams {
+    bot_id: String,
+    backend: String,
+    relays: Vec<String>,
+    capabilities: Vec<String>,
+    uri: Option<String>,
+    display_name: Option<String>,
+    about: Option<String>,
+    picture: Option<String>,
+}
+
+fn run_interactive_new() -> Result<NewBotParams, DaemonError> {
+    println!("\nCreate a new Pacto bot identity\n");
+
+    let bot_id = prompt_bot_id()?;
+
+    let backend = prompt_backend()?;
+
+    let uri = if matches!(backend.as_str(), "bunker_local" | "bunker_remote") {
+        Some(prompt_uri_with_label(&backend)?)
+    } else {
+        None
+    };
+
+    let relays = prompt_relays()?;
+    let capabilities = prompt_capabilities()?;
+
+    println!("\nOptional profile fields (press Enter to skip):");
+    let display_name = prompt_optional("Display name (defaults to bot id): ")?;
+    let about = prompt_optional("About text: ")?;
+    let picture = prompt_optional("Picture URL: ")?;
+
+    Ok(NewBotParams {
+        bot_id,
+        backend,
+        relays,
+        capabilities,
+        uri,
+        display_name,
+        about,
+        picture,
+    })
+}
+
+fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
+    let mut lines = Vec::new();
+    lines.push("[[bots]]".to_string());
+    lines.push(format!("id = {:?}", params.bot_id));
+    lines.push(format!("npub = {npub:?}"));
+
+    match params.backend.as_str() {
+        "nsec" => {
+            lines.push(format!(
+                "signing = {{ backend = \"nsec\", nsec = {nsec:?} }}"
+            ));
+        }
+        backend => {
+            let uri = params.uri.as_deref().unwrap_or("");
+            lines.push(format!(
+                "signing = {{ backend = {backend:?}, uri = {uri:?} }}"
+            ));
+        }
+    }
+
+    lines.push(format!("relays = {}", format_toml_array(&params.relays)));
+    lines.push(format!(
+        "capabilities = {}",
+        format_toml_array(&params.capabilities)
+    ));
+
+    if let Some(display_name) = &params.display_name {
+        lines.push(format!("display_name = {display_name:?}"));
+    }
+    if let Some(about) = &params.about {
+        lines.push(format!("about = {about:?}"));
+    }
+    if let Some(picture) = &params.picture {
+        lines.push(format!("picture = {picture:?}"));
+    }
+
+    lines.join("\n") + "\n"
+}
+
+fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
+    if bot_id.is_empty() {
+        return Err(DaemonError::Config("bot_id must not be empty".into()));
+    }
+    if bot_id.len() > 64 {
+        return Err(DaemonError::Config(
+            "bot_id must be 64 characters or fewer".into(),
+        ));
+    }
+    if bot_id.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+        return Err(DaemonError::Config(
+            "bot_id must not contain whitespace, '/', or '\\\\'".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_backend(backend: &str) -> Result<(), DaemonError> {
+    match backend {
+        "nsec" | "bunker_local" | "bunker_remote" => Ok(()),
+        _ => Err(DaemonError::Config(format!("unknown backend: {backend}"))),
+    }
+}
+
+fn validate_relay_url(url: &str) -> Result<(), DaemonError> {
+    if url.is_empty() {
+        return Err(DaemonError::Config("relay URL must not be empty".into()));
+    }
+    if !(url.starts_with("ws://") || url.starts_with("wss://")) {
+        return Err(DaemonError::Config(format!(
+            "relay URL must start with ws:// or wss://: {url}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_capability(cap: &str) -> Result<(), DaemonError> {
+    match cap {
+        "ReadMessages" | "SendMessages" | "ManageProfile" => Ok(()),
+        _ => Err(DaemonError::Config(format!(
+            "unknown capability: {cap}; expected ReadMessages, SendMessages, or ManageProfile"
+        ))),
+    }
+}
+
+fn prompt_bot_id() -> Result<String, DaemonError> {
+    loop {
+        let input = prompt_nonempty("Bot identity name: ")?;
+        if let Err(e) = validate_bot_id(&input) {
+            println!("Invalid name: {e}");
+            continue;
+        }
+        return Ok(input);
+    }
+}
+
+fn prompt_backend() -> Result<String, DaemonError> {
+    println!("Signing backend:");
+    println!("  1) nsec         - local dev key (prints nsec; do not use in production)");
+    println!("  2) bunker_local - NIP-46 bunker on the same machine");
+    println!("  3) bunker_remote - NIP-46 bunker reachable over wss://");
+
+    loop {
+        let input = prompt_line("Choose backend [1]: ")?;
+        let choice = if input.trim().is_empty() {
+            "1"
+        } else {
+            input.trim()
+        };
+        match choice {
+            "1" => return Ok("nsec".to_string()),
+            "2" => return Ok("bunker_local".to_string()),
+            "3" => return Ok("bunker_remote".to_string()),
+            _ => println!("Invalid choice; enter 1, 2, or 3."),
+        }
+    }
+}
+
+fn prompt_uri_with_label(backend: &str) -> Result<String, DaemonError> {
+    let label = match backend {
+        "bunker_local" => "local bunker URI (e.g. bunker://<pubkey>@127.0.0.1:4848)",
+        "bunker_remote" => "remote bunker URI (e.g. bunker://<pubkey>?relay=wss://relay.nsec.app)",
+        _ => "bunker URI",
+    };
+    loop {
+        let uri = prompt_nonempty(&format!("Enter {label}: "))?;
+        if uri.is_empty() {
+            println!("A bunker URI is required for this backend.");
+            continue;
+        }
+        if backend == "bunker_remote" && uri.contains("ws://") && !uri.contains("wss://") {
+            println!("Remote bunker must use wss://, not ws://.");
+            continue;
+        }
+        return Ok(uri);
+    }
+}
+
+fn prompt_relays() -> Result<Vec<String>, DaemonError> {
+    println!("\nRelay URLs for this bot (ws:// or wss://).");
+    println!("Leave blank and press Enter to finish. If none are entered,");
+    println!("the default dev relay ws://localhost:7000 will be used.");
+
+    let mut relays = Vec::new();
+    loop {
+        let prompt = if relays.is_empty() {
+            "Relay URL [ws://localhost:7000]: ".to_string()
+        } else {
+            "Relay URL (blank to finish): ".to_string()
+        };
+        let input = prompt_line(&prompt)?;
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            if relays.is_empty() {
+                relays.push("ws://localhost:7000".to_string());
+            }
+            return Ok(relays);
+        }
+        if let Err(e) = validate_relay_url(trimmed) {
+            println!("Invalid relay: {e}");
+            continue;
+        }
+        relays.push(trimmed.to_string());
+    }
+}
+
+fn prompt_capabilities() -> Result<Vec<String>, DaemonError> {
+    println!("\nCapabilities grant handlers permission to act on behalf of this bot.");
+    println!("  ReadMessages   - receive decrypted DMs and group messages");
+    println!("  SendMessages   - send replies as the bot");
+    println!("  ManageProfile  - update the bot's kind:0 profile");
+
+    loop {
+        let input = prompt_line("Capabilities (comma-separated) [ReadMessages, SendMessages]: ")?;
+        let raw = if input.trim().is_empty() {
+            "ReadMessages, SendMessages".to_string()
+        } else {
+            input.trim().to_string()
+        };
+        let caps: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut valid = true;
+        for cap in &caps {
+            if let Err(e) = validate_capability(cap) {
+                println!("{e}");
+                valid = false;
+                break;
+            }
+        }
+        if valid && !caps.is_empty() {
+            return Ok(caps);
+        }
+        if caps.is_empty() {
+            println!("Select at least one capability.");
+        }
+    }
+}
+
+fn prompt_optional(prompt: &str) -> Result<Option<String>, DaemonError> {
+    let input = prompt_line(prompt)?;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed.to_string()))
+    }
+}
+
+fn prompt_yes_no(prompt: &str) -> Result<bool, DaemonError> {
+    let input = prompt_line(&format!("{prompt} [y/N]: "))?;
+    Ok(input.trim().eq_ignore_ascii_case("y"))
+}
+
+fn prompt_nonempty(prompt: &str) -> Result<String, DaemonError> {
+    loop {
+        let input = prompt_line(prompt)?;
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            println!("A value is required.");
+            continue;
+        }
+        return Ok(trimmed.to_string());
+    }
+}
+
+fn prompt_line(prompt: &str) -> Result<String, DaemonError> {
+    print!("{prompt}");
+    io::stdout().flush().map_err(DaemonError::Io)?;
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf).map_err(DaemonError::Io)?;
+    Ok(buf)
 }
 
 async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), DaemonError> {
@@ -1167,18 +1473,6 @@ fn write_token_atomic(dir: &Path, token: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn prompt_uri() -> Result<String, DaemonError> {
-    print!("Enter bunker URI: ");
-    io::stdout().flush().map_err(DaemonError::Io)?;
-    let mut buf = String::new();
-    io::stdin().read_line(&mut buf).map_err(DaemonError::Io)?;
-    let uri = buf.trim().to_string();
-    if uri.is_empty() {
-        return Err(DaemonError::Config("bunker URI is required".into()));
-    }
-    Ok(uri)
-}
-
 fn format_toml_array(items: &[String]) -> String {
     let parts: Vec<String> = items.iter().map(|s| format!("{s:?}")).collect();
     format!("[{}]", parts.join(", "))
@@ -1201,11 +1495,19 @@ async fn build_profile_event_with_signer(
     bot: &BotConfig,
     signer: &dyn Signer,
 ) -> Result<Event, DaemonError> {
-    let content = serde_json::to_string(&json!({
-        "name": bot.id,
+    let name = bot.display_name.as_deref().unwrap_or(&bot.id);
+    let mut profile = json!({
+        "name": name,
         "bot": true,
         "capabilities": bot.capabilities,
-    }))?;
+    });
+    if let Some(about) = &bot.about {
+        profile["about"] = about.clone().into();
+    }
+    if let Some(picture) = &bot.picture {
+        profile["picture"] = picture.clone().into();
+    }
+    let content = serde_json::to_string(&profile)?;
 
     let pubkey = signer.public_key();
     let created_at = Timestamp::now();
@@ -1656,6 +1958,9 @@ mod tests {
             },
             relays: vec!["wss://relay.example.com".to_string()],
             capabilities: vec!["ReadMessages".to_string()],
+            display_name: None,
+            about: None,
+            picture: None,
         }
     }
 
@@ -1843,15 +2148,31 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn build_profile_event_uses_optional_fields() -> Result<(), DaemonError> {
+        let (signer, nsec, npub) = nsec_signer()?;
+        let mut bot = dummy_bot("profile-bot", &npub, &nsec);
+        bot.display_name = Some("Profile Bot".to_string());
+        bot.about = Some("A test bot".to_string());
+        bot.picture = Some("https://example.com/bot.png".to_string());
+        let event = build_profile_event_with_signer(&bot, &signer).await?;
+
+        let parsed: serde_json::Value = serde_json::from_str(&event.content)?;
+        assert_eq!(parsed["name"], "Profile Bot");
+        assert_eq!(parsed["about"], "A test bot");
+        assert_eq!(parsed["picture"], "https://example.com/bot.png");
+        Ok(())
+    }
+
     #[test]
     fn new_rejects_empty_bot_id() {
-        let err = cmd_new("", "nsec", &[], &[], None).unwrap_err();
+        let err = cmd_new(Some(""), "nsec", &[], &[], None).unwrap_err();
         assert!(err.to_string().contains("bot_id"));
     }
 
     #[test]
     fn new_rejects_unknown_backend() {
-        let err = cmd_new("x", "invalid", &[], &[], None).unwrap_err();
+        let err = cmd_new(Some("x"), "invalid", &[], &[], None).unwrap_err();
         assert!(err.to_string().contains("unknown backend"));
     }
 

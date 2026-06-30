@@ -50,6 +50,7 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
         },
         relays: vec![],
         capabilities: vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+        ..Default::default()
     };
     let config = DaemonConfig {
         daemon: GlobalDaemonConfig::default(),

@@ -22,7 +22,10 @@
           "npub": { "type": "string" },
           "signing": { "type": "object" },
           "relays": { "type": "array", "items": { "type": "string" } },
-          "capabilities": { "type": "array", "items": { "type": "string" } }
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "display_name": { "type": "string", "description": "Human-readable display name for the bot profile" },
+          "about": { "type": "string", "description": "Description text for the bot profile" },
+          "picture": { "type": "string", "description": "URL to the bot's profile picture" }
         },
         "required": ["id", "npub", "signing"]
       }

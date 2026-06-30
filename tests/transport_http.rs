@@ -567,6 +567,7 @@ async fn start_dispatch_server_with_relay(
         },
         relays: vec![relay.url()],
         capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        ..Default::default()
     };
 
     let config = DaemonConfig {

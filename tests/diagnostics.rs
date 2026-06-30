@@ -247,6 +247,7 @@ fn bot_health_reflects_bot_state() {
         },
         relays: vec!["wss://relay.example".into()],
         capabilities: vec![],
+        ..Default::default()
     };
 
     let bot = BotState::new(config).unwrap();
@@ -275,6 +276,7 @@ fn client_manager_populates_diagnostics_bots() {
             },
             relays: vec!["wss://relay.example".into()],
             capabilities: vec![],
+            ..Default::default()
         }],
     };
 

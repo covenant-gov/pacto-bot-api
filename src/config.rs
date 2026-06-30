@@ -50,7 +50,7 @@ fn default_http_idle_timeout_secs() -> u64 {
 }
 
 /// Per-bot identity configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct BotConfig {
     /// Daemon-local label. Must be unique within the config file.
     pub id: String,
@@ -64,6 +64,15 @@ pub struct BotConfig {
     /// Capabilities granted to handlers for this bot.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Human-readable display name for the bot profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Description text for the bot profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    /// URL to the bot's profile picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
 }
 
 /// Signing backend configuration for a bot identity.
@@ -76,6 +85,14 @@ pub enum SigningConfig {
     BunkerLocal { uri: SecretString },
     /// Production NIP-46 bunker reachable over `wss://`.
     BunkerRemote { uri: SecretString },
+}
+
+impl Default for SigningConfig {
+    fn default() -> Self {
+        SigningConfig::Nsec {
+            nsec: SecretString::new(String::new().into()),
+        }
+    }
 }
 
 impl SigningConfig {

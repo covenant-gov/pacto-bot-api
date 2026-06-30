@@ -113,6 +113,7 @@ async fn test_bunker_unreachable_or_invalid() -> Result<(), Box<dyn Error>> {
         },
         relays: vec![],
         capabilities: vec![],
+        ..Default::default()
     };
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -248,6 +249,7 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
         },
         relays: vec![relay_url],
         capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        ..Default::default()
     };
     let config = common::make_config(&dir, vec![bot])?;
 

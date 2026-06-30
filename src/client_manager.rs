@@ -162,6 +162,7 @@ mod tests {
             },
             relays: vec![],
             capabilities: vec!["ReadMessages".into()],
+            ..Default::default()
         }
     }
 
@@ -259,6 +260,7 @@ mod tests {
                 },
                 relays: vec![],
                 capabilities: vec![],
+                ..Default::default()
             }],
         };
 

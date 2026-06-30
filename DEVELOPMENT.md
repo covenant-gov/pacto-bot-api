@@ -35,6 +35,33 @@ Project tooling:
 - `deny.toml` — license and audit policy for `cargo-deny`.
 - `xtask/` — project automation such as schema/codegen tasks (`cargo xtask codegen`).
 
+## Python SDK
+
+The generated Python SDK lives in `python/` and is produced from
+`schemas/jsonrpc.json` via `cargo xtask codegen`. Bot authors use `from pacto_bot_api import Bot`;
+contributors working on the SDK should read [`python/README.md`](python/README.md)
+and [`docs/python-sdk.md`](docs/python-sdk.md).
+
+### Set up the Python environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e python/
+pip install -r examples/requirements.txt
+```
+
+### Regenerate the SDK
+
+After changing `schemas/jsonrpc.json`:
+
+```bash
+cargo xtask codegen
+```
+
+Generated files under `python/src/pacto_bot_api/_generated/` are checked into
+git. CI enforces schema sync via `tests/schema_sync.rs`.
+
 ## Git hooks
 
 A pre-commit hook is available in `scripts/pre-commit.sh`. It runs the Beads pre-commit hook (if installed) and `make validate` (format check, clippy, and tests).
@@ -118,6 +145,21 @@ Tests that need external services (a local Nostr relay, EVM node, or NIP-46 bunk
 cargo nextest run --run-ignored all
 ```
 
+### Python SDK and example tests
+
+```bash
+# Python SDK unit tests
+pytest python/tests/
+
+# Contract tests for the reference examples
+pytest examples/test_examples_contract.py
+```
+
+The Python SDK tests cover the generated client, models, transports, and the
+high-level `Bot` API. The example contract tests verify that the reference bots
+in `python/examples/` and `examples/` stay aligned with the daemon's JSON-RPC
+contract.
+
 ### Schema sync
 
 ```bash
@@ -125,7 +167,9 @@ cargo xtask codegen
 cargo test --test schema_sync
 ```
 
-The canonical API contract lives in `schemas/`. Rust types are generated from these schemas, and `tests/schema_sync.rs` ensures they stay in sync.
+The canonical API contract lives in `schemas/`. Rust types and the Python SDK
+are generated from these schemas, and `tests/schema_sync.rs` ensures they stay
+in sync.
 
 ### Requirement coverage
 

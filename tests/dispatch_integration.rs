@@ -38,6 +38,7 @@ fn bot_config(id: &str, keys: &nostr::Keys, capabilities: &[&str]) -> BotConfig 
         },
         relays: vec![],
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
     }
 }
 

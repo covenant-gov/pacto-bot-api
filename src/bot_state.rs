@@ -81,6 +81,7 @@ mod tests {
             },
             relays: vec![],
             capabilities: vec![],
+            ..Default::default()
         }
     }
 

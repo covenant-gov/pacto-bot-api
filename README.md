@@ -85,17 +85,65 @@ If you built from source, use `cargo run --bin pacto-bot-api -- --config pacto-b
 
 ### 5. Connect a handler
 
-Handlers connect to the Unix socket at `$DATA_DIR/pacto-bot-api.sock` (default `~/.local/share/pacto-bot-api/pacto-bot-api.sock`) and register with `handler.register`:
+The easiest way to write a handler is with the generated Python SDK in
+[`python/`](python/). It handles JSON-RPC framing, transport selection,
+registration, command dispatch, and response shaping:
+
+```python
+from pacto_bot_api import Bot
+
+bot = Bot(bot_id="echo-bot")
+
+
+@bot.command("/echo")
+async def echo(event, bot):
+    return {
+        "event_id": event.event_id,
+        "action": "reply",
+        "content": event.content.removeprefix("/echo ").strip(),
+    }
+
+
+@bot.default
+async def unknown(event, bot):
+    return {"event_id": event.event_id, "action": "ignore"}
+
+
+if __name__ == "__main__":
+    bot.run()
+```
+
+Save it as `echo_bot.py` and run it against the daemon's Unix socket:
+
+```bash
+pip install -e python/
+python echo_bot.py --socket ~/.local/share/pacto-bot-api/pacto-bot-api.sock
+```
+
+Handlers can also connect directly over the Unix socket or HTTP transport and
+speak JSON-RPC 2.0 themselves. The canonical API contract lives in
+[`schemas/`](schemas/). A raw registration request looks like:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"handler.register","params":{"bot_ids":["echo-bot"],"event_types":["dm_received"],"capabilities":["ReadMessages","SendMessages"]}}
 ```
 
-Incoming DMs arrive as `agent.event` notifications; handlers reply with `agent.send_dm` or `handler.response`.
+Incoming DMs arrive as `agent.event` notifications; handlers reply with
+`agent.send_dm` or `handler.response`.
 
-See [`examples/`](examples/) for a reference Python echo handler and a pointer
-to the Rust "example tests" under `tests/` (`example_http_handler.rs` and
-`example_multi_bot.rs`).
+Reference material:
+
+- [`python/README.md`](python/README.md) — full Python SDK guide (`Bot`,
+  `PactoClient`, capabilities, transports, all examples).
+- [`docs/python-sdk.md`](docs/python-sdk.md) — SDK overview and regeneration
+  notes.
+- [`python/examples/greeting_bot.py`](python/examples/greeting_bot.py) and
+  [`python/examples/joke_bot.py`](python/examples/joke_bot.py) — reference bots
+  using the generated SDK.
+- [`examples/`](examples/) — legacy standard-library seed handler (`echo_bot.py`)
+  and pytest fixtures/tests.
+- [`tests/example_http_handler.rs`](tests/example_http_handler.rs) and
+  [`tests/example_multi_bot.rs`](tests/example_multi_bot.rs) — Rust example tests.
 
 ## Repository layout
 
@@ -105,10 +153,15 @@ pacto-bot-api/
 ├── pacto-bot-api.toml.example # Example daemon config
 ├── README.md                  # This file
 ├── DEVELOPMENT.md             # Contributor and development guide
+├── BUILDING.md                # Native and cross-compilation instructions
 ├── schemas/                   # Canonical JSON Schema / OpenRPC contracts
 ├── src/                       # Daemon and admin CLI source
 ├── tests/                     # In-process integration tests
-├── examples/                  # Reference handlers and pytest fixtures
+├── python/                    # Generated Python SDK and Python tests
+│   ├── src/pacto_bot_api/     # SDK package (`Bot`, `PactoClient`, models)
+│   ├── examples/              # Reference bots using the generated SDK
+│   └── tests/                 # Python SDK tests
+├── examples/                  # Legacy standard-library seed handler/tests
 └── xtask/                     # Build/task runner (cargo xtask codegen)
 ```
 
@@ -132,6 +185,7 @@ Phase 1 of the daemon is implemented and passes its in-process test suite:
 - SQLite persistence with WAL mode, cursor recovery, and `export`/`import` via `pacto-bot-admin`.
 - Structured diagnostics, metrics, last-run reports, and a schema-first contract in `schemas/`.
 - Docker-free integration tests using in-process mock relay and bunker implementations.
+- Generated Python SDK in `python/` with typed models, `PactoClient`, and a decorator-based `Bot` API.
 
 Phase 2 and beyond (MLS group participation, on-chain governance reads/writes, webhook delivery) are planned but not yet implemented.
 

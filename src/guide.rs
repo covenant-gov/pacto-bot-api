@@ -39,11 +39,15 @@ fn render_cli_reference(out: &mut String) {
     render_command(
         out,
         "new",
-        "Create a new bot identity config snippet.",
-        r#"pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000 --capabilities ReadMessages --capabilities SendMessages
+        "Create a new bot identity config snippet. Run with no positional arguments to start an interactive interview.",
+        r#"# Interactive wizard
+pacto-bot-admin new
+
+# Non-interactive scripting
+pacto-bot-admin new echo-bot --backend nsec --relays ws://localhost:7000 --capabilities ReadMessages --capabilities SendMessages
 
 pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?relay=wss://relay.nsec.app"#,
-        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).",
+        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\\n- `--relays` — relay URLs for the bot.\\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.\\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\\n- Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.",
     );
 
     render_command(
