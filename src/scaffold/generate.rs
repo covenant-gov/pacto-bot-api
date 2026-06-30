@@ -510,7 +510,10 @@ fn append_compose_services(
         ),
         (
             serde_yaml::Value::String("profiles".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("bot-only".to_string())]),
+            serde_yaml::Value::Sequence(vec![
+                serde_yaml::Value::String("bot-only".to_string()),
+                serde_yaml::Value::String("full".to_string()),
+            ]),
         ),
         (
             serde_yaml::Value::String("environment".to_string()),
@@ -548,55 +551,15 @@ fn append_compose_services(
                 ]),
             )]),
         ),
-    ]);
-
-    let full_service = serde_yaml::Mapping::from_iter([
         (
-            serde_yaml::Value::String("build".to_string()),
-            serde_yaml::Value::String(format!("bots/{bot_id}")),
-        ),
-        (
-            serde_yaml::Value::String("profiles".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String("full".to_string())]),
-        ),
-        (
-            serde_yaml::Value::String("environment".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
-                (
-                    serde_yaml::Value::String("PACTO_TRANSPORT".to_string()),
-                    serde_yaml::Value::String("unix".to_string()),
-                ),
-                (
-                    serde_yaml::Value::String("PACTO_SOCKET_PATH".to_string()),
-                    serde_yaml::Value::String("/run/pacto-bot-api.sock".to_string()),
-                ),
-            ])),
-        ),
-        (
-            serde_yaml::Value::String("volumes".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
-                "pacto-socket:/run/pacto-bot-api:ro".to_string(),
-            )]),
-        ),
-        (
-            serde_yaml::Value::String("depends_on".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                serde_yaml::Value::String("daemon".to_string()),
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                    serde_yaml::Value::String("condition".to_string()),
-                    serde_yaml::Value::String("service_started".to_string()),
-                )])),
-            )])),
+            serde_yaml::Value::String("restart".to_string()),
+            serde_yaml::Value::String("on-failure".to_string()),
         ),
     ]);
 
     services.insert(
         serde_yaml::Value::String(bot_id.to_string()),
         serde_yaml::Value::Mapping(bot_service),
-    );
-    services.insert(
-        serde_yaml::Value::String(format!("{bot_id}-full")),
-        serde_yaml::Value::Mapping(full_service),
     );
 
     let updated = serde_yaml::to_string(&compose)

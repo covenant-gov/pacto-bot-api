@@ -58,7 +58,12 @@ From the project root:
 docker compose --profile full up --build
 ```
 
-This starts the bot, the `pacto-bot-api` daemon, and a bunker signer.
+This starts the bot, the `pacto-bot-api` daemon, and a bunker signer. The
+daemon container publishes its Unix socket at `/run/pacto-bot-api.sock` on the
+host so the single bot service can use it for both `full` and `bot-only`
+profiles. Make sure the host path is writable by the container (for example,
+by pre-creating the socket with ownership that matches the `pacto` user inside
+the daemon image, uid 1000) or the daemon will fail to bind.
 
 ## Host-daemon development with compose
 

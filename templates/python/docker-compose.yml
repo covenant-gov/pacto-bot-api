@@ -5,6 +5,7 @@ services:
     build: ./bots/{{bot_id}}
     profiles:
       - bot-only
+      - full
     environment:
       PACTO_TRANSPORT: unix
       PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
@@ -13,19 +14,7 @@ services:
         source: /run/pacto-bot-api.sock
         target: /run/pacto-bot-api.sock
         read_only: true
-
-  {{bot_id}}-full:
-    build: ./bots/{{bot_id}}
-    profiles:
-      - full
-    environment:
-      PACTO_TRANSPORT: unix
-      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
-    volumes:
-      - pacto-socket:/run/pacto-bot-api:ro
-    depends_on:
-      daemon:
-        condition: service_started
+    restart: on-failure
 
   daemon:
     image: ghcr.io/covenant-gov/pacto-bot-api:latest
@@ -36,7 +25,7 @@ services:
       PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
     volumes:
       - pacto-data:/var/lib/pacto-bot-api
-      - pacto-socket:/run/pacto-bot-api
+      - /run/pacto-bot-api.sock:/run/pacto-bot-api.sock
     command: ["pacto-bot-api"]
 
   bunker:
@@ -51,6 +40,5 @@ services:
       - daemon
 
 volumes:
-  pacto-socket:
   pacto-data:
   bunker-data:

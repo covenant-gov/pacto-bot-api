@@ -284,7 +284,8 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
 
     let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
     assert!(compose.contains("price-bot:"));
-    assert!(compose.contains("price-bot-full:"));
+    assert!(compose.contains("bot-only"));
+    assert!(compose.contains("full"));
 
     let config = fs::read_to_string(&config_path)?;
     assert!(config.contains("id = \"echo-bot\""));
