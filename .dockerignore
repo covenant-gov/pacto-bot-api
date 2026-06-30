@@ -17,8 +17,10 @@
 /docs
 /examples
 /python
-/templates
 /tests
+
+# Templates are intentionally included in the build context: they are
+# embedded into the admin CLI at compile time via include_dir!.
 
 # Editor and local tooling
 /.idea
