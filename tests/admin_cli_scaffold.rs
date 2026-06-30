@@ -366,9 +366,9 @@ fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn
         if entry == project_dir.join("pacto-bot-api.toml") {
             continue;
         }
-        let content = fs::read_to_string(&entry)?;
+        let content = fs::read(&entry)?;
         assert!(
-            !content.contains(&nsec_value),
+            !content.windows(nsec_value.len()).any(|w| w == nsec_value.as_bytes()),
             "{} leaked nsec value",
             entry.display()
         );

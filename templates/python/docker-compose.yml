@@ -2,7 +2,9 @@ name: {{bot_id}}
 
 services:
   {{bot_id}}:
-    build: ./bots/{{bot_id}}
+    build:
+      context: .
+      dockerfile: ./bots/{{bot_id}}/Dockerfile
     profiles:
       - bot-only
       - full

@@ -122,6 +122,17 @@ pub fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
         &denylist,
     )?;
 
+    render_project_templates(
+        &template_dir,
+        &request.project_dir,
+        &context,
+        &policy,
+        &denylist,
+    )?;
+
+    copy_sdk_and_build_wheel(&template_dir, &request.project_dir, &policy)?;
+    copy_skills(&template_dir, &request.project_dir, &policy)?;
+
     append_compose_services(
         &template_dir,
         &request.project_dir,
@@ -385,6 +396,145 @@ fn render_templates(
     Ok(())
 }
 
+/// Render project-level templates (README.md, AGENTS.md, ...) into the project
+/// root. These templates live under `<language>/project/` in the template tree.
+fn render_project_templates(
+    template_dir: &Path,
+    project_dir: &Path,
+    context: &HashMap<String, TemplateValue>,
+    policy: &OverwritePolicy,
+    denylist: &[PathBuf],
+) -> Result<(), DaemonError> {
+    let project_template_dir = template_dir.join("project");
+    if !project_template_dir.is_dir() {
+        return Ok(());
+    }
+
+    render_template_tree(
+        &project_template_dir,
+        project_dir,
+        &project_template_dir,
+        context,
+        policy,
+        denylist,
+    )?;
+
+    Ok(())
+}
+
+/// Copy the vendored SDK source to the project root and build a wheel from it.
+fn copy_sdk_and_build_wheel(
+    template_dir: &Path,
+    project_dir: &Path,
+    policy: &OverwritePolicy,
+) -> Result<(), DaemonError> {
+    let source = template_dir.join("sdk");
+    let target = project_dir.join("sdk");
+    if !source.is_dir() {
+        return Ok(());
+    }
+    if target.exists() && policy.skip_existing {
+        println!("Skipped {}", target.display());
+        return Ok(());
+    }
+    if target.exists() && !policy.force && policy.interactive {
+        if !prompt_overwrite_dir(&target)? {
+            println!("Skipped {}", target.display());
+            return Ok(());
+        }
+    }
+
+    copy_dir_all(&source, &target)?;
+    println!("Copied {}", target.display());
+
+    // Try to build a wheel from the vendored SDK. Failure is non-fatal: the
+    // source is present and can be built manually.
+    if build_wheel(&target).is_err() {
+        println!(
+            "Warning: failed to build SDK wheel; install the SDK manually with `python -m build --wheel ./sdk`"
+        );
+    }
+
+    Ok(())
+}
+
+/// Copy the agent skill directory to the project root.
+fn copy_skills(
+    template_dir: &Path,
+    project_dir: &Path,
+    policy: &OverwritePolicy,
+) -> Result<(), DaemonError> {
+    let source = template_dir.join("skills");
+    let target = project_dir.join("skills");
+    if !source.is_dir() {
+        return Ok(());
+    }
+    if target.exists() && policy.skip_existing {
+        println!("Skipped {}", target.display());
+        return Ok(());
+    }
+    if target.exists() && !policy.force && policy.interactive {
+        if !prompt_overwrite_dir(&target)? {
+            println!("Skipped {}", target.display());
+            return Ok(());
+        }
+    }
+
+    copy_dir_all(&source, &target)?;
+    println!("Copied {}", target.display());
+    Ok(())
+}
+
+fn build_wheel(sdk_dir: &Path) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("python")
+        .args(["-m", "build", "--wheel", &sdk_dir.to_string_lossy()])
+        .output()
+        .map_err(DaemonError::Io)?;
+    if !output.status.success() {
+        return Err(DaemonError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!(
+                "wheel build failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )));
+    }
+    println!("Built SDK wheel in {}", sdk_dir.join("dist").display());
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), DaemonError> {
+    fs::create_dir_all(dst).map_err(DaemonError::Io)?;
+    for entry in fs::read_dir(src).map_err(DaemonError::Io)? {
+        let entry = entry.map_err(DaemonError::Io)?;
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        if file_name_str == "__pycache__" || file_name_str.ends_with(".pyc") {
+            continue;
+        }
+        let source = entry.path();
+        let target = dst.join(&file_name);
+        if source.is_dir() {
+            copy_dir_all(&source, &target)?;
+        } else {
+            fs::copy(&source, &target).map_err(DaemonError::Io)?;
+        }
+    }
+    Ok(())
+}
+
+fn prompt_overwrite_dir(path: &Path) -> Result<bool, DaemonError> {
+    println!(
+        "Directory {} already exists. Overwrite? [y/N]:",
+        path.display()
+    );
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .map_err(DaemonError::Io)?;
+    Ok(buf.trim().eq_ignore_ascii_case("y"))
+}
+
 fn render_template_tree(
     template_dir: &Path,
     target_dir: &Path,
@@ -405,6 +555,20 @@ fn render_template_tree(
         // docker-compose.yml is handled separately so services can be merged
         // when scaffolding additional bots into an existing project.
         if current == template_dir && file_name == "docker-compose.yml" {
+            continue;
+        }
+
+        // Project-level templates (README.md, AGENTS.md, etc.) are rendered
+        // directly into the project root rather than under bots/<bot-id>/.
+        if current == template_dir && file_name == "project" && source.is_dir() {
+            continue;
+        }
+
+        // SDK and skills directories are copied as-is to the project root.
+        if current == template_dir
+            && (file_name == "sdk" || file_name == "skills")
+            && source.is_dir()
+        {
             continue;
         }
 
@@ -506,7 +670,16 @@ fn append_compose_services(
     let bot_service = serde_yaml::Mapping::from_iter([
         (
             serde_yaml::Value::String("build".to_string()),
-            serde_yaml::Value::String(format!("bots/{bot_id}")),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
+                (
+                    serde_yaml::Value::String("context".to_string()),
+                    serde_yaml::Value::String(".".to_string()),
+                ),
+                (
+                    serde_yaml::Value::String("dockerfile".to_string()),
+                    serde_yaml::Value::String(format!("./bots/{bot_id}/Dockerfile")),
+                ),
+            ])),
         ),
         (
             serde_yaml::Value::String("profiles".to_string()),
