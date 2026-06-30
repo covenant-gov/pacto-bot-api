@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-`pacto-bot-api` is a planned standalone Rust daemon that multiplexes multiple Pacto bot identities onto one shared backend. Bot developers write handlers in any language and connect to the daemon over a language-agnostic JSON-RPC 2.0 API; the daemon owns Nostr relay connections, encrypted DM handling, signing keys, and message routing.
+`pacto-bot-api` is a standalone Rust daemon that multiplexes multiple Pacto bot identities onto one shared backend. Bot developers write handlers in any language and connect to the daemon over a language-agnostic JSON-RPC 2.0 API; the daemon owns Nostr relay connections, encrypted DM handling, signing keys, and message routing.
 
-> **Current state:** This repository contains planning and architecture documentation only. No source code, build files, or tests exist yet. Treat the conventions below as the intended design extracted from `docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md` and the architecture deep dives.
+> **Current state:** Active implementation. The daemon, admin CLI, JSON-RPC transports, SQLite persistence, NIP-46 signing, handler dispatch, and bot project scaffolding are all implemented. The crate is currently at version **0.4.0**. See `CHANGELOG.md` for release history and `docs/plans/` for upcoming work.
 
 ## Architecture & Data Flow
 
@@ -12,13 +12,24 @@
 pacto-bot-api daemon (Rust/Tokio)
 ├── ClientManager      # one BotState per configured bot identity
 ├── HandlerRegistry    # active handler_id → connection + capabilities
-├── Event Dispatch     # fan-out by event type + bot npub
+├── Dispatch           # fan-out by event type + bot npub
 ├── Transport Layer
 │   ├── Unix socket    # $DATA_DIR/pacto-bot-api.sock, 0o600
 │   └── localhost HTTP # 127.0.0.1:9800, X-Pacto-Bot-Secret
 ├── nostr-sdk Client   # shared relay pool + subscriptions
 ├── NIP-46 bunkers     # one signing connection per bot identity
-└── SQLite (rusqlite)  # $DATA_DIR/agent.db — cursors, handlers, config
+└── SQLite (rusqlite)  # $DATA_DIR/agent.db — cursors, handlers, config, diagnostics
+
+pacto-bot-admin CLI
+├── new                # create bot identity; --scaffold generates a handler project
+├── scaffold           # scaffold a handler project for an existing bot identity
+├── publish-profile    # publish kind:0 metadata
+├── test-bunker        # verify bunker connectivity and npub match
+├── export / import    # move daemon-local state between data dirs
+├── validate-config
+├── rotate-http-token
+├── diagnose / status
+└── --llm-help         # print the generated operator guide
 ```
 
 **Flow:**
@@ -27,18 +38,29 @@ pacto-bot-api daemon (Rust/Tokio)
 3. Incoming `kind:1059` gift wraps are decrypted and forwarded as `agent.event` notifications to matching handlers.
 4. Handlers reply via `agent.send_dm` / `agent.set_profile` / `agent.error`; the daemon verifies capabilities per-call, encrypts/wraps, and publishes.
 
-Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon never creates or deletes bot identities; `pacto-bot-admin` creates keys, publishes profiles, tests bunkers, and exports/imports state.
+Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon never creates or deletes bot identities; `pacto-bot-admin` creates keys, publishes profiles, tests bunkers, scaffolds handler projects, and exports/imports state.
 
 ## Key Directories
 
 | Path | Purpose |
 |------|---------|
-| `docs/` | Architecture research, implementation plans, and ecosystem setup guides. |
+| `src/` | Daemon, admin CLI, transports, dispatch, persistence, signer, diagnostics, and scaffold generator. |
+| `src/transport/` | JSON-RPC framing, Unix socket, and HTTP transports. |
+| `src/scaffold/` | Template-driven bot project generator used by `pacto-bot-admin new --scaffold` and `scaffold`. |
+| `src/*_generated.rs` | Rust types generated from `schemas/` by `cargo xtask codegen`. Do not hand-edit. |
+| `tests/` | In-process integration tests, mock relay/bunker support, fixtures, and contract tests. |
+| `tests/support/` | Shared mock relay, mock bunker, secret scanner, and test helpers. |
+| `schemas/` | Canonical JSON Schema/OpenRPC contracts; source of truth for generated types. |
+| `xtask/` | Build/task runner (`codegen`, `docs`, `coverage`, `secret-lint`, `dev-env-probe`). |
+| `templates/python/` | Python handler project templates used by the scaffold generator. |
+| `examples/` | Reference Python bots using the seed/generated SDK and manifest-driven contract tests. |
+| `python/` | Generated Python SDK (Pydantic models, `PactoClient`, `Bot` API) produced from `schemas/jsonrpc.json`. |
+| `skills/python-pacto-bot/` | Claude Code / Cursor / Oh My Pi skill for SDK-aware bot authoring. |
+| `scripts/` | Release install script, packaging script, and pre-commit hook. |
+| `.github/workflows/` | CI and release automation. |
+| `docs/` | Architecture research, implementation plans, setup guides, and the generated `pacto-bot-admin-llms.txt`. |
 | `docs/plans/` | Formal feature plans and security reviews. |
-| `src/` | Not present yet. Will contain the daemon, `ClientManager`, transports, and persistence. |
-| `tests/` | Not present yet. Will contain in-process mock relay/bunker integration tests. |
-| `schemas/` | Not present yet. Will contain canonical JSON Schema/OpenRPC contracts. |
-| `xtask/` | Not present yet. Planned build/task runner (`cargo xtask codegen`). |
+| `data/` | Default runtime data directory (gitignored). |
 
 ## Development Commands
 
@@ -54,9 +76,12 @@ cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml --data-dir ./data
 
 # Run the admin CLI
 cargo run --bin pacto-bot-admin -- new my-bot
+cargo run --bin pacto-bot-admin -- new --scaffold my-bot --backend nsec --relays ws://localhost:7000 --commands echo
+cargo run --bin pacto-bot-admin -- scaffold my-bot --commands echo
 cargo run --bin pacto-bot-admin -- publish-profile my-bot
 cargo run --bin pacto-bot-admin -- test-bunker my-bot
 cargo run --bin pacto-bot-admin -- diagnose --format json
+cargo run --bin pacto-bot-admin -- status --format json
 
 # Default test suite (in-process mocks, no Docker)
 cargo test
@@ -64,13 +89,26 @@ cargo test
 # Gated integration tests against pacto-dev-env (Docker)
 cargo test -- --ignored
 
-# Codegen / full verification
+# Regenerate Rust types from schemas/
 cargo xtask codegen
+
+# Regenerate the LLM operator guide
+cargo xtask docs
+
+# Cross-compilation (requires zig + cargo-zigbuild)
+make cross-compile-macos   # macOS x86_64 + arm64
+make cross-compile-linux   # Linux x86_64 + arm64 musl
+make cross-compile-windows # Windows x86_64
+make cross-compile-freebsd # FreeBSD x86_64
+make package               # build and package all release artifacts
+
+# Other helpers
+make coverage
+make deny
+make install-hooks
 ```
 
-**Always run `make validate` before committing.** It runs `cargo fmt --check`,
-`cargo clippy`, and the full test suite. Do not commit code that fails this
-gate.
+**Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the full test suite. Do not commit code that fails this gate.
 
 Ecosystem-wide setup for local services (relay, EVM testnet, bunker):
 
@@ -83,59 +121,76 @@ docker compose --profile bunker up -d --build
 ## Code Conventions & Common Patterns
 
 ### Language & style
-- Rust with Tokio async runtime.
+- Rust with Tokio async runtime; edition 2024; MSRV 1.96.
 - Use `snake_case` for JSON-RPC method/field names; Rust structs use `PascalCase` with `serde(rename_all = "snake_case")`.
 - Two binary targets: `pacto-bot-api` (daemon) and `pacto-bot-admin` (CLI).
+- Generated Rust types live in `src/*_generated.rs` and are produced from `schemas/` by `cargo xtask codegen`. Do not hand-edit generated files.
 
 ### Error handling
 - Use standard Rust `Result` propagation; avoid panics for operational errors (config validation, relay failure, bunker mismatch).
 - Errors returned to handlers are JSON-RPC 2.0 error objects; secrets must never appear in error messages.
+- Custom lint group in `Cargo.toml` denies `unwrap_used`, `expect_used`, `panic`, and `disallowed_names` (e.g., `foo`, `bar`, `baz` placeholders) across non-test code.
 
 ### Secrets & cryptography
 - Represent nsec, bunker URIs, and the HTTP secret token with `secrecy::SecretString` or `zeroize::Zeroizing`.
 - `nsec` backend clears key material on drop with `zeroize`; still treated as dev-only.
 - Never log secrets, config signing material, or the HTTP token.
+- Config files and runtime secret files must be `0o600` or stricter; the daemon and CLI enforce this.
 
 ### Async & state management
 - `ClientManager` owns per-bot `BotState` (npub, relay subscriptions, bunker connection).
 - `HandlerRegistry` owns active registrations and routing.
-- SQLite in WAL mode persists cursors, handler registrations, and config; cursor advancement waits for terminal handler responses or dispatch timeout.
+- SQLite in WAL mode persists cursors, handler registrations, diagnostics, and config; cursor advancement waits for terminal handler responses or dispatch timeout.
 
 ### Dependency injection
-- Plan favors constructor injection for testability. Mock relay and mock bunker implementations live in `tests/support/` for the default test suite.
+- Constructor injection for testability. Mock relay and mock bunker implementations live in `tests/support/` for the default test suite.
 
 ### Capability & authorization
 - Handlers register for specific bot identities and capabilities.
 - Every mutating call (`agent.send_dm`, `agent.set_profile`, `agent.error`) is authorized against the registration, not just at connection time.
 
+### Generated code workflow
+- `schemas/` is the source of truth. Run `cargo xtask codegen` to regenerate `src/*_generated.rs`.
+- `tests/schema_sync.rs` enforces that generated files are in sync with schemas; CI fails if they drift.
+
 ## Important Files
 
 | File | Purpose |
 |------|---------|
+| `Cargo.toml` | Package manifest, workspace definition, lints, and dependency set. Current version is 0.4.0. |
+| `Makefile` | Development shortcuts including validation, cross-compilation, packaging, and hooks. |
+| `pacto-bot-api.toml` | Runtime daemon config (gitignored in production; example in repo root or docs). |
+| `README.md` | Operator-facing quickstart and installation guide. |
+| `CHANGELOG.md` | Release history and unreleased changes. |
+| `docs/pacto-bot-admin-llms.txt` | Generated LLM-readable operator guide; regenerate with `cargo xtask docs`. |
 | `docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md` | Primary implementation plan: requirements, architecture, JSON-RPC catalog, config schema, security invariants. |
 | `docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-executive-summary.md` | High-level concept and Phase 1 scope. |
 | `docs/plans/2026-06-24-001-security-review-findings.md` | Security findings and resolutions. |
+| `docs/plans/2026-06-30-001-feat-bot-scaffold-plan.md` | Plan for the `pacto-bot-admin` bot project scaffold generator. |
 | `docs/GETTING_STARTED.md` | Ecosystem-wide local dev setup. |
-| `docs/pacto-bot-architecture-deep-dive.md` | Background on Pacto backend and why the daemon is needed. |
-| `docs/pacto-bot-architecture-deep-dive-2.md` | Predecessor design for `pacto-agent`/daemon. |
-| `pacto-bot-api.toml` (planned) | Bot identity and capability config; must be `0o600` or stricter. |
-| `$DATA_DIR/agent.db` (planned) | SQLite persistence. |
-| `$DATA_DIR/daemon.lock` (planned) | Exclusive lock preventing concurrent daemon instances. |
-| `$DATA_DIR/bot_secret_token` (planned) | 256-bit hex HTTP secret (`0o600`). |
+| `docs/security-overview.md` | Security model and threat considerations. |
+| `docs/key-and-secret-security.md` | Key handling and secret hygiene. |
+| `schemas/jsonrpc.json` | OpenRPC/JSON Schema contract for handler-facing methods. |
+| `schemas/config.json` | JSON Schema for `pacto-bot-api.toml`. |
+| `schemas/example-manifest.json` | Manifest for validating example Python bots. |
+| `$DATA_DIR/agent.db` | SQLite persistence. |
+| `$DATA_DIR/daemon.lock` | Exclusive lock preventing concurrent daemon instances. |
+| `$DATA_DIR/bot_secret_token` | 256-bit hex HTTP secret (`0o600`). |
 
 ## Runtime/Tooling Preferences
 
 - **Language:** Rust.
-- **Build tool:** Cargo; standalone crate, not a member of the Pacto workspace.
+- **Build tool:** Cargo; standalone crate with `xtask` workspace member.
 - **Async runtime:** Tokio.
-- **HTTP framework:** axum (for the optional localhost HTTP transport).
+- **HTTP framework:** axum (optional localhost HTTP transport).
 - **Persistence:** SQLite via `rusqlite` (bundled), WAL mode.
 - **Logging:** `tracing` / `tracing-subscriber`.
 - **CLI:** `clap`.
-- **Planned key dependencies:** `nostr-sdk` 0.43, `tokio`, `serde`/`serde_json`, `rusqlite`, `toml`, `axum`, `tokio-util`, `tracing`, `clap`, `zeroize`, `uuid`, `secrecy`.
-- **Dev/test tools:** `schemars`, `jsonschema`, `proptest`, `cargo-deny`.
+- **Key runtime dependencies:** `nostr-sdk` 0.43, `tokio`, `serde`/`serde_json`, `rusqlite`, `toml`, `axum`, `tokio-util`, `tracing`, `clap`, `zeroize`, `uuid`, `secrecy`, `thiserror`, `chrono`, `fs2`, `tokio-tungstenite`, `hex`, `bech32`, `subtle`, `reqwest`.
+- **Dev/test tools:** `schemars`, `jsonschema`, `proptest`, `assert_cmd`, `predicates`, `parking_lot`, `nix`, `futures`, `syn`, `quote`.
 - **External services required for integration testing:** local Nostr relay (`ws://localhost:7000`), local Anvil EVM node (`http://localhost:8545`), optional NIP-46 bunker.
-- **No Node.js in this crate.** The broader Pacto ecosystem uses pnpm/Node 20, but the daemon is Rust-only.
+- **Packaging:** `cargo-zigbuild` for cross-compilation, Docker multi-stage image, GHCR publish via CI, `scripts/package-release.sh` for tar/zip + SHA-256 artifacts.
+- **No Node.js in this crate.** The broader Pacto ecosystem uses pnpm/Node 20, but the daemon is Rust-only. The Python SDK and examples use Python 3.
 
 ## Testing & QA
 
@@ -145,7 +200,7 @@ docker compose --profile bunker up -d --build
 - **Schema sync:** `schemas/` JSON Schema/OpenRPC artifacts are canonical; CI enforces that generated Rust types stay in sync.
 - **Secret-redaction suite:** dedicated tests inject synthetic secrets into every log sink, error path, and binary string, asserting no leakage.
 - **Requirement traceability:** plan references requirements R1–R37; changes should update traced coverage where the project enforces it.
-- **Linting:** clippy (with custom lints forbidding plain strings for secrets) and `cargo-deny` for audit gates.
+- **Linting:** clippy (with custom lints forbidding plain strings for secrets, `unwrap`, `expect`, and `panic` in production code) and `cargo-deny` for audit gates.
 
 ## Agent Skills
 
@@ -175,7 +230,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 | `cargo-nextest` | `laurigates/claude-plugins` | Fast, structured test runs with `cargo nextest` |
 | `ce-compound` | `everyinc/compound-engineering-plugin` | Document solved problems and project vocabulary in `docs/solutions/` |
 | `ce-compound-refresh` | `everyinc/compound-engineering-plugin` | Audit and refresh stale learnings against the codebase |
-| `python-pacto-bot` | `project-local` | Write Python bots for `pacto-bot-api` using the generated SDK |
+| `python-pacto-bot` | `project-local` | Write Python bots for `pacto-bot-api` using the generated SDK; directs new projects to `pacto-bot-admin new --scaffold` |
 
 ### Security note
 
@@ -183,11 +238,13 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 
 ## Notes for AI Assistants
 
-- Do not assume a `src/` directory exists yet. Before editing code, verify whether scaffolding has been created.
+- `src/` and `tests/` exist. Use `grep` and `ast_grep` to find code; do not assume the repo is planning-only.
 - **Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the full test suite. Do not commit code that fails this gate.
-- Respect the planned separation of concerns: runtime logic belongs in the daemon, lifecycle/identity operations belong in `pacto-bot-admin`.
+- Respect the planned separation of concerns: runtime logic belongs in the daemon, lifecycle/identity operations belong in `pacto-bot-admin`, and bot authoring belongs in the Python SDK / scaffold generator.
 - When generating config examples, enforce `0o600` permissions and warn against committing real nsec values.
 - Prefer deterministic, Docker-free tests; gate external-service tests behind `#[ignore]`.
+- Do not hand-edit `src/*_generated.rs` files; update `schemas/` and run `cargo xtask codegen` instead.
+- When adding new admin CLI commands, include per-command `after_help` examples and update `docs/pacto-bot-admin-llms.txt` via `cargo xtask docs`.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

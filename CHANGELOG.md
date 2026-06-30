@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-30
+
+### Added
+
+- `pacto-bot-admin new --scaffold` now generates self-contained Python handler projects:
+  - Project-level `README.md`, `AGENTS.md`, and per-bot `AGENTS.md` for agent-friendly onboarding.
+  - Vendored Python SDK source under `sdk/` plus a built wheel available inside containers.
+  - Copy of the `python-pacto-bot` skill under `skills/python-pacto-bot/`.
+  - `.gitignore` and `.dockerignore` templates to keep `pacto-bot-api.toml` and other secrets out of git and Docker contexts.
+- `--project-name` flag for `pacto-bot-admin new --scaffold` as a convenience alias for `--project-dir`.
+- `--http` flag for scaffolded bots that call external HTTP APIs.
+- `manifest.json` contract harness for scaffolded projects.
+- `parse_command` export, `reply_on_error` helper, and optional HTTP dependencies in the Python SDK.
+
+### Changed
+
+- Default scaffold project directory changed from `<bot-id>` to `<bot-id>-project`, so generated bots live at `<project-dir>/bots/<bot-id>/` instead of the confusing `<bot-id>/bots/<bot-id>/`.
+- Generated bot template now includes a `_command_args(event)` helper and subcommand dispatch guidance.
+- Generated `docker-compose.yml` uses a single bot service with `bot-only` and `full` profiles instead of separate per-bot services.
+- Dockerfile and compose build from the project root so the local SDK wheel is available inside containers.
+- `python-pacto-bot` skill synced with SDK and scaffold updates.
+
+### Fixed
+
+- Scaffold template extraction no longer double-nests `include_dir` root-relative paths under the language directory.
+- Template-tree recursion now uses the correct subtree and target directory.
+- Removed redundant `force-include` from `python/pyproject.toml` that broke SDK wheel builds.
+
 ## [0.3.0] - 2026-06-30
 
 ### Added
@@ -117,7 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/covenant-gov/pacto-bot-api/releases/tag/v0.1.0
