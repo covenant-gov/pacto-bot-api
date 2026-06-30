@@ -441,7 +441,11 @@ fn cmd_new(
         }
     };
 
-    let scaffold = if interactive { params.scaffold } else { scaffold };
+    let scaffold = if interactive {
+        params.scaffold
+    } else {
+        scaffold
+    };
     let project_dir: Option<&Path> = if interactive {
         params.project_dir.as_deref()
     } else {
@@ -646,10 +650,7 @@ fn run_interactive_new() -> Result<NewBotParams, DaemonError> {
     let scaffold = prompt_yes_no("Scaffold a handler project?")?;
     let project_dir = if scaffold {
         let default = PathBuf::from(&bot_id);
-        let input = prompt_line(&format!(
-            "Project directory [{}]: ",
-            default.display()
-        ))?;
+        let input = prompt_line(&format!("Project directory [{}]: ", default.display()))?;
         let dir = if input.trim().is_empty() {
             default
         } else {
