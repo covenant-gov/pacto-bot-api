@@ -26,9 +26,9 @@ New bot developers currently copy and trim `examples/echo_bot.py` or `python/exa
 
 ### Generated project layout
 
-- R7. The generated project root contains `pacto-bot-api.toml`, `docker-compose.yml`, `README.md`, and a systemd unit file for host-daemon development (see origin: R7).
-- R8. In a single-bot project, the handler file and `Dockerfile` live at the project root (see origin: R8).
-- R9. In a multi-bot project, each bot lives under `bots/<bot-id>/` with its handler file and `Dockerfile`; the root compose file targets any subset of `bots/*` (see origin: R9).
+- R7. The generated project root contains `pacto-bot-api.toml` and `docker-compose.yml`. Each bot lives under `bots/<bot-id>/` with its handler file, `Dockerfile`, `README.md`, `pyproject.toml`, systemd unit, and optional test files (see origin: R7).
+- R8. All bots, including the first bot in a project, live under `bots/<bot-id>/` (see origin: R8).
+- R9. In a multi-bot project, additional `bots/<bot-id>/` subdirectories are added; the root `docker-compose.yml` targets any subset of `bots/*` (see origin: R9).
 - R10. The generated `README.md` explains how to run the bot against a host daemon and how to run the full compose stack (see origin: R10).
 - R11. The generated `pacto-bot-api.toml` references the scaffolded bot identity with the relays and capabilities collected during the command (see origin: R11).
 
@@ -180,7 +180,7 @@ The scaffold generator is a new module invoked from `src/admin.rs`. It takes a `
 
 - AE1. Covers R1, R7, R16, R17.
   - **Given:** A user runs `pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo`.
-  - **Then:** A directory `echo-bot/` is created containing `pacto-bot-api.toml` (mode `0o600`), `echo_bot.py` with `@bot.command("/echo")`, `Dockerfile`, `docker-compose.yml`, `README.md`, and a systemd unit. The config contains a generated `[[bots]]` entry for `echo-bot`.
+  - **Then:** A directory `echo-bot/` is created containing `pacto-bot-api.toml` (mode `0o600`) and `docker-compose.yml` at the project root. The bot handler lives under `bots/echo-bot/` as `echo_bot.py` with `@bot.command("/echo")`, alongside a `Dockerfile`, `README.md`, `pyproject.toml`, and a systemd unit. The config contains a generated `[[bots]]` entry for `echo-bot`.
 
 - AE2. Covers R2, R22, R23.
   - **Given:** A user runs `pacto-bot-admin scaffold existing-bot` and `bots/existing-bot/` already exists.

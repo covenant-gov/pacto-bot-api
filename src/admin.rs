@@ -198,7 +198,7 @@ enum Command {
         uri: Option<String>,
 
         /// Also scaffold a handler project for the new bot.
-        #[arg(long, value_name = "SCAFFOLD")]
+        #[arg(long)]
         scaffold: bool,
 
         /// Language for the generated handler project.
@@ -210,11 +210,11 @@ enum Command {
         commands: Vec<String>,
 
         /// Skip generating pytest files for `new --scaffold`.
-        #[arg(long, value_name = "NO_TESTS")]
+        #[arg(long)]
         no_tests: bool,
 
         /// Overwrite existing files without prompting.
-        #[arg(long, value_name = "FORCE")]
+        #[arg(long)]
         force: bool,
 
         /// Project directory (default: `\u003cbot-id\u003e/` for new --scaffold, current dir for scaffold).
@@ -284,11 +284,11 @@ enum Command {
         commands: Vec<String>,
 
         /// Generate pytest files even when retrofitting an existing project.
-        #[arg(long, value_name = "WITH_TESTS")]
+        #[arg(long)]
         with_tests: bool,
 
         /// Overwrite existing files without prompting.
-        #[arg(long, value_name = "FORCE")]
+        #[arg(long)]
         force: bool,
 
         /// Project directory (default: current directory).
@@ -507,7 +507,7 @@ fn cmd_new(
 }
 
 async fn cmd_scaffold(
-    _config_path: &Path,
+    config_path: &Path,
     bot_id: &str,
     language: &str,
     commands: &[String],
@@ -523,7 +523,14 @@ async fn cmd_scaffold(
         .unwrap_or_else(|| PathBuf::from("."));
     let project_dir_display = project_dir.display().to_string();
 
-    let config = DaemonConfig::load(project_dir.join("pacto-bot-api.toml"))?;
+    // The global --config default is relative to CWD. For the scaffold
+    // subcommand the natural default is the config inside --project-dir.
+    let config_path = if config_path == Path::new("pacto-bot-api.toml") {
+        project_dir.join("pacto-bot-api.toml")
+    } else {
+        config_path.to_path_buf()
+    };
+    let config = DaemonConfig::load(&config_path)?;
     let bot = find_bot(&config.bots, bot_id)?;
 
     scaffold::generate::run_scaffold(scaffold::generate::ScaffoldRequest {

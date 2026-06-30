@@ -32,8 +32,16 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     assert!(project_dir.join("bots").join("echo-bot").join("echo_bot.py").is_file());
     assert!(project_dir.join("bots").join("echo-bot").join("Dockerfile").is_file());
     assert!(project_dir.join("docker-compose.yml").is_file());
-    assert!(project_dir.join("README.md").is_file());
-    assert!(project_dir.join("systemd.service").is_file());
+    assert!(project_dir
+        .join("bots")
+        .join("echo-bot")
+        .join("README.md")
+        .is_file());
+    assert!(project_dir
+        .join("bots")
+        .join("echo-bot")
+        .join("systemd.service")
+        .is_file());
     assert!(project_dir.join("bots").join("echo-bot").join("pyproject.toml").is_file());
     assert!(project_dir
         .join("bots")
@@ -64,7 +72,8 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     )?;
     assert!(dockerfile.contains("python:3.14-slim"));
 
-    let readme = fs::read_to_string(project_dir.join("README.md"))?;
+    let readme =
+        fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(readme.contains("echo-bot"));
     assert!(!readme.contains("nsec1"));
 
@@ -276,7 +285,13 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
     ]);
     cmd.assert().success();
 
-    fs::write(project_dir.join("README.md"), "# custom readme\n")?;
+    fs::write(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("README.md"),
+        "# custom readme\n",
+    )?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([
@@ -288,7 +303,8 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
     ]);
     cmd.assert().success();
 
-    let readme = fs::read_to_string(project_dir.join("README.md"))?;
+    let readme =
+        fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(!readme.contains("# custom readme"));
 
     let config = fs::read_to_string(project_dir.join("pacto-bot-api.toml"))?;

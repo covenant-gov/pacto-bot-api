@@ -2,7 +2,7 @@ name: {{bot_id}}
 
 services:
   {{bot_id}}:
-    build: .
+    build: ./bots/{{bot_id}}
     profiles:
       - bot-only
     environment:
@@ -15,7 +15,7 @@ services:
         read_only: true
 
   {{bot_id}}-full:
-    build: .
+    build: ./bots/{{bot_id}}
     profiles:
       - full
     environment:

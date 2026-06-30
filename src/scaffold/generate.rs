@@ -2,6 +2,7 @@
 
 use crate::scaffold::safety::{OverwritePolicy, WriteDecision, decide_write, set_config_permissions};
 use crate::scaffold::template::{Template, Value as TemplateValue};
+use include_dir::{Dir, include_dir};
 use pacto_bot_api::config::BotConfig;
 use pacto_bot_api::errors::DaemonError;
 use secrecy::ExposeSecret;
@@ -10,6 +11,39 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+/// Templates embedded at compile time so the binary works after `cargo install`
+/// or when distributed without the source `templates/` directory.
+static TEMPLATES_DIR: Dir<'static> = include_dir!("templates");
+
+/// Lazily extracted copy of the embedded templates on disk.
+///
+/// Embedded templates are stored in the binary, but the existing template
+/// rendering code expects a filesystem directory. A one-time extraction to a
+/// temporary directory bridges the two without restructuring the renderer.
+static EMBEDDED_TEMPLATES: LazyLock<Result<tempfile::TempDir, String>> =
+    LazyLock::new(|| {
+        let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
+        extract_embedded_dir(&TEMPLATES_DIR, temp.path())
+            .map_err(|e| e.to_string())?;
+        Ok(temp)
+    });
+
+fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    for file in dir.files() {
+        let target = dest.join(file.path());
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(target, file.contents()).map_err(|e| e.to_string())?;
+    }
+    for subdir in dir.dirs() {
+        extract_embedded_dir(subdir, &dest.join(subdir.path()))?;
+    }
+    Ok(())
+}
 
 /// What kind of scaffold invocation is running.
 #[derive(Debug, Clone)]
@@ -104,9 +138,9 @@ fn validate_commands(commands: &[String]) -> Result<(), DaemonError> {
                 "command names must not be empty".into(),
             ));
         }
-        if !cmd.chars().all(|c| c.is_ascii_lowercase() || c == '_' || c == '-') {
+        if !cmd.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
             return Err(DaemonError::Config(format!(
-                "invalid command name '{cmd}': use lowercase letters, underscores, or hyphens"
+                "invalid command name '{cmd}': use lowercase letters or underscores only"
             )));
         }
     }
@@ -132,6 +166,20 @@ fn template_dir_for_language(language: &str) -> Result<PathBuf, DaemonError> {
     // Fallback to the current working directory.
     if relative.is_dir() {
         return Ok(relative);
+    }
+
+    // Final fallback: templates embedded at compile time.
+    let embedded = match EMBEDDED_TEMPLATES.as_ref() {
+        Ok(temp) => temp,
+        Err(e) => {
+            return Err(DaemonError::Config(format!(
+                "embedded templates unavailable: {e}"
+            )));
+        }
+    };
+    let candidate = embedded.path().join(language);
+    if candidate.is_dir() {
+        return Ok(candidate);
     }
 
     Err(DaemonError::Config(format!(
@@ -318,21 +366,6 @@ fn render_templates(
         denylist,
     )?;
 
-    // Shared project-root files (except docker-compose.yml, which is managed
-    // by append_compose_services) are rendered once at the project root.
-    for name in ["README.md", "systemd.service"] {
-        let source = template_dir.join(name);
-        if source.is_file() {
-            render_template_file(
-                &source,
-                &project_dir.join(name),
-                context,
-                policy,
-                denylist,
-            )?;
-        }
-    }
-
     Ok(())
 }
 
@@ -353,12 +386,9 @@ fn render_template_tree(
             continue;
         }
 
-        // Root-level shared files are handled separately.
-        if current == template_dir
-            && (file_name == "docker-compose.yml"
-                || file_name == "README.md"
-                || file_name == "systemd.service")
-        {
+        // docker-compose.yml is handled separately so services can be merged
+        // when scaffolding additional bots into an existing project.
+        if current == template_dir && file_name == "docker-compose.yml" {
             continue;
         }
 
@@ -584,6 +614,10 @@ fn prompt_overwrite(path: &Path) -> Result<bool, DaemonError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::expect_used)]
+    #![allow(clippy::panic)]
+
     use super::*;
     use pacto_bot_api::config::{BotConfig, SigningConfig};
     use secrecy::SecretString;
@@ -599,6 +633,7 @@ mod tests {
         assert!(validate_commands(&["echo".to_string(), "help_me".to_string()]).is_ok());
         assert!(validate_commands(&["Echo".to_string()]).is_err());
         assert!(validate_commands(&["echo!".to_string()]).is_err());
+        assert!(validate_commands(&["help-me".to_string()]).is_err());
     }
 
     #[test]

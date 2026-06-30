@@ -102,9 +102,12 @@ pub fn set_config_permissions(path: &Path) -> Result<(), DaemonError> {
     }
 }
 
-/// Returns true if `path` exists and contains a populated `[[bots]]` TOML
-/// array.
+/// Returns true if `path` is a `pacto-bot-api.toml` file that exists and
+/// contains a populated `[[bots]]` TOML array.
 pub fn is_populated_config(path: &Path) -> bool {
+    if path.file_name() != Some(std::ffi::OsStr::new("pacto-bot-api.toml")) {
+        return false;
+    }
     if !path.exists() {
         return false;
     }
@@ -148,6 +151,10 @@ fn set_test_tty(enabled: bool) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::expect_used)]
+    #![allow(clippy::panic)]
+
     use super::*;
     use std::io::Write;
 
@@ -239,7 +246,9 @@ mod tests {
 
     #[test]
     fn populated_config_returns_abort() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        let mut file = fs::File::create(&path).unwrap();
         writeln!(file, "[[bots]]").unwrap();
         let policy = OverwritePolicy {
                     force: true,
@@ -247,7 +256,7 @@ mod tests {
                     skip_existing: false,
                 };
 
-        let err = decide_write(file.path(), &policy, &[], &mut |_| Ok(true)).unwrap_err();
+        let err = decide_write(&path, &policy, &[], &mut |_| Ok(true)).unwrap_err();
 
         assert!(
             err.to_string()

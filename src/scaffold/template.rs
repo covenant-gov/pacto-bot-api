@@ -316,6 +316,10 @@ impl Template {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::expect_used)]
+    #![allow(clippy::panic)]
+
     use super::*;
 
     fn render(raw: &str, ctx: HashMap<String, Value>) -> String {
