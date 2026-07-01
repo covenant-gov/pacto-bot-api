@@ -74,12 +74,35 @@ From the project root:
 docker compose --profile full up --build
 ```
 
-This starts the bot, the `pacto-bot-api` daemon, and a bunker signer. The
-daemon container publishes its Unix socket at `/run/pacto-bot-api.sock` on the
-host so the single bot service can use it for both `full` and `bot-only`
-profiles. Make sure the host path is writable by the container (for example,
-by pre-creating the socket with ownership that matches the `pacto` user inside
-the daemon image, uid 1000) or the daemon will fail to bind.
+This starts the bot, the `pacto-bot-api` daemon, a local Nostr relay, and the
+NIP-46 bunker signer. The daemon container publishes its Unix socket at
+`/run/pacto-bot-api.sock` on the host so the single bot service can use it for
+both `full` and `bot-only` profiles. Make sure the host path is writable by the
+container (for example, by pre-creating the socket with ownership that matches
+the `pacto` user inside the daemon image, uid 1000) or the daemon will fail to
+bind.
+
+### Images required for the full stack
+
+The daemon image is pulled from `ghcr.io/logicminds/pacto-bot-api:latest`. The
+relay and bunker images are pulled from the `pacto-dev-env` GHCR repository:
+`ghcr.io/covenant-gov/pacto-dev-env/nostr-relay:main` and
+`ghcr.io/covenant-gov/pacto-dev-env/nip46-bunker:main`.
+
+These images are built automatically by the `Release container images` workflow
+in `covenant-gov/pacto-dev-env`. If the packages are private, ask a repository
+admin to make them public in GitHub Container Registry settings before pulling.
+
+## Run a local relay for testing
+
+From the project root:
+
+```bash
+docker compose --profile relay up --build
+```
+
+This starts only the Nostr relay on `ws://localhost:7000`. Use it when you want
+to test the bot against a live relay without bringing up the full stack.
 
 ## Host-daemon development with compose
 

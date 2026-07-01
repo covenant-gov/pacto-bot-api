@@ -92,6 +92,40 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
         fs::read_to_string(project_dir.join("bots").join("echo-bot").join("Dockerfile"))?;
     assert!(dockerfile.contains("python:3.14-slim"));
 
+    assert!(
+        project_dir.join("docker").join("README.md").is_file(),
+        "project docker support README must exist"
+    );
+    assert!(
+        project_dir
+            .join("docker")
+            .join("relay-config.toml")
+            .is_file(),
+        "project placeholder relay config must exist"
+    );
+
+    let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
+    assert!(
+        compose.contains("ghcr.io/logicminds/pacto-bot-api:latest"),
+        "daemon image must be the published logicminds image"
+    );
+    assert!(
+        compose.contains("nip46-bunker"),
+        "compose must include the NIP-46 bunker service"
+    );
+    assert!(
+        compose.contains("nostr-relay"),
+        "compose must include the Nostr relay service"
+    );
+    assert!(
+        compose.contains("./pacto-bot-api.toml:/etc/pacto/pacto-bot-api.toml:ro"),
+        "daemon must mount the generated config"
+    );
+    assert!(
+        !compose.contains("pacto/pacto-bunker"),
+        "compose must not reference the non-existent bunker image"
+    );
+
     let readme = fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(readme.contains("echo-bot"));
     assert!(!readme.contains("nsec1"));
