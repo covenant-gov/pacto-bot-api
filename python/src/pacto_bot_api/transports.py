@@ -116,9 +116,25 @@ class UnixTransport:
         return f"unix:{self.socket_path}"
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.open_unix_connection(
-            self.socket_path
-        )
+        socket_path = Path(self.socket_path)
+        if not socket_path.exists():
+            raise ConnectionError(
+                "Cannot connect to pacto-bot-api daemon: "
+                f"Unix socket not found at {self.socket_path}.\n"
+                "Is the daemon running? If you are using the `bot-only` Docker profile, "
+                "start the daemon on the host first, or switch to the `full` profile."
+            )
+        try:
+            self._reader, self._writer = await asyncio.open_unix_connection(
+                self.socket_path
+            )
+        except OSError as exc:
+            raise ConnectionError(
+                "Cannot connect to pacto-bot-api daemon: "
+                f"failed to open Unix socket at {self.socket_path}: {exc}.\n"
+                "Is the daemon running? If you are using the `bot-only` Docker profile, "
+                "start the daemon on the host first, or switch to the `full` profile."
+            ) from exc
 
     async def readline(self) -> str:
         if self._reader is None:
@@ -189,9 +205,18 @@ class HttpTransport:
         if not self.handler_id:
             raise RuntimeError("handler_id required before starting SSE")
 
-        self._sse_reader, self._sse_writer = await asyncio.open_connection(
-            self.host, self.port
-        )
+        try:
+            self._sse_reader, self._sse_writer = await asyncio.open_connection(
+                self.host, self.port
+            )
+        except OSError as exc:
+            raise ConnectionError(
+                "Cannot connect to pacto-bot-api daemon via HTTP "
+                f"at {self.name}: {exc}.\n"
+                "Is the daemon running and reachable? "
+                "Verify $PACTO_HTTP_BIND and that the daemon is listening."
+            ) from exc
+
         request = (
             f"GET /events?handler_id={self.handler_id} HTTP/1.1\r\n"
             f"Host: {self.host}:{self.port}\r\n"
@@ -207,7 +232,12 @@ class HttpTransport:
         while True:
             line = await self._sse_reader.readline()
             if not line:
-                raise ConnectionError("SSE connection closed while reading headers")
+                raise ConnectionError(
+                    "Cannot connect to pacto-bot-api daemon via HTTP "
+                    f"at {self.name}: SSE connection closed while reading headers.\n"
+                    "Is the daemon running and reachable? "
+                    "Verify $PACTO_HTTP_BIND and that the daemon is listening."
+                )
             line_str = line.decode("utf-8").rstrip("\r\n")
             if line_str == "":
                 break
@@ -215,7 +245,12 @@ class HttpTransport:
                 status = line_str
 
         if not status or not status.startswith("HTTP/1.1 200"):
-            raise ConnectionError(f"SSE request failed: {status}")
+            raise ConnectionError(
+                "Cannot connect to pacto-bot-api daemon via HTTP "
+                f"at {self.name}: SSE request failed: {status}.\n"
+                "Is the daemon running and reachable? "
+                "Verify $PACTO_HTTP_BIND and that the daemon is listening."
+            )
 
     async def readline(self) -> str:
         while self._sse_reader is None and not self._closed:

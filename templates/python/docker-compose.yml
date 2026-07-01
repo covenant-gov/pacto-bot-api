@@ -17,9 +17,6 @@ services:
         target: /run/pacto-bot-api.sock
         read_only: true
     restart: on-failure
-    depends_on:
-      daemon:
-        condition: service_started
 
   daemon:
     image: ghcr.io/logicminds/pacto-bot-api:latest

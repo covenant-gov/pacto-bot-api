@@ -59,19 +59,22 @@ class FakeStreamWriter:
 
 
 @pytest.mark.asyncio
-async def test_unix_transport_connect_and_roundtrip(monkeypatch):
+async def test_unix_transport_connect_and_roundtrip(tmp_path, monkeypatch):
     reader = FakeStreamReader(['{"method":"agent.status","params":{"state":"ok"}}\n'])
     writer = FakeStreamWriter()
 
+    socket_file = tmp_path / "pacto.sock"
+    socket_file.touch()
+
     async def fake_open_unix_connection(path: str):
-        assert path == "/tmp/pacto.sock"
+        assert path == str(socket_file)
         return reader, writer
 
     monkeypatch.setattr(
         asyncio, "open_unix_connection", fake_open_unix_connection
     )
 
-    transport = UnixTransport("/tmp/pacto.sock")
+    transport = UnixTransport(str(socket_file))
     await transport.connect()
 
     line = await transport.readline()
@@ -89,6 +92,35 @@ async def test_unix_transport_connect_and_roundtrip(monkeypatch):
 
     await transport.close()
     assert writer.closed
+
+
+@pytest.mark.asyncio
+async def test_unix_transport_missing_socket_raises_connection_error():
+    transport = UnixTransport("/nonexistent/pacto-bot-api.sock")
+    with pytest.raises(ConnectionError) as exc_info:
+        await transport.connect()
+    message = str(exc_info.value)
+    assert "Cannot connect to pacto-bot-api daemon" in message
+    assert "/nonexistent/pacto-bot-api.sock" in message
+    assert "Is the daemon running?" in message
+    assert "bot-only" in message
+
+
+@pytest.mark.asyncio
+async def test_unix_transport_open_error_raises_connection_error(monkeypatch):
+    async def fake_open_unix_connection(_path: str):
+        raise ConnectionRefusedError("Permission denied")
+
+    monkeypatch.setattr(asyncio, "open_unix_connection", fake_open_unix_connection)
+
+    # Use a path that exists so the existence check passes.
+    transport = UnixTransport(__file__)
+    with pytest.raises(ConnectionError) as exc_info:
+        await transport.connect()
+    message = str(exc_info.value)
+    assert "Cannot connect to pacto-bot-api daemon" in message
+    assert "failed to open Unix socket" in message
+    assert __file__ in message
 
 
 @pytest.mark.asyncio
@@ -254,6 +286,40 @@ async def test_http_transport_sse_parses_data_lines(mock_http_connection):
         "method": "agent.status",
         "params": {"state": "ok"},
     }
+
+
+@pytest.mark.asyncio
+async def test_http_transport_start_sse_connection_refused(monkeypatch):
+    async def fake_open_connection(_host: str, _port: int):
+        raise ConnectionRefusedError("Connection refused")
+
+    monkeypatch.setattr(asyncio, "open_connection", fake_open_connection)
+
+    transport = HttpTransport("127.0.0.1", 9800, "secret", handler_id="h-1")
+    await transport.connect()
+    with pytest.raises(ConnectionError) as exc_info:
+        await transport.start_sse()
+    message = str(exc_info.value)
+    assert "Cannot connect to pacto-bot-api daemon via HTTP" in message
+    assert "http://127.0.0.1:9800" in message
+    assert "Is the daemon running and reachable?" in message
+    assert "$PACTO_HTTP_BIND" in message
+
+
+@pytest.mark.asyncio
+async def test_http_transport_start_sse_non_200(mock_http_connection):
+    pair = mock_http_connection([
+        b"HTTP/1.1 401 Unauthorized\r\n",
+        b"\r\n",
+    ])
+    transport = HttpTransport("127.0.0.1", 9800, "secret", handler_id="h-1")
+    await transport.connect()
+    with pytest.raises(ConnectionError) as exc_info:
+        await transport.start_sse()
+    message = str(exc_info.value)
+    assert "Cannot connect to pacto-bot-api daemon via HTTP" in message
+    assert "http://127.0.0.1:9800" in message
+    assert "SSE request failed: HTTP/1.1 401 Unauthorized" in message
 
 
 @pytest.mark.asyncio

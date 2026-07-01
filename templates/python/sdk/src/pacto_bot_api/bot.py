@@ -224,7 +224,12 @@ class Bot:
         # Re-install signal handlers now that we have an event loop.
         self._install_signal_handlers()
 
-        await self._client.connect()
+        try:
+            await self._client.connect()
+        except (OSError, TimeoutError) as exc:
+            self._log(f"{exc}")
+            sys.exit(1)
+
         self._log(f"connected via {self._transport.name}")
 
         try:

@@ -232,6 +232,23 @@ def test_parse_command_is_exported():
     }
 
 
+def test_run_exits_cleanly_when_socket_missing(capsys, monkeypatch):
+    """Bot.run() fails fast with a clear message instead of a traceback."""
+    monkeypatch.delenv("PACTO_TRANSPORT", raising=False)
+    bot = Bot("test-bot", socket_path="/tmp/this-socket-does-not-exist-pacto.sock")
+
+    with pytest.raises(SystemExit) as exc_info:
+        bot.run([])
+
+    assert exc_info.value.code == 1
+    stderr = capsys.readouterr().err
+    assert "Cannot connect to pacto-bot-api daemon" in stderr
+    assert "Unix socket not found" in stderr
+    assert "/tmp/this-socket-does-not-exist-pacto.sock" in stderr
+    assert "Is the daemon running?" in stderr
+    assert "bot-only" in stderr
+
+
 @pytest.mark.asyncio
 async def test_handler_exception_replies_with_friendly_error_by_default(
     transport: MockTransport,
