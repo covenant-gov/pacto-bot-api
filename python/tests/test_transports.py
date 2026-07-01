@@ -103,7 +103,7 @@ async def test_unix_transport_missing_socket_raises_connection_error():
     assert "Cannot connect to pacto-bot-api daemon" in message
     assert "/nonexistent/pacto-bot-api.sock" in message
     assert "Is the daemon running?" in message
-    assert "bot-only" in message
+    assert "docker compose up --build" in message
 
 
 @pytest.mark.asyncio

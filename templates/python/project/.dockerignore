@@ -8,7 +8,7 @@ pacto-bot-api.toml
 # Version control and CI
 /.git
 /.github
-
+.env*
 # Editor and OS files
 .DS_Store
 .vscode/

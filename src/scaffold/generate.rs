@@ -326,9 +326,16 @@ fn write_config_snippet(
     policy: &OverwritePolicy,
     denylist: &[PathBuf],
 ) -> Result<(), DaemonError> {
+    let daemon_section = r#"[daemon]
+data_dir = "${PACTO_DATA_DIR:-~/.local/share/pacto-bot-api}"
+socket_path = "${PACTO_SOCKET_PATH:-~/.local/share/pacto-bot-api/pacto-bot-api.sock}"
+
+"#;
+    let full_snippet = format!("{daemon_section}{snippet}");
+
     match decide_write(path, policy, denylist, &mut prompt_overwrite)? {
         WriteDecision::Write => {
-            fs::write(path, snippet).map_err(DaemonError::Io)?;
+            fs::write(path, &full_snippet).map_err(DaemonError::Io)?;
             set_config_permissions(path)?;
             println!("Created {}", path.display());
             Ok(())
@@ -380,20 +387,24 @@ fn bot_config_to_snippet(bot_config: &BotConfig) -> Result<String, DaemonError> 
         pacto_bot_api::config::SigningConfig::BunkerLocal { uri } => {
             let uri = uri.expose_secret();
             lines.push(format!(
-                "signing = {{ backend = \"bunker_local\", uri = {uri:?} }}"
+                "signing = {{ backend = \"bunker_local\", uri = \"${{PACTO_BUNKER_URI:-{uri}}}\" }}"
             ));
         }
         pacto_bot_api::config::SigningConfig::BunkerRemote { uri } => {
             let uri = uri.expose_secret();
             lines.push(format!(
-                "signing = {{ backend = \"bunker_remote\", uri = {uri:?} }}"
+                "signing = {{ backend = \"bunker_remote\", uri = \"${{PACTO_BUNKER_URI:-{uri}}}\" }}"
             ));
         }
     }
 
     lines.push(format!(
-        "relays = {}",
-        format_toml_array(&bot_config.relays)
+        "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
+        bot_config
+            .relays
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("ws://localhost:7000")
     ));
     lines.push(format!(
         "capabilities = {}",
@@ -730,13 +741,6 @@ fn append_compose_services(
             ])),
         ),
         (
-            serde_yaml::Value::String("profiles".to_string()),
-            serde_yaml::Value::Sequence(vec![
-                serde_yaml::Value::String("bot-only".to_string()),
-                serde_yaml::Value::String("full".to_string()),
-            ]),
-        ),
-        (
             serde_yaml::Value::String("environment".to_string()),
             serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
                 (
@@ -745,32 +749,25 @@ fn append_compose_services(
                 ),
                 (
                     serde_yaml::Value::String("PACTO_SOCKET_PATH".to_string()),
-                    serde_yaml::Value::String("/run/pacto-bot-api.sock".to_string()),
+                    serde_yaml::Value::String("/run/pacto/pacto-bot-api.sock".to_string()),
                 ),
             ])),
         ),
         (
             serde_yaml::Value::String("volumes".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(
-                serde_yaml::Mapping::from_iter([
-                    (
-                        serde_yaml::Value::String("type".to_string()),
-                        serde_yaml::Value::String("bind".to_string()),
-                    ),
-                    (
-                        serde_yaml::Value::String("source".to_string()),
-                        serde_yaml::Value::String("/run/pacto-bot-api.sock".to_string()),
-                    ),
-                    (
-                        serde_yaml::Value::String("target".to_string()),
-                        serde_yaml::Value::String("/run/pacto-bot-api.sock".to_string()),
-                    ),
-                    (
-                        serde_yaml::Value::String("read_only".to_string()),
-                        serde_yaml::Value::Bool(true),
-                    ),
-                ]),
+            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+                "pacto-socket:/run/pacto:ro".to_string(),
             )]),
+        ),
+        (
+            serde_yaml::Value::String("depends_on".to_string()),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
+                serde_yaml::Value::String("daemon".to_string()),
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
+                    serde_yaml::Value::String("condition".to_string()),
+                    serde_yaml::Value::String("service_started".to_string()),
+                )])),
+            )])),
         ),
         (
             serde_yaml::Value::String("restart".to_string()),

@@ -121,8 +121,8 @@ class UnixTransport:
             raise ConnectionError(
                 "Cannot connect to pacto-bot-api daemon: "
                 f"Unix socket not found at {self.socket_path}.\n"
-                "Is the daemon running? If you are using the `bot-only` Docker profile, "
-                "start the daemon on the host first, or switch to the `full` profile."
+                "Is the daemon running? If you are using Docker Compose, "
+                "run `docker compose up --build` from the project root."
             )
         try:
             self._reader, self._writer = await asyncio.open_unix_connection(
@@ -132,8 +132,8 @@ class UnixTransport:
             raise ConnectionError(
                 "Cannot connect to pacto-bot-api daemon: "
                 f"failed to open Unix socket at {self.socket_path}: {exc}.\n"
-                "Is the daemon running? If you are using the `bot-only` Docker profile, "
-                "start the daemon on the host first, or switch to the `full` profile."
+                "Is the daemon running? If you are using Docker Compose, "
+                "run `docker compose up --build` from the project root."
             ) from exc
 
     async def readline(self) -> str:
