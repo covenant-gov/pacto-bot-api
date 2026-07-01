@@ -246,7 +246,7 @@ def test_run_exits_cleanly_when_socket_missing(capsys, monkeypatch):
     assert "Unix socket not found" in stderr
     assert "/tmp/this-socket-does-not-exist-pacto.sock" in stderr
     assert "Is the daemon running?" in stderr
-    assert "bot-only" in stderr
+    assert "docker compose up --build" in stderr
 
 
 @pytest.mark.asyncio

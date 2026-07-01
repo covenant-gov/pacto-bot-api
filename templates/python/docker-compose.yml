@@ -1,33 +1,16 @@
 name: {{bot_id}}
 
 services:
-  {{bot_id}}:
-    build:
-      context: .
-      dockerfile: ./bots/{{bot_id}}/Dockerfile
-    profiles:
-      - bot-only
-      - full
-    environment:
-      PACTO_TRANSPORT: unix
-      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
-    volumes:
-      - type: bind
-        source: /run/pacto-bot-api.sock
-        target: /run/pacto-bot-api.sock
-        read_only: true
-    restart: on-failure
-
   daemon:
     image: ghcr.io/logicminds/pacto-bot-api:latest
-    profiles:
-      - full
     environment:
       PACTO_DATA_DIR: /var/lib/pacto-bot-api
-      PACTO_SOCKET_PATH: /run/pacto-bot-api.sock
+      PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock
+      PACTO_RELAY_URL: ${PACTO_RELAY_URL:-ws://localhost:7000}
+      PACTO_BUNKER_URI: ${PACTO_BUNKER_URI:-}
     volumes:
       - pacto-data:/var/lib/pacto-bot-api
-      - /run/pacto-bot-api.sock:/run/pacto-bot-api.sock
+      - pacto-socket:/run/pacto
       - ./pacto-bot-api.toml:/etc/pacto/pacto-bot-api.toml:ro
     command:
       - pacto-bot-api
@@ -37,26 +20,25 @@ services:
       - /var/lib/pacto-bot-api
     restart: on-failure
 
-  nostr-relay:
-    image: ghcr.io/covenant-gov/pacto-dev-env/nostr-relay:main
-    container_name: {{bot_id}}-nostr-relay
-    profiles:
-      - relay
-      - full
-    ports:
-      - "7000:8080"
+  {{bot_id}}:
+    build:
+      context: .
+      dockerfile: ./bots/{{bot_id}}/Dockerfile
+    environment:
+      PACTO_TRANSPORT: unix
+      PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock
     volumes:
-      - ./docker/relay-config.toml:/usr/src/app/config.toml:ro
-      - nostr-relay-data:/usr/src/app/db
-    restart: unless-stopped
+      - pacto-socket:/run/pacto:ro
+    depends_on:
+      daemon:
+        condition: service_started
+    restart: on-failure
 
   nip46-bunker:
     image: ghcr.io/covenant-gov/pacto-dev-env/nip46-bunker:main
-    container_name: {{bot_id}}-nip46-bunker
     profiles:
+      - with-bunker
       - full
-    ports:
-      - "127.0.0.1:3001:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -95,8 +77,8 @@ services:
 
   nip46-bunker-db:
     image: postgres:17-alpine
-    container_name: {{bot_id}}-nip46-bunker-db
     profiles:
+      - with-bunker
       - full
     environment:
       POSTGRES_USER: bunker46
@@ -112,8 +94,8 @@ services:
 
   nip46-bunker-redis:
     image: redis:8-alpine
-    container_name: {{bot_id}}-nip46-bunker-redis
     profiles:
+      - with-bunker
       - full
     volumes:
       - nip46-bunker-redis-data:/data
@@ -123,8 +105,22 @@ services:
       timeout: 5s
       retries: 5
 
+  nostr-relay:
+    image: ghcr.io/covenant-gov/pacto-dev-env/nostr-relay:main
+    profiles:
+      - relay
+      - full
+    container_name: {{bot_id}}-nostr-relay
+    ports:
+      - "7000:8080"
+    volumes:
+      - ./docker/relay-config.toml:/usr/src/app/config.toml:ro
+      - nostr-relay-data:/usr/src/app/db
+    restart: unless-stopped
+
 volumes:
   pacto-data:
+  pacto-socket:
   nostr-relay-data:
   nip46-bunker-db-data:
   nip46-bunker-redis-data:

@@ -753,12 +753,19 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
         backend => {
             let uri = params.uri.as_ref().map(|s| s.expose_secret()).unwrap_or("");
             lines.push(format!(
-                "signing = {{ backend = {backend:?}, uri = {uri:?} }}"
+                "signing = {{ backend = {backend:?}, uri = \"${{PACTO_BUNKER_URI:-{uri}}}\" }}"
             ));
         }
     }
 
-    lines.push(format!("relays = {}", format_toml_array(&params.relays)));
+    lines.push(format!(
+        "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
+        params
+            .relays
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("ws://localhost:7000")
+    ));
     lines.push(format!(
         "capabilities = {}",
         format_toml_array(&params.capabilities)

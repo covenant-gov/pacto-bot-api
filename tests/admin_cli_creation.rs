@@ -25,7 +25,7 @@ fn new_outputs_valid_nsec_snippet() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("id = \"test-bot\""));
     assert!(stdout.contains("backend = \"nsec\""));
     assert!(stdout.contains("nsec = \"nsec1"));
-    assert!(stdout.contains("relays = [\"wss://relay.example.com\"]"));
+    assert!(stdout.contains("relays = [\"${PACTO_RELAY_URL:-wss://relay.example.com}\"]"));
     assert!(stdout.contains("capabilities = [\"ReadMessages\"]"));
     assert!(!stderr.contains("nsec1"));
     Ok(())
@@ -46,7 +46,10 @@ fn new_bunker_snippet_does_not_leak_nsec() -> Result<(), Box<dyn Error>> {
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
 
     assert!(stdout.contains("backend = \"bunker_remote\""));
-    assert!(stdout.contains("uri = \"bunker://abc?relay=wss://relay.example.com\""));
+    assert!(
+        stdout
+            .contains("uri = \"${PACTO_BUNKER_URI:-bunker://abc?relay=wss://relay.example.com}\"")
+    );
     assert!(!stdout.contains("nsec ="));
     Ok(())
 }
@@ -62,7 +65,7 @@ fn new_interactive_outputs_valid_nsec_snippet() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("id = \"interactive-bot\""));
     assert!(stdout.contains("backend = \"nsec\""));
     assert!(stdout.contains("nsec = \"nsec1"));
-    assert!(stdout.contains("relays = [\"ws://localhost:7000\"]"));
+    assert!(stdout.contains("relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]"));
     assert!(stdout.contains("capabilities = [\"ReadMessages\", \"SendMessages\"]"));
     Ok(())
 }
@@ -93,7 +96,10 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
 
     assert!(stdout.contains("id = \"bunker-bot\""));
     assert!(stdout.contains("backend = \"bunker_remote\""));
-    assert!(stdout.contains("uri = \"bunker://abc?relay=wss://relay.example.com\""));
+    assert!(
+        stdout
+            .contains("uri = \"${PACTO_BUNKER_URI:-bunker://abc?relay=wss://relay.example.com}\"")
+    );
     // nsec should not appear in the final snippet for bunker backends.
     assert!(!stdout.contains("nsec ="));
     Ok(())

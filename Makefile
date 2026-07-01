@@ -62,7 +62,7 @@ coverage: ## Generate test coverage report (requires cargo-llvm-cov)
 		exit 1; \
 	fi
 
-validate: fmt-check clippy ## Run fmt-check, clippy, and tests
+validate: fmt-check clippy ## Run fmt-check, clippy
 
 deny: ## Run cargo-deny audit gates
 	cargo deny check

@@ -14,8 +14,11 @@ the `pacto_bot_api` SDK.
 - `pacto-bot-api.toml` — daemon configuration with bot identities, relays, and
   signing backends. Created by `pacto-bot-admin`. Treat as secret; contains or
   references signing material.
-- `docker-compose.yml` — local orchestration. Profiles: `bot-only` (talks to a
-  host daemon) and `full` (starts daemon + bunker + bot).
+- `docker-compose.yml` — local orchestration. Default stack: daemon + bot.
+  Use `--profile with-bunker` to add the NIP-46 bunker, `--profile relay` to
+  add an internal Nostr relay, or `--profile full` for everything. Set
+  `PACTO_RELAY_URL` and `PACTO_BUNKER_URI` to point to internal or external
+  services.
 - `bots/{{bot_id}}/{{bot_id_snake}}.py` — the bot handler entry point.
 - `bots/{{bot_id}}/pyproject.toml` — Python package metadata for the bot.
 - `sdk/` — vendored Python SDK source and wheel.

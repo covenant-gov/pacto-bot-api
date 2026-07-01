@@ -235,8 +235,17 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
     Ok(())
 }
 
-/// Expand `${ENV_VAR}` references in a string.
+/// Expand `${ENV_VAR}` references in a string. Supports `${ENV_VAR}` and
+/// `${ENV_VAR:-default}` syntax; if the variable is unset, the default is used
+/// when provided, otherwise the placeholder is replaced with an empty string.
 fn expand_env_vars(input: &str) -> String {
+    expand_env_vars_with_lookup(input, |var| env::var(var).ok())
+}
+
+fn expand_env_vars_with_lookup<F>(input: &str, lookup: F) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
 
@@ -244,23 +253,43 @@ fn expand_env_vars(input: &str) -> String {
         if ch == '$' && chars.peek() == Some(&'{') {
             chars.next(); // consume '{'
             let mut var_name = String::new();
+            let mut default_value = String::new();
             let mut found_close = false;
-            for inner in chars.by_ref() {
+            let mut in_default = false;
+
+            while let Some(inner) = chars.next() {
                 if inner == '}' {
                     found_close = true;
                     break;
                 }
-                var_name.push(inner);
+                if inner == ':' && chars.peek() == Some(&'-') {
+                    chars.next(); // consume '-'
+                    in_default = true;
+                    continue;
+                }
+                if in_default {
+                    default_value.push(inner);
+                } else {
+                    var_name.push(inner);
+                }
             }
+
             if found_close {
-                if let Ok(value) = env::var(&var_name) {
+                let value = lookup(&var_name).unwrap_or_default();
+                if value.is_empty() {
+                    output.push_str(&default_value);
+                } else {
                     output.push_str(&value);
                 }
-                // If the variable is unset, leave the placeholder empty.
             } else {
                 output.push('$');
                 output.push('{');
                 output.push_str(&var_name);
+                if in_default {
+                    output.push(':');
+                    output.push('-');
+                }
+                output.push_str(&default_value);
             }
         } else {
             output.push(ch);
@@ -553,6 +582,66 @@ signing = { backend = "nsec", nsec = "nsec1a" }
         assert!(
             err.to_string()
                 .contains("must not be writable by group or other")
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_replaces_set_variable() {
+        let values: std::collections::HashMap<&str, String> =
+            [("PACTO_TEST_VAR", "replaced".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            expand_env_vars_with_lookup("${PACTO_TEST_VAR}", |var| values.get(var).cloned()),
+            "replaced"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_leaves_unset_variable_empty() {
+        let values: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+        assert_eq!(
+            expand_env_vars_with_lookup("${PACTO_TEST_UNSET_VAR}", |var| values.get(var).cloned()),
+            ""
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_uses_default_when_unset() {
+        let values: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+        assert_eq!(
+            expand_env_vars_with_lookup("${PACTO_TEST_UNSET_WITH_DEFAULT:-default_value}", |var| {
+                values.get(var).cloned()
+            }),
+            "default_value"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_ignores_default_when_set() {
+        let values: std::collections::HashMap<&str, String> =
+            [("PACTO_TEST_SET_WITH_DEFAULT", "actual_value".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            expand_env_vars_with_lookup("${PACTO_TEST_SET_WITH_DEFAULT:-default_value}", |var| {
+                values.get(var).cloned()
+            }),
+            "actual_value"
+        );
+    }
+
+    #[test]
+    fn expand_env_vars_preserves_non_placeholder_text() {
+        let values: std::collections::HashMap<&str, String> =
+            [("PACTO_TEST_RELAY", "wss://relay.example.com".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            expand_env_vars_with_lookup("relays = [\"${PACTO_TEST_RELAY}\"]", |var| values
+                .get(var)
+                .cloned()),
+            "relays = [\"wss://relay.example.com\"]"
         );
     }
 }
