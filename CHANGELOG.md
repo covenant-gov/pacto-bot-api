@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Python scaffold `docker-compose.yml` now pulls the Nostr relay and NIP-46 bunker images from `ghcr.io/covenant-gov/pacto-dev-env` instead of requiring local builds.
+- Generated project documentation updated to explain that relay and bunker images are pulled from GHCR and no longer built from `pacto-dev-env` locally.
+
+### Fixed
+
+- GHCR Docker images are now built and published for both `linux/amd64` and `linux/arm64`, so `docker pull` works on Apple Silicon and other ARM64 hosts.
+
 ## [0.4.0] - 2026-06-30
 
 ### Added

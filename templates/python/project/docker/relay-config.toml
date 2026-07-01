@@ -1,0 +1,5 @@
+# Placeholder relay config for the local Nostr relay.
+#
+# Replace this file with the real relay-config.toml from pacto-dev-env before
+# running the full compose stack. The relay service in docker-compose.yml
+# mounts this file read-only at /usr/src/app/config.toml.
