@@ -30,7 +30,7 @@ fn dummy_disconnect_sender() -> tokio::sync::mpsc::Sender<Option<String>> {
 }
 
 fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
-    message_handler(|msg, _out_tx, _handler_id| async move {
+    message_handler(|msg, _connection, _handler_id| async move {
         let id = msg.id().cloned().unwrap_or(Value::Null);
         Ok(Some(JsonRpcMessage::response(
             id,
@@ -92,11 +92,11 @@ async fn unix_transport_unregisters_handler_on_disconnect() -> Result<(), Box<dy
             }
         });
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let dispatch = dispatch_for_handler.clone();
             async move {
                 dispatch
-                    .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
                     .await
             }
         });
@@ -316,11 +316,11 @@ async fn unix_unregistered_peer_cannot_send_dm() -> Result<(), Box<dyn std::erro
         let (dispatch, _db_dir) = setup_dispatch().await?;
         let dispatch_for_handler = dispatch.clone();
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let dispatch = dispatch_for_handler.clone();
             async move {
                 dispatch
-                    .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
                     .await
             }
         });
@@ -367,11 +367,11 @@ async fn unix_unregistered_peer_cannot_set_profile() -> Result<(), Box<dyn std::
         let (dispatch, _db_dir) = setup_dispatch().await?;
         let dispatch_for_handler = dispatch.clone();
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let dispatch = dispatch_for_handler.clone();
             async move {
                 dispatch
-                    .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
                     .await
             }
         });
@@ -417,11 +417,11 @@ async fn unix_status_notification_matches_catalog() -> Result<(), Box<dyn std::e
         let (dispatch, _db_dir) = setup_dispatch().await?;
         let dispatch_for_handler = dispatch.clone();
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let dispatch = dispatch_for_handler.clone();
             async move {
                 dispatch
-                    .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
                     .await
             }
         });
@@ -491,11 +491,11 @@ async fn unix_handler_unregister_returns_unregistered_flag()
         let (dispatch, _db_dir) = setup_dispatch().await?;
         let dispatch_for_handler = dispatch.clone();
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let dispatch = dispatch_for_handler.clone();
             async move {
                 dispatch
-                    .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
                     .await
             }
         });

@@ -9,6 +9,12 @@ pub struct DaemonConfigGenerated {
     /// data_dir
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
+    /// Seconds between stale-handler reaper sweeps
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_reap_interval_secs: Option<u64>,
+    /// Seconds after a handler disconnect before it is reaped from the routing table
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_stale_timeout_secs: Option<u64>,
     /// http_bind
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_bind: Option<String>,

@@ -173,6 +173,10 @@ pub enum Method {
     AgentStatus,
     #[serde(rename = "agent.metrics")]
     AgentMetrics,
+    #[serde(rename = "agent.list_handlers")]
+    AgentListHandlers,
+    #[serde(rename = "agent.unregister_handler")]
+    AgentUnregisterHandler,
     #[serde(rename = "agent.version")]
     AgentVersion,
 }
@@ -190,6 +194,8 @@ impl Method {
             Method::AgentEvent,
             Method::AgentStatus,
             Method::AgentMetrics,
+            Method::AgentListHandlers,
+            Method::AgentUnregisterHandler,
             Method::AgentVersion,
         ]
     }
@@ -209,6 +215,8 @@ impl FromStr for Method {
             "agent.event" => Ok(Self::AgentEvent),
             "agent.status" => Ok(Self::AgentStatus),
             "agent.metrics" => Ok(Self::AgentMetrics),
+            "agent.list_handlers" => Ok(Self::AgentListHandlers),
+            "agent.unregister_handler" => Ok(Self::AgentUnregisterHandler),
             "agent.version" => Ok(Self::AgentVersion),
             _ => Err(DaemonError::MethodNotFound),
         }
@@ -282,6 +290,35 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
     }
 }
 
+/// Typed payload returned by the `agent.list_handlers` JSON-RPC method.
+///
+/// Matches `schemas/jsonrpc.json`: the result is an object containing a
+/// `handlers` array with a full row for each registered handler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentListHandlersEntry {
+    pub handler_id: String,
+    pub bot_ids: Vec<String>,
+    pub event_types: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub connected: bool,
+    pub state: String,
+    pub transport: String,
+    pub last_seen: String,
+    pub registered_at: String,
+}
+
+/// Container for the `agent.list_handlers` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentListHandlersResponse {
+    pub handlers: Vec<AgentListHandlersEntry>,
+}
+
+/// Typed payload returned by the `agent.unregister_handler` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentUnregisterHandlerResponse {
+    pub unregistered: bool,
+}
+
 /// Typed payload for the `agent.status` JSON-RPC notification.
 ///
 /// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
@@ -327,6 +364,8 @@ mod tests {
             "agent.event",
             "agent.status",
             "agent.metrics",
+            "agent.list_handlers",
+            "agent.unregister_handler",
             "agent.version",
         ];
 

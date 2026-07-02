@@ -217,25 +217,69 @@ class Bot:
         # Otherwise re-resolve with CLI args overriding constructor args,
         # which in turn override environment variables and defaults.
         if not isinstance(self._transport_arg, Transport):
-            transport: Transport | str | None = self._transport_arg
-            if args.transport is not None:
-                transport = args.transport
-            socket_path = args.socket if args.socket is not None else self._socket_path_arg
-            secret = args.secret if args.secret is not None else self._secret_arg
-            http_bind = args.http_bind if args.http_bind is not None else self._http_bind_arg
-            data_dir = args.data_dir if args.data_dir is not None else self._data_dir
-            self._transport = self._make_transport(
-                transport, socket_path, secret, http_bind, data_dir
-            )
-            self._client = PactoClient(self._transport)
+            self._client = self._resolve_client(args)
         # Re-install signal handlers now that we have an event loop.
         self._install_signal_handlers()
+
+        # First attempt: fail fast if the daemon is not reachable at all.
+        try:
+            await self._run_once(args)
+        except (OSError, TimeoutError, PactoClientError) as exc:
+            self._log(f"failed to start: {exc}")
+            await self._client.close()
+            sys.exit(1)
+
+        # After the initial successful registration, reconnect on any future
+        # transport disconnect so the handler survives daemon restarts.
+        backoff = 1.0
+        while not self._shutdown.is_set():
+            try:
+                await self._run_once(args)
+            except (OSError, TimeoutError, PactoClientError) as exc:
+                self._log(f"connection lost: {exc}")
+
+            if self._shutdown.is_set():
+                break
+
+            self._log(f"reconnecting in {backoff}s...")
+            try:
+                await asyncio.wait_for(self._shutdown.wait(), timeout=backoff)
+            except TimeoutError:
+                pass
+            else:
+                # Shutdown was requested during the backoff window.
+                break
+
+            backoff = min(backoff * 2, 8.0)
+            # Ensure the previous attempt is fully closed before reconnecting.
+            await self._client.close()
+            if isinstance(self._transport_arg, Transport):
+                self._client = PactoClient(self._transport)
+
+        await self._client.close()
+
+    def _resolve_client(self, args: argparse.Namespace) -> PactoClient:
+        transport: Transport | str | None = self._transport_arg
+        if args.transport is not None:
+            transport = args.transport
+        socket_path = args.socket if args.socket is not None else self._socket_path_arg
+        secret = args.secret if args.secret is not None else self._secret_arg
+        http_bind = args.http_bind if args.http_bind is not None else self._http_bind_arg
+        data_dir = args.data_dir if args.data_dir is not None else self._data_dir
+        self._transport = self._make_transport(
+            transport, socket_path, secret, http_bind, data_dir
+        )
+        return PactoClient(self._transport)
+
+    async def _run_once(self, args: argparse.Namespace) -> None:
+        if not isinstance(self._transport_arg, Transport):
+            self._client = self._resolve_client(args)
 
         try:
             await self._client.connect()
         except (OSError, TimeoutError) as exc:
             self._log(f"{exc}")
-            sys.exit(1)
+            raise
 
         self._log(f"connected via {self._transport.name}")
 
@@ -244,11 +288,12 @@ class Bot:
                 bot_ids=[self.bot_id],
                 event_types=self.event_types,
                 capabilities=self.capabilities,
+                handler_id=self._handler_id,
             )
         except (PactoClientError, TimeoutError) as exc:
             self._log(f"registration failed: {exc}")
             await self._client.close()
-            return
+            raise
 
         self._handler_id = result.handler_id
         self._log(
@@ -263,12 +308,26 @@ class Bot:
                 await self._transport.start_sse()
             except (OSError, TimeoutError) as exc:
                 self._log(str(exc))
-                sys.exit(1)
+                await self._client.close()
+                raise
 
-        self._reader_task = asyncio.create_task(self._dispatch_loop())
+        dispatch_task = asyncio.create_task(self._dispatch_loop())
+        shutdown_task = asyncio.create_task(self._shutdown.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {dispatch_task, shutdown_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in {dispatch_task, shutdown_task}:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
-        await self._shutdown.wait()
-        await self._shutdown_gracefully()
+        await self._client.close()
 
     def _parse_args(self, argv: list[str] | None) -> argparse.Namespace:
         parser = argparse.ArgumentParser(description=f"Pacto bot: {self.bot_id}")
@@ -298,16 +357,6 @@ class Bot:
             help="HTTP secret token (default: $PACTO_SECRET_TOKEN).",
         )
         return parser.parse_args(argv)
-
-    async def _shutdown_gracefully(self) -> None:
-        if self._reader_task is not None and not self._reader_task.done():
-            self._reader_task.cancel()
-            try:
-                await self._reader_task
-            except asyncio.CancelledError:
-                pass
-        await self._client.close()
-        self._log("disconnected")
 
     async def _dispatch_loop(self) -> None:
         try:

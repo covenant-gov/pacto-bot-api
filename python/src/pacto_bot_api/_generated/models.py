@@ -74,6 +74,57 @@ class AgentEventParams(BaseModel):
     type: str
 
 
+class AgentListHandlersParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.list_handlers`.
+
+    Return the daemon's handler routing table (admin-only).
+
+    jsonrpc_method: ``"agent.list_handlers"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.list_handlers"
+    pass
+
+class AgentListHandlersResult(BaseModel):
+    """
+    Model for JSON-RPC method `agent.list_handlers`.
+
+    Return the daemon's handler routing table (admin-only).
+
+    Example:
+
+        >>> AgentListHandlersResult(handlers=[])
+
+    jsonrpc_method: ``"agent.list_handlers"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.list_handlers"
+    handlers: list[AgentListHandlersResultHandlersModel]
+
+
+class AgentListHandlersResultHandlersModel(BaseModel):
+    """
+    Model for JSON-RPC method `agent.list_handlers`.
+
+    Nested object for `handlers` of `agent.list_handlers`.
+
+    Example:
+
+        >>> AgentListHandlersResultHandlersModel(bot_ids=[], capabilities=[], connected=True, event_types=[], handler_id="...", last_seen="...", registered_at="...", state="...", transport="...")
+
+    jsonrpc_method: ``"agent.list_handlers"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.list_handlers"
+    bot_ids: list[str]
+    capabilities: list[str]
+    connected: bool
+    event_types: list[str]
+    handler_id: str
+    last_seen: str
+    registered_at: str
+    state: str
+    transport: str
+
+
 class AgentMetricsParams(BaseModel):
     """
     Model for JSON-RPC method `agent.metrics`.
@@ -152,6 +203,38 @@ class AgentStatusParams(BaseModel):
     state: str
 
 
+class AgentUnregisterHandlerParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.unregister_handler`.
+
+    Forcibly remove a handler from the routing table (admin-only).
+
+    Example:
+
+        >>> AgentUnregisterHandlerParams(handler_id="...")
+
+    jsonrpc_method: ``"agent.unregister_handler"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.unregister_handler"
+    handler_id: str
+
+
+class AgentUnregisterHandlerResult(BaseModel):
+    """
+    Model for JSON-RPC method `agent.unregister_handler`.
+
+    Forcibly remove a handler from the routing table (admin-only).
+
+    Example:
+
+        >>> AgentUnregisterHandlerResult(unregistered=True)
+
+    jsonrpc_method: ``"agent.unregister_handler"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.unregister_handler"
+    unregistered: bool
+
+
 class AgentVersionParams(BaseModel):
     """
     Model for JSON-RPC method `agent.version`.
@@ -182,6 +265,8 @@ class HandlerRegisterParams(BaseModel):
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
+    # Optional previously assigned handler id to reuse after reconnect.
+    handler_id: str | None = None
 
 
 class HandlerRegisterResult(BaseModel):
@@ -252,4 +337,4 @@ class HandlerUnregisterResult(BaseModel):
     unregistered: bool
 
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AgentErrorParams', 'AgentEventParams', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentVersionParams', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
+__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']

@@ -25,7 +25,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 
 fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
-    message_handler(|msg, _out_tx, _handler_id| async move {
+    message_handler(|msg, _connection, _handler_id| async move {
         let id = msg.id().cloned().unwrap_or(Value::Null);
         Ok(Some(JsonRpcMessage::response(
             id,
@@ -35,11 +35,11 @@ fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
 }
 
 fn dispatch_handler(dispatch: Arc<Dispatch>) -> pacto_bot_api::transport::MessageHandler {
-    message_handler(move |msg, out_tx, handler_id| {
+    message_handler(move |msg, connection, handler_id| {
         let dispatch = Arc::clone(&dispatch);
         async move {
             dispatch
-                .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                .handle_message(msg, handler_id.as_deref(), Some(connection))
                 .await
         }
     })

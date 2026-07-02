@@ -16,6 +16,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
 pub struct GlobalDaemonConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
@@ -27,6 +28,10 @@ pub struct GlobalDaemonConfig {
     pub http_max_connections: usize,
     #[serde(default = "default_http_idle_timeout_secs")]
     pub http_idle_timeout_secs: u64,
+    #[serde(default = "default_handler_stale_timeout_secs")]
+    pub handler_stale_timeout_secs: u64,
+    #[serde(default = "default_handler_reap_interval_secs")]
+    pub handler_reap_interval_secs: u64,
 }
 
 fn default_data_dir() -> String {
@@ -47,6 +52,14 @@ fn default_http_max_connections() -> usize {
 
 fn default_http_idle_timeout_secs() -> u64 {
     60
+}
+
+fn default_handler_stale_timeout_secs() -> u64 {
+    30
+}
+
+fn default_handler_reap_interval_secs() -> u64 {
+    5
 }
 
 /// Per-bot identity configuration.

@@ -202,13 +202,16 @@ pub fn handler_ref(
     capabilities: &[&str],
 ) -> HandlerRef {
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let now = Utc::now();
     HandlerRef {
         id: id.to_string(),
         connection: Some(ConnectionHandle::new(tx)),
         bot_ids: bot_ids.iter().map(|s| s.to_string()).collect(),
         event_types: event_types.to_vec(),
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
-        registered_at: Utc::now(),
+        registered_at: now,
+        last_seen: now,
+        transport: "unknown".to_string(),
     }
 }
 

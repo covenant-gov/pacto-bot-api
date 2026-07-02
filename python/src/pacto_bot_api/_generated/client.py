@@ -80,8 +80,8 @@ class PactoClient:
                 line = await self.transport.readline()
             except asyncio.CancelledError:
                 break
-            except Exception:  # pragma: no cover - defensive
-                continue
+            except Exception:  # pragma: no cover - transport disconnect
+                break
             if not line:
                 break
             try:
@@ -89,7 +89,7 @@ class PactoClient:
             except json.JSONDecodeError:
                 continue
             await self._dispatch_frame(frame)
-
+        await self._notify_queue.put(None)
     async def _dispatch_frame(self, frame: dict[str, Any]) -> None:
         if "id" in frame:
             self._resolve(str(frame['id']), frame)
@@ -129,6 +129,24 @@ class PactoClient:
             "params": params_dict,
         }
         await self.transport.write_frame(frame)
+
+    async def agent_list_handlers(self) -> models.AgentListHandlersResult:
+        """
+        Call JSON-RPC method `agent.list_handlers`.
+
+        Return the daemon's handler routing table (admin-only).
+
+        Example:
+
+            >>> result = await client.agent_list_handlers(...)
+            >>> isinstance(result, AgentListHandlersResult)
+
+        jsonrpc_method: ``"agent.list_handlers"``
+        """
+        params_dict: dict[str, Any] = {}
+        response = await self._request("agent.list_handlers", params_dict)
+        result = response.get('result')
+        return models.AgentListHandlersResult.model_validate(result)
 
     async def agent_metrics(self) -> models.AgentMetricsResult:
         """
@@ -186,6 +204,25 @@ class PactoClient:
         result = response.get('result')
         return result
 
+    async def agent_unregister_handler(self, handler_id: str) -> models.AgentUnregisterHandlerResult:
+        """
+        Call JSON-RPC method `agent.unregister_handler`.
+
+        Forcibly remove a handler from the routing table (admin-only).
+
+        Example:
+
+            >>> result = await client.agent_unregister_handler(...)
+            >>> isinstance(result, AgentUnregisterHandlerResult)
+
+        jsonrpc_method: ``"agent.unregister_handler"``
+        """
+        params = models.AgentUnregisterHandlerParams(handler_id=handler_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.unregister_handler", params_dict)
+        result = response.get('result')
+        return models.AgentUnregisterHandlerResult.model_validate(result)
+
     async def agent_version(self) -> models.AgentVersionResult:
         """
         Call JSON-RPC method `agent.version`.
@@ -204,7 +241,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResult:
+    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str], handler_id: str | None = None) -> models.HandlerRegisterResult:
         """
         Call JSON-RPC method `handler.register`.
 
@@ -217,7 +254,7 @@ class PactoClient:
 
         jsonrpc_method: ``"handler.register"``
         """
-        params = models.HandlerRegisterParams(bot_ids=bot_ids, capabilities=capabilities, event_types=event_types)
+        params = models.HandlerRegisterParams(bot_ids=bot_ids, capabilities=capabilities, event_types=event_types, handler_id=handler_id)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("handler.register", params_dict)
         result = response.get('result')

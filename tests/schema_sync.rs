@@ -259,6 +259,8 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.send_dm"
                 | "agent.set_profile"
                 | "agent.metrics"
+                | "agent.list_handlers"
+                | "agent.unregister_handler"
                 | "agent.version"
         );
         if expects_result {

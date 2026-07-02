@@ -803,7 +803,7 @@ async fn disconnected_handler_unregistered_and_registry_cleaned()
     );
 
     let resp = dispatch
-        .handle_message(register_req, None, Some(tx))
+        .handle_message(register_req, None, Some(ConnectionHandle::new(tx)))
         .await?
         .ok_or(DaemonError::Config(
             "handler.register returned no response".into(),
@@ -1243,7 +1243,7 @@ async fn periodic_metrics_notification_reaches_registered_handler()
         })),
     );
     let _ = dispatch
-        .handle_message(register_req, None, Some(tx))
+        .handle_message(register_req, None, Some(ConnectionHandle::new(tx)))
         .await?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);

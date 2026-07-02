@@ -15,6 +15,10 @@
           "schema": {
             "type": "object",
             "properties": {
+              "handler_id": {
+                "type": "string",
+                "description": "Optional previously assigned handler id to reuse after reconnect."
+              },
               "bot_ids": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -300,6 +304,81 @@
         "name": "metrics",
         "schema": {
           "$ref": "metrics.json"
+        }
+      }
+    },
+    {
+      "name": "agent.list_handlers",
+      "summary": "Return the daemon's handler routing table (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "additionalProperties": false
+          }
+        }
+      ],
+      "result": {
+        "name": "handlers",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "handlers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "handler_id": { "type": "string" },
+                  "bot_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "event_types": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "capabilities": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                  },
+                  "connected": { "type": "boolean" },
+                  "state": { "type": "string" },
+                  "transport": { "type": "string" },
+                  "last_seen": { "type": "string" },
+                  "registered_at": { "type": "string" }
+                },
+                "required": ["handler_id", "bot_ids", "event_types", "capabilities", "connected", "state", "transport", "last_seen", "registered_at"]
+              }
+            }
+          },
+          "required": ["handlers"]
+        }
+      }
+    },
+    {
+      "name": "agent.unregister_handler",
+      "summary": "Forcibly remove a handler from the routing table (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "handler_id": { "type": "string" }
+            },
+            "required": ["handler_id"]
+          }
+        }
+      ],
+      "result": {
+        "name": "unregistered",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "unregistered": { "type": "boolean" }
+          },
+          "required": ["unregistered"]
         }
       }
     },
