@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
 use syn::{Fields, Item};
+
+static CODEGEN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -79,6 +82,7 @@ fn generated_types_match_schemas() {
         .collect();
 
     // Run the codegen xtask against the current working tree.
+    let _guard = CODEGEN_LOCK.lock().unwrap();
     let status = Command::new("cargo")
         .args(["xtask", "codegen"])
         .current_dir(&root)
@@ -116,6 +120,7 @@ fn generated_python_types_match_schemas() {
         .collect();
 
     // Run the codegen xtask against the current working tree.
+    let _guard = CODEGEN_LOCK.lock().unwrap();
     let status = Command::new("cargo")
         .args(["xtask", "codegen"])
         .current_dir(&root)
