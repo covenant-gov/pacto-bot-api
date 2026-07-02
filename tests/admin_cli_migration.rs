@@ -63,7 +63,7 @@ fn export_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
-    fs::write(dir.path().join("daemon.lock"), b"locked")?;
+    let _lock = common::hold_daemon_lock(&dir)?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args(["--config", &config.to_string_lossy(), "export", "echo-bot"]);
@@ -78,7 +78,7 @@ fn rotate_http_token_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error
     let dir = tempfile::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
-    fs::write(dir.path().join("daemon.lock"), b"locked")?;
+    let _lock = common::hold_daemon_lock(&dir)?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args(["--config", &config.to_string_lossy(), "rotate-http-token"]);
@@ -178,7 +178,7 @@ fn diagnose_reports_config_and_lock_status() -> Result<(), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
-    fs::write(dir.path().join("daemon.lock"), b"locked")?;
+    let _lock = common::hold_daemon_lock(&dir)?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([

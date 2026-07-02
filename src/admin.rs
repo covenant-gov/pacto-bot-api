@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
+use fs2::FileExt;
 use nostr::event::tag::Tag;
 use nostr::key::Keys;
 use nostr::secp256k1::schnorr::Signature;
@@ -1319,25 +1320,43 @@ async fn cmd_status(
         .map(|c| PathBuf::from(c.socket_path()))
         .or_else(|| data_dir.as_ref().map(|d| d.join("pacto-bot-api.sock")));
 
-    let (daemon_running, live_metrics, live_snapshot) = match (&socket_path, &data_dir) {
+    let lock_held = data_dir
+        .as_ref()
+        .map(|p| is_daemon_lock_held(p))
+        .unwrap_or(false);
+
+    let live_metrics: Option<MetricsResponse> = if let Some(socket) = &socket_path {
         #[cfg(unix)]
-        (Some(socket), Some(dir)) => match call_agent_metrics(socket).await {
-            Ok(metrics) => (true, Some(metrics), read_latest_report(dir)),
-            Err(_) => (false, None, read_latest_report(dir)),
-        },
+        {
+            call_agent_metrics(socket).await.ok()
+        }
         #[cfg(not(unix))]
-        (_, Some(dir)) => (false, None::<MetricsResponse>, read_latest_report(dir)),
-        _ => (false, None, None),
+        {
+            None
+        }
+    } else {
+        None
     };
 
+    let live_snapshot = data_dir.as_deref().and_then(read_latest_report);
+
+    // `daemon_running` is derived from the daemon's lock file, which is the
+    // same ground truth used by `pacto-bot-admin diagnose`. A live `agent.metrics`
+    // response only proves the Unix socket is reachable, so we no longer use it
+    // as the liveness signal; this avoids reporting `daemon: stopped` when the
+    // socket is stale or inaccessible while the daemon is healthy and holding
+    // the data-directory lock.
+    let daemon_running = lock_held;
     let daemon_status = live_snapshot.as_ref().map(|s| daemon_status_str(s.status));
     let uptime_seconds = live_metrics
         .as_ref()
         .and_then(|m| m.uptime_seconds)
+        .or_else(|| live_snapshot.as_ref().map(|s| s.uptime_seconds))
         .unwrap_or(0);
     let handlers_registered = live_metrics
         .as_ref()
         .and_then(|m| m.handlers_registered)
+        .or_else(|| live_snapshot.as_ref().map(|s| s.handlers_registered))
         .unwrap_or(0);
 
     let mut bot_statuses = Vec::new();
@@ -1734,7 +1753,51 @@ fn expand_path(input: &str) -> PathBuf {
 }
 
 fn is_daemon_lock_held(data_dir: &Path) -> bool {
-    data_dir.join(DAEMON_LOCK_FILE).exists()
+    let path = data_dir.join(DAEMON_LOCK_FILE);
+    let pid = match fs::read_to_string(&path)
+        .ok()
+        .and_then(|contents| contents.trim().parse::<u32>().ok())
+    {
+        Some(pid) => pid,
+        None => return false,
+    };
+
+    if !process_exists(pid) {
+        return false;
+    }
+
+    // Confirm the lock file is still exclusively locked. A stale PID from a
+    // crashed daemon will not hold the lock.
+    let file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(false)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(_) => return true,
+    };
+    file.try_lock_exclusive().is_err()
+}
+
+/// Best-effort check that a process with the given PID is still running.
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    // Using the shell `kill -0` command avoids unsafe `libc::kill` calls and
+    // is sufficient for verifying liveness on Unix.
+    match std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .output()
+    {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn process_exists(_pid: u32) -> bool {
+    // No portable process-liveness check on this platform; rely on the lock.
+    true
 }
 
 fn check_no_daemon_lock(data_dir: &Path) -> Result<(), DaemonError> {
@@ -2363,11 +2426,38 @@ mod tests {
     }
 
     #[test]
-    fn daemon_lock_detected_by_file_existence() -> Result<(), DaemonError> {
+    fn daemon_lock_detected_by_live_pid_and_lock() -> Result<(), DaemonError> {
         let dir = tempfile::tempdir().map_err(DaemonError::Io)?;
         assert!(!is_daemon_lock_held(dir.path()));
-        fs::write(dir.path().join(DAEMON_LOCK_FILE), b"locked").map_err(DaemonError::Io)?;
+
+        let path = dir.path().join(DAEMON_LOCK_FILE);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(DaemonError::Io)?;
+        file.lock_exclusive().map_err(DaemonError::Io)?;
+        file.write_all(format!("{}\n", std::process::id()).as_bytes())
+            .map_err(DaemonError::Io)?;
+        file.flush().map_err(DaemonError::Io)?;
         assert!(is_daemon_lock_held(dir.path()));
+
+        drop(file);
+        assert!(!is_daemon_lock_held(dir.path()));
+
+        // A stale PID with no lock should also report not held.
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(DaemonError::Io)?;
+        file.write_all(b"9999999\n").map_err(DaemonError::Io)?;
+        file.flush().map_err(DaemonError::Io)?;
+        assert!(!is_daemon_lock_held(dir.path()));
         Ok(())
     }
 

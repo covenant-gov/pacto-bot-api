@@ -12,6 +12,7 @@ use pacto_bot_api::transport::TransportLayer;
 use pacto_bot_api::transport::http;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -164,7 +165,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     });
 
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
-    let lock_file = open_lock_file(&lock_path)
+    let mut lock_file = open_lock_file(&lock_path)
         .map_err(|e| format!("failed to open lock file {}: {e}", lock_path.display()))?;
 
     if lock_file.try_lock_exclusive().is_err() {
@@ -172,6 +173,16 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             "daemon is already running (lock held at {})",
             lock_path.display()
         ));
+    }
+
+    // Write the daemon's PID into the lock file so the admin CLI can verify
+    // the process is still alive without relying solely on the advisory lock.
+    let pid = process::id();
+    if let Err(e) = lock_file.write_all(format!("{pid}\n").as_bytes()) {
+        return Err(format!("failed to write PID to lock file: {e}"));
+    }
+    if let Err(e) = lock_file.flush() {
+        return Err(format!("failed to flush PID to lock file: {e}"));
     }
 
     let db_path = Path::new(&data_dir).join(AGENT_DB_FILE);
@@ -360,8 +371,10 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
 
         nostr_client.disconnect().await;
 
-        // Release the daemon lock before declaring stopped.
+        // Release the daemon lock before declaring stopped and clean up the
+        // lock file so the admin CLI does not see a stale PID.
         drop(lock_file);
+        let _ = fs::remove_file(&lock_path);
 
         emit_agent_status(&diagnostics, &dispatch, DaemonStatus::Stopped).await;
 

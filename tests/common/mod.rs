@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use chrono::Utc;
+use fs2::FileExt;
 use futures::{SinkExt, StreamExt};
 use nostr::nips::nip44;
 use nostr::{
@@ -16,6 +17,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::Arc;
@@ -170,6 +173,25 @@ pub fn make_config(
     }
 
     Ok(path)
+}
+
+/// Create a daemon lock file in `dir` that the admin CLI will treat as held.
+///
+/// Writes the current process's PID into the file and acquires an exclusive
+/// advisory lock. The returned `File` must be kept alive for the duration of
+/// the test so the lock remains held.
+pub fn hold_daemon_lock(dir: &tempfile::TempDir) -> Result<std::fs::File, Box<dyn Error>> {
+    let path = dir.path().join("daemon.lock");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    file.lock_exclusive()?;
+    writeln!(file, "{}", std::process::id())?;
+    file.flush()?;
+    Ok(file)
 }
 
 /// Create a disconnected handler reference for tests.
