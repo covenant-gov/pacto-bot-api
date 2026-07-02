@@ -324,7 +324,9 @@ async def test_bot_degraded_state_reflects_open_circuit(
     assert bot.is_degraded is False
 
     task = asyncio.create_task(bot._run([]))
-    await asyncio.sleep(0.15)
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not bot.is_degraded and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
     assert bot.is_degraded is True
 
     bot._request_shutdown()
@@ -347,12 +349,14 @@ async def test_bot_degraded_logs_recovery_when_circuit_closes(
     transport.connect_failures_remaining = 3
 
     task = asyncio.create_task(bot._run([]))
-    await asyncio.sleep(0.25)
-
-    # The third connect should succeed and close the circuit.
-    register_frame = next(
-        (f for f in transport.frames if f.get("method") == "handler.register"), None
-    )
+    deadline = asyncio.get_running_loop().time() + 5.0
+    register_frame = None
+    while register_frame is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        for frame in transport.frames:
+            if frame.get("method") == "handler.register":
+                register_frame = frame
+                break
     assert register_frame is not None
     transport.inject({
         "jsonrpc": "2.0",
@@ -429,15 +433,17 @@ async def test_bot_reconnect_after_transient_disconnect(
     # Simulate a graceful daemon disconnect by sending an empty line which
     # the read loop treats as EOF and ends the dispatch loop.
     transport.inject_eof()
-    await asyncio.sleep(0.2)
 
-    # Wait for the second registration attempt after the disconnect.
-    await asyncio.sleep(0.2)
-    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 1
+    # Poll for the second registration attempt after the disconnect.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    register_frames: list[dict[str, Any]] = []
+    while len(register_frames) < 2 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 2
     first_register_id = register_frames[0]["id"]
-    for frame in transport.frames:
-        if frame.get("method") == "handler.register" and frame.get("id") != first_register_id:
+    for frame in register_frames:
+        if frame.get("id") != first_register_id:
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
@@ -522,7 +528,9 @@ async def test_bot_circuit_reopens_after_failed_probe(
     transport.connect_failures_remaining = 10
 
     task = asyncio.create_task(bot._run([]))
-    await asyncio.sleep(0.05)
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not bot.is_degraded and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
     assert bot.is_degraded is True
 
     # Let the first cooling-off period elapse; the probe fails because the
@@ -562,15 +570,17 @@ async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
     await asyncio.sleep(0.05)
 
     transport.inject_eof()
-    await asyncio.sleep(0.2)
 
-    # Wait for the second registration attempt after the disconnect.
-    await asyncio.sleep(0.2)
-    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 1
+    # Poll for the second registration attempt after the disconnect.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    register_frames: list[dict[str, Any]] = []
+    while len(register_frames) < 2 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 2
     first_register_id = register_frames[0]["id"]
-    for frame in transport.frames:
-        if frame.get("method") == "handler.register" and frame.get("id") != first_register_id:
+    for frame in register_frames:
+        if frame.get("id") != first_register_id:
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
@@ -604,7 +614,9 @@ async def test_run_retries_and_shuts_down_cleanly_when_socket_missing(
         circuit_cooling_off_seconds=60.0,
     )
     task = asyncio.create_task(bot._run([]))
-    await asyncio.sleep(0.2)
+    deadline = asyncio.get_running_loop().time() + 5.0
+    while not bot.is_degraded and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
     assert bot.is_degraded is True
     bot._request_shutdown()
     await task
