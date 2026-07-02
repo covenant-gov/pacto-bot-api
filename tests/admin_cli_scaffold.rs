@@ -126,6 +126,22 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
         "compose must not reference the non-existent bunker image"
     );
 
+    assert!(
+        compose.contains("restart: on-failure"),
+        "compose must include restart: on-failure for the bot service"
+    );
+
+    let systemd = fs::read_to_string(
+        project_dir
+            .join("bots")
+            .join("echo-bot")
+            .join("systemd.service"),
+    )?;
+    assert!(
+        systemd.contains("Restart=on-failure"),
+        "systemd service must include Restart=on-failure"
+    );
+
     let readme = fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
     assert!(readme.contains("echo-bot"));
     assert!(!readme.contains("nsec1"));

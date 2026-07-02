@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 
+class TransportDisconnected(Exception):
+    """Raised when the transport closes gracefully while the bot is running."""
+
+
 # ---------------------------------------------------------------------------
 # Connection / path resolution helpers
 # ---------------------------------------------------------------------------
@@ -190,7 +194,6 @@ class HttpTransport:
         self.handler_id = handler_id
         self._sse_reader: asyncio.StreamReader | None = None
         self._sse_writer: asyncio.StreamWriter | None = None
-        self._closed = False
 
     @property
     def name(self) -> str:
@@ -199,10 +202,6 @@ class HttpTransport:
     async def connect(self) -> None:
         if not self.secret:
             raise RuntimeError("HTTP transport requires a secret token")
-        # Allow the transport to be reopened after a previous close. This is
-        # required when an external HttpTransport instance is reused across
-        # PactoClient reconnect attempts.
-        self._closed = False
 
     async def start_sse(self) -> None:
         """Open the SSE stream after the handler has registered."""
@@ -257,10 +256,8 @@ class HttpTransport:
             )
 
     async def readline(self) -> str:
-        while self._sse_reader is None and not self._closed:
+        while self._sse_reader is None:
             await asyncio.sleep(0.05)
-        if self._closed or self._sse_reader is None:
-            return ""
 
         data_lines: list[str] = []
         while True:
@@ -340,7 +337,6 @@ class HttpTransport:
         return None
 
     async def close(self) -> None:
-        self._closed = True
         if self._sse_writer is not None:
             self._sse_writer.close()
             await self._sse_writer.wait_closed()
@@ -440,6 +436,7 @@ class AutoTransport:
 
 __all__ = [
     "Transport",
+    "TransportDisconnected",
     "UnixTransport",
     "HttpTransport",
     "AutoTransport",

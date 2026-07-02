@@ -143,6 +143,29 @@ Use `parse_command(event.content)` to split a message into `command`, `args`, an
 - `await bot.send_dm(recipient, content, reply_to=None)` — send a DM as this bot.
 - `await bot.set_profile(name=None, about=None, picture=None)` — update the bot profile.
 - `bot.client` — access the low-level `PactoClient` for advanced use.
+- `bot.is_degraded` — `True` when the circuit breaker is open and the bot is not dispatching.
+
+### Reconnection resilience
+
+`Bot` retries the initial registration and all runtime reconnects with exponential
+backoff, jitter, and a circuit breaker. This keeps the bot alive across daemon
+restarts and short network blips without relying solely on Docker/systemd restart
+policies.
+
+Configure the retry/circuit behavior via constructor kwargs or CLI flags:
+
+| Setting | Constructor kwarg | CLI flag | Default |
+|---------|-------------------|----------|---------|
+| Initial backoff | `retry_initial_backoff` | `--retry-initial-backoff` | `1.0` |
+| Max backoff | `retry_max_backoff` | `--retry-max-backoff` | `30.0` |
+| Jitter ratio | `retry_jitter_ratio` | `--retry-jitter-ratio` | `0.2` |
+| Failure threshold | `circuit_failure_threshold` | `--circuit-failure-threshold` | `5` |
+| Cooling-off period | `circuit_cooling_off_seconds` | `--circuit-cooling-off-seconds` | `60.0` |
+| Degraded log interval | `degraded_log_interval` | `--degraded-log-interval` | `60.0` |
+
+When the circuit breaker opens, the bot logs a single degraded message and then
+a short status line at most once per `degraded_log_interval`. It resumes dispatch
+automatically after the cooling-off period plus a successful probe.
 
 ### Optional extras
 
