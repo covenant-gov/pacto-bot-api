@@ -13,10 +13,12 @@ from typing import Any, Callable
 from ._generated.client import PactoClient, PactoClientError
 from ._generated.models import AgentEventParams, AgentStatusParams
 from .parser import parse_command
+from .retry_circuit import RetryCircuit
 from .transports import (
     AutoTransport,
     HttpTransport,
     Transport,
+    TransportDisconnected,
     UnixTransport,
     _resolve_data_dir,
     _resolve_http_bind,
@@ -62,12 +64,27 @@ class Bot:
         http_bind: str | None = None,
         reply_on_error: bool = True,
         error_message: str = "Sorry, I couldn't process that.",
+        retry_initial_backoff: float = 1.0,
+        retry_max_backoff: float = 30.0,
+        retry_jitter_ratio: float = 0.2,
+        circuit_failure_threshold: int = 5,
+        circuit_cooling_off_seconds: float = 60.0,
+        degraded_log_interval: float = 60.0,
     ) -> None:
         self.bot_id = bot_id
         self.event_types = list(event_types or ["dm_received"])
         self.capabilities = list(capabilities or ["ReadMessages", "SendMessages"])
         self.reply_on_error = reply_on_error
         self.error_message = error_message
+
+        # Retry/circuit-breaker settings: constructor args are stashed so CLI
+        # args can override them in run().
+        self._retry_initial_backoff_arg = retry_initial_backoff
+        self._retry_max_backoff_arg = retry_max_backoff
+        self._retry_jitter_ratio_arg = retry_jitter_ratio
+        self._circuit_failure_threshold_arg = circuit_failure_threshold
+        self._circuit_cooling_off_seconds_arg = circuit_cooling_off_seconds
+        self._degraded_log_interval_arg = degraded_log_interval
 
         self._data_dir = _resolve_data_dir(data_dir)
         # Stash constructor-provided settings so CLI args can override them in run().
@@ -90,6 +107,63 @@ class Bot:
         self._handler_id: str | None = None
 
         self._install_signal_handlers()
+
+        # Validate retry/circuit settings supplied at construction time so that
+        # programmer errors surface immediately rather than at runtime.
+        self._make_retry_circuit(
+            retry_initial_backoff,
+            retry_max_backoff,
+            retry_jitter_ratio,
+            circuit_failure_threshold,
+            circuit_cooling_off_seconds,
+            degraded_log_interval,
+        )
+
+    def _make_retry_circuit(
+        self,
+        retry_initial_backoff: float,
+        retry_max_backoff: float,
+        retry_jitter_ratio: float,
+        circuit_failure_threshold: int,
+        circuit_cooling_off_seconds: float,
+        degraded_log_interval: float,
+    ) -> RetryCircuit:
+        return RetryCircuit(
+            retry_initial_backoff=retry_initial_backoff,
+            retry_max_backoff=retry_max_backoff,
+            retry_jitter_ratio=retry_jitter_ratio,
+            circuit_failure_threshold=circuit_failure_threshold,
+            circuit_cooling_off_seconds=circuit_cooling_off_seconds,
+            degraded_log_interval=degraded_log_interval,
+        )
+
+    def _resolve_retry_settings(self, args: argparse.Namespace) -> RetryCircuit:
+        """Resolve retry/circuit settings with CLI precedence over constructor args."""
+        return self._make_retry_circuit(
+            retry_initial_backoff=self._first(
+                args.retry_initial_backoff, self._retry_initial_backoff_arg
+            ),
+            retry_max_backoff=self._first(
+                args.retry_max_backoff, self._retry_max_backoff_arg
+            ),
+            retry_jitter_ratio=self._first(
+                args.retry_jitter_ratio, self._retry_jitter_ratio_arg
+            ),
+            circuit_failure_threshold=self._first(
+                args.circuit_failure_threshold, self._circuit_failure_threshold_arg
+            ),
+            circuit_cooling_off_seconds=self._first(
+                args.circuit_cooling_off_seconds, self._circuit_cooling_off_seconds_arg
+            ),
+            degraded_log_interval=self._first(
+                args.degraded_log_interval, self._degraded_log_interval_arg
+            ),
+        )
+
+    @staticmethod
+    def _first(value, fallback):
+        """Return ``value`` if it is not None, otherwise ``fallback``."""
+        return value if value is not None else fallback
 
     def _make_transport(
         self,
@@ -200,6 +274,38 @@ class Bot:
         )
 
     # -----------------------------------------------------------------------
+    # Retry/circuit helpers
+    # -----------------------------------------------------------------------
+
+    @property
+    def is_degraded(self) -> bool:
+        """True when the circuit breaker is open and the bot is not dispatching."""
+        return self._retry_circuit.is_open if hasattr(self, "_retry_circuit") else False
+
+    def _log_degraded_open(self) -> None:
+        """Log once when the circuit breaker opens."""
+        self._log(
+            f"degraded: {self._transport.name} failed "
+            f"{self._retry_circuit.failure_count} time(s); "
+            f"cooling off for {self._retry_circuit.circuit_cooling_off_seconds}s"
+        )
+
+    def _log_degraded_status(self) -> None:
+        """Log a periodic status line while the circuit remains open."""
+        now = asyncio.get_running_loop().time()
+        interval = self._retry_circuit.degraded_log_interval
+        if interval == 0:
+            return
+        if self._degraded_logged_at is None or (now - self._degraded_logged_at) >= interval:
+            self._log("degraded: still waiting for daemon")
+            self._degraded_logged_at = now
+
+    def _log_degraded_recovered(self) -> None:
+        """Log when the circuit closes."""
+        self._log("degraded: recovered")
+        self._degraded_logged_at = None
+
+    # -----------------------------------------------------------------------
     # Run loop
     # -----------------------------------------------------------------------
 
@@ -212,51 +318,65 @@ class Bot:
 
     async def _run(self, argv: list[str] | None = None) -> None:
         args = self._parse_args(argv)
+        self._retry_circuit = self._resolve_retry_settings(args)
+        self._degraded_logged_at: float | None = None
 
-        # If a transport instance was passed to the constructor, it wins.
-        # Otherwise re-resolve with CLI args overriding constructor args,
-        # which in turn override environment variables and defaults.
-        if not isinstance(self._transport_arg, Transport):
-            self._client = self._resolve_client(args)
         # Re-install signal handlers now that we have an event loop.
         self._install_signal_handlers()
 
-        # First attempt: fail fast if the daemon is not reachable at all.
-        try:
-            await self._run_once(args)
-        except (OSError, TimeoutError, PactoClientError) as exc:
-            self._log(f"failed to start: {exc}")
-            await self._client.close()
-            sys.exit(1)
-
-        # After the initial successful registration, reconnect on any future
-        # transport disconnect so the handler survives daemon restarts.
-        backoff = 1.0
         while not self._shutdown.is_set():
+            should_attempt, wait = self._retry_circuit.next_action()
+            if not should_attempt:
+                self._log_degraded_status()
+                try:
+                    await asyncio.wait_for(self._shutdown.wait(), timeout=wait)
+                except TimeoutError:
+                    # Cooling-off elapsed; next loop will be half-open.
+                    continue
+                else:
+                    break
+
+            if wait > 0:
+                self._log(f"reconnecting in {wait}s...")
+                try:
+                    await asyncio.wait_for(self._shutdown.wait(), timeout=wait)
+                except TimeoutError:
+                    pass
+                else:
+                    break
+
             try:
                 await self._run_once(args)
-            except (OSError, TimeoutError, PactoClientError) as exc:
+            except (OSError, TimeoutError, PactoClientError, TransportDisconnected) as exc:
+                if self._shutdown.is_set():
+                    break
                 self._log(f"connection lost: {exc}")
-
-            if self._shutdown.is_set():
-                break
-
-            self._log(f"reconnecting in {backoff}s...")
-            try:
-                await asyncio.wait_for(self._shutdown.wait(), timeout=backoff)
-            except TimeoutError:
-                pass
+                was_open = self._retry_circuit.is_open
+                self._retry_circuit.record_failure()
+                if not was_open and self._retry_circuit.is_open:
+                    self._log_degraded_open()
             else:
-                # Shutdown was requested during the backoff window.
-                break
+                # _run_once only returns cleanly when shutdown is requested.
+                was_closed = self._retry_circuit.is_closed
+                self._retry_circuit.record_success()
+                if not was_closed:
+                    self._log_degraded_recovered()
+                if self._shutdown.is_set():
+                    break
+                # Defensive: an unexpected clean return means the dispatch loop
+                # ended without an explicit shutdown signal, so treat it as a
+                # disconnect.
+                self._log("connection lost: daemon disconnected")
+                was_open = self._retry_circuit.is_open
+                self._retry_circuit.record_failure()
+                if not was_open and self._retry_circuit.is_open:
+                    self._log_degraded_open()
 
-            backoff = min(backoff * 2, 8.0)
-            # Ensure the previous attempt is fully closed before reconnecting.
+        await self._close_client()
+
+    async def _close_client(self) -> None:
+        if self._client is not None:
             await self._client.close()
-            if isinstance(self._transport_arg, Transport):
-                self._client = PactoClient(self._transport)
-
-        await self._client.close()
 
     def _resolve_client(self, args: argparse.Namespace) -> PactoClient:
         transport: Transport | str | None = self._transport_arg
@@ -272,8 +392,16 @@ class Bot:
         return PactoClient(self._transport)
 
     async def _run_once(self, args: argparse.Namespace) -> None:
+        # Close any previous client before creating a fresh one. For built-in
+        # transports the transport is recreated below; for custom transport
+        # instances we reuse the same transport but create a fresh PactoClient
+        # so the generated read loop is not permanently disabled by a prior
+        # close().
+        await self._close_client()
         if not isinstance(self._transport_arg, Transport):
             self._client = self._resolve_client(args)
+        else:
+            self._client = PactoClient(self._transport)
 
         try:
             await self._client.connect()
@@ -292,7 +420,6 @@ class Bot:
             )
         except (PactoClientError, TimeoutError) as exc:
             self._log(f"registration failed: {exc}")
-            await self._client.close()
             raise
 
         self._handler_id = result.handler_id
@@ -308,7 +435,6 @@ class Bot:
                 await self._transport.start_sse()
             except (OSError, TimeoutError) as exc:
                 self._log(str(exc))
-                await self._client.close()
                 raise
 
         dispatch_task = asyncio.create_task(self._dispatch_loop())
@@ -327,7 +453,8 @@ class Bot:
                     except asyncio.CancelledError:
                         pass
 
-        await self._client.close()
+        if shutdown_task not in done:
+            raise TransportDisconnected("daemon disconnected")
 
     def _parse_args(self, argv: list[str] | None) -> argparse.Namespace:
         parser = argparse.ArgumentParser(description=f"Pacto bot: {self.bot_id}")
@@ -355,6 +482,42 @@ class Bot:
             "--secret",
             default=None,
             help="HTTP secret token (default: $PACTO_SECRET_TOKEN).",
+        )
+        parser.add_argument(
+            "--retry-initial-backoff",
+            type=float,
+            default=None,
+            help="Initial retry backoff in seconds (default: 1.0).",
+        )
+        parser.add_argument(
+            "--retry-max-backoff",
+            type=float,
+            default=None,
+            help="Maximum retry backoff in seconds (default: 30.0).",
+        )
+        parser.add_argument(
+            "--retry-jitter-ratio",
+            type=float,
+            default=None,
+            help="Random jitter as a ratio of the current backoff (default: 0.2).",
+        )
+        parser.add_argument(
+            "--circuit-failure-threshold",
+            type=int,
+            default=None,
+            help="Consecutive failures before the circuit opens (default: 5).",
+        )
+        parser.add_argument(
+            "--circuit-cooling-off-seconds",
+            type=float,
+            default=None,
+            help="Seconds the circuit stays open before probing (default: 60.0).",
+        )
+        parser.add_argument(
+            "--degraded-log-interval",
+            type=float,
+            default=None,
+            help="Minimum seconds between degraded status logs (default: 60.0; 0 disables).",
         )
         return parser.parse_args(argv)
 

@@ -30,8 +30,13 @@ class MockTransport:
         self.connected = False
         self.closed = False
         self.handler_id: str | None = None
+        self.connect_failures_remaining = 0
+        self.connect_exception = ConnectionError("mock connect failure")
 
     async def connect(self) -> None:
+        if self.connect_failures_remaining > 0:
+            self.connect_failures_remaining -= 1
+            raise self.connect_exception
         self.connected = True
 
     async def close(self) -> None:
@@ -46,6 +51,9 @@ class MockTransport:
 
     def inject(self, frame: dict[str, Any]) -> None:
         self._inbound.put_nowait(json.dumps(frame))
+
+    def inject_eof(self) -> None:
+        self._inbound.put_nowait("")
 
 
 @pytest.fixture
@@ -295,21 +303,311 @@ def test_parse_command_is_exported():
     }
 
 
-def test_run_exits_cleanly_when_socket_missing(capsys, monkeypatch):
-    """Bot.run() fails fast with a clear message instead of a traceback."""
-    monkeypatch.delenv("PACTO_TRANSPORT", raising=False)
-    bot = Bot("test-bot", socket_path="/tmp/this-socket-does-not-exist-pacto.sock")
+# ---------------------------------------------------------------------------
+# Degraded state and reconnection resilience
+# ---------------------------------------------------------------------------
 
-    with pytest.raises(SystemExit) as exc_info:
-        bot.run([])
 
-    assert exc_info.value.code == 1
+@pytest.mark.asyncio
+async def test_bot_degraded_state_reflects_open_circuit(
+    transport: MockTransport,
+) -> None:
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=2,
+        circuit_cooling_off_seconds=60.0,
+    )
+    transport.connect_failures_remaining = 5
+    assert bot.is_degraded is False
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.15)
+    assert bot.is_degraded is True
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_bot_degraded_logs_recovery_when_circuit_closes(
+    transport: MockTransport,
+    capsys,
+) -> None:
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=3,
+        circuit_cooling_off_seconds=0.0,
+    )
+    transport.connect_failures_remaining = 3
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.25)
+
+    # The third connect should succeed and close the circuit.
+    register_frame = next(
+        (f for f in transport.frames if f.get("method") == "handler.register"), None
+    )
+    assert register_frame is not None
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": register_frame["id"],
+        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+    })
+
+    await asyncio.sleep(0.1)
+    assert bot.is_degraded is False
+
+    bot._request_shutdown()
+    await task
+
     stderr = capsys.readouterr().err
-    assert "Cannot connect to pacto-bot-api daemon" in stderr
-    assert "Unix socket not found" in stderr
-    assert "/tmp/this-socket-does-not-exist-pacto.sock" in stderr
-    assert "Is the daemon running?" in stderr
-    assert "docker compose up --build" in stderr
+    assert "degraded:" in stderr
+    assert "recovered" in stderr
+
+
+@pytest.mark.asyncio
+async def test_bot_degraded_status_logs_at_most_once_per_interval(
+    transport: MockTransport,
+    capsys,
+) -> None:
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=1,
+        circuit_cooling_off_seconds=60.0,
+        degraded_log_interval=0.3,
+    )
+    transport.connect_failures_remaining = 10
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.5)
+    bot._request_shutdown()
+    await task
+
+    stderr = capsys.readouterr().err
+    # The circuit opens with one message and may emit a periodic status line.
+    degraded_lines = [line for line in stderr.splitlines() if "degraded:" in line]
+    # At most one opening log + one periodic status log within 0.5s for a 0.3s interval.
+    assert len(degraded_lines) <= 2
+
+
+@pytest.mark.asyncio
+async def test_bot_reconnect_after_transient_disconnect(
+    transport: MockTransport,
+) -> None:
+    """A disconnect during dispatch is followed by a successful reconnect."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=5,
+    )
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+
+    # Complete first registration.
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+            })
+            break
+    await asyncio.sleep(0.05)
+
+    # Simulate a graceful daemon disconnect by sending an empty line which
+    # the read loop treats as EOF and ends the dispatch loop.
+    transport.inject_eof()
+    await asyncio.sleep(0.2)
+
+    # Wait for the second registration attempt after the disconnect.
+    await asyncio.sleep(0.2)
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 1
+    first_register_id = register_frames[0]["id"]
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register" and frame.get("id") != first_register_id:
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-2", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 2
+
+
+@pytest.mark.asyncio
+async def test_bot_shutdown_during_backoff_exits_cleanly(
+    transport: MockTransport,
+) -> None:
+    """Shutdown requested during a backoff sleep exits immediately."""
+    transport.connect_failures_remaining = 10
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=30.0,
+        retry_max_backoff=30.0,
+        circuit_failure_threshold=5,
+    )
+
+    start = asyncio.get_running_loop().time()
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+    bot._request_shutdown()
+    await task
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert elapsed < 1.0
+
+
+@pytest.mark.asyncio
+async def test_bot_shutdown_during_cooling_off_exits_cleanly(
+    transport: MockTransport,
+) -> None:
+    """Shutdown requested while the circuit is open exits immediately."""
+    transport.connect_failures_remaining = 10
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.01,
+        retry_max_backoff=0.01,
+        circuit_failure_threshold=1,
+        circuit_cooling_off_seconds=30.0,
+    )
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.1)
+    assert bot.is_degraded is True
+
+    bot._request_shutdown()
+    start = asyncio.get_running_loop().time()
+    await task
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert elapsed < 1.0
+    assert transport.closed is True
+
+
+@pytest.mark.asyncio
+async def test_bot_circuit_reopens_after_failed_probe(
+    transport: MockTransport,
+) -> None:
+    """A failed half-open probe reopens the circuit and restarts cooling-off."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.01,
+        retry_max_backoff=0.01,
+        circuit_failure_threshold=1,
+        circuit_cooling_off_seconds=0.1,
+    )
+    transport.connect_failures_remaining = 10
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+    assert bot.is_degraded is True
+
+    # Let the first cooling-off period elapse; the probe fails because the
+    # mock transport still has no daemon response.
+    await asyncio.sleep(0.15)
+    assert bot.is_degraded is True
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
+    transport: MockTransport,
+) -> None:
+    """A custom transport instance is closed and reopened across reconnects."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=5,
+    )
+    assert bot._transport is transport
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+            })
+            break
+    await asyncio.sleep(0.05)
+
+    transport.inject_eof()
+    await asyncio.sleep(0.2)
+
+    # Wait for the second registration attempt after the disconnect.
+    await asyncio.sleep(0.2)
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 1
+    first_register_id = register_frames[0]["id"]
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register" and frame.get("id") != first_register_id:
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-2", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    # The same transport instance was used for both attempts.
+    assert bot._transport is transport
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) >= 2
+
+
+@pytest.mark.asyncio
+async def test_run_retries_and_shuts_down_cleanly_when_socket_missing(
+    monkeypatch,
+):
+    """Bot.run() retries on startup errors and shuts down cleanly."""
+    monkeypatch.delenv("PACTO_TRANSPORT", raising=False)
+    bot = Bot(
+        "test-bot",
+        socket_path="/tmp/this-socket-does-not-exist-pacto.sock",
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=2,
+        circuit_cooling_off_seconds=60.0,
+    )
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.2)
+    assert bot.is_degraded is True
+    bot._request_shutdown()
+    await task
 
 
 @pytest.mark.asyncio
@@ -485,6 +783,68 @@ async def test_status_handler_called(bot, transport):
 
     bot._request_shutdown()
     await task
+
+
+# ---------------------------------------------------------------------------
+# Retry/circuit configuration
+# ---------------------------------------------------------------------------
+
+
+def test_bot_configuration_retry_settings_stored():
+    bot = Bot(
+        "test-bot",
+        transport=MockTransport(),
+        retry_initial_backoff=2.0,
+        retry_max_backoff=20.0,
+        retry_jitter_ratio=0.3,
+        circuit_failure_threshold=3,
+        circuit_cooling_off_seconds=45.0,
+        degraded_log_interval=30.0,
+    )
+    assert bot._retry_initial_backoff_arg == 2.0
+    assert bot._retry_max_backoff_arg == 20.0
+    assert bot._retry_jitter_ratio_arg == 0.3
+    assert bot._circuit_failure_threshold_arg == 3
+    assert bot._circuit_cooling_off_seconds_arg == 45.0
+    assert bot._degraded_log_interval_arg == 30.0
+
+
+@pytest.mark.asyncio
+async def test_bot_configuration_cli_overrides_constructor():
+    bot = Bot(
+        "test-bot",
+        transport=MockTransport(),
+        retry_initial_backoff=2.0,
+        retry_max_backoff=20.0,
+        retry_jitter_ratio=0.3,
+        circuit_failure_threshold=3,
+        circuit_cooling_off_seconds=45.0,
+        degraded_log_interval=30.0,
+    )
+    args = bot._parse_args([
+        "--retry-initial-backoff", "5.0",
+        "--retry-max-backoff", "60.0",
+        "--retry-jitter-ratio", "0.5",
+        "--circuit-failure-threshold", "10",
+        "--circuit-cooling-off-seconds", "120.0",
+        "--degraded-log-interval", "0",
+    ])
+    circuit = bot._resolve_retry_settings(args)
+    assert circuit.retry_initial_backoff == 5.0
+    assert circuit.retry_max_backoff == 60.0
+    assert circuit.retry_jitter_ratio == 0.5
+    assert circuit.circuit_failure_threshold == 10
+    assert circuit.circuit_cooling_off_seconds == 120.0
+    assert circuit.degraded_log_interval == 0.0
+
+
+def test_bot_configuration_rejects_invalid_retry_settings():
+    with pytest.raises(ValueError, match="circuit_failure_threshold must be positive"):
+        Bot("test-bot", transport=MockTransport(), circuit_failure_threshold=0)
+    with pytest.raises(ValueError, match="retry_initial_backoff must be non-negative"):
+        Bot("test-bot", transport=MockTransport(), retry_initial_backoff=-1)
+    with pytest.raises(ValueError, match="retry_jitter_ratio must be non-negative"):
+        Bot("test-bot", transport=MockTransport(), retry_jitter_ratio=-0.1)
 
 
 # ---------------------------------------------------------------------------

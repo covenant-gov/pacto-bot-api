@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Python SDK reconnection resilience for `Bot`:
+  - New `RetryCircuit` helper with exponential backoff, jitter, failure ceiling, and circuit-breaker states (closed/open/half-open).
+  - Retry/circuit settings configurable via `Bot` constructor kwargs and CLI flags (`--retry-initial-backoff`, `--retry-max-backoff`, `--retry-jitter-ratio`, `--circuit-failure-threshold`, `--circuit-cooling-off-seconds`, `--degraded-log-interval`).
+  - Initial registration and runtime reconnects share the same retry/circuit path.
+  - Degraded state exposed via `Bot.is_degraded` and logged with a single open message, periodic status lines, and a recovery message.
+  - Shutdown signals interrupt retry sleeps and bypass the circuit breaker for clean exit.
 - End-to-end handler lifecycle management: visibility, self-healing registrations, stale-handler reaping, and operational cleanup.
   - `pacto-bot-admin handlers list` shows every registered handler with `handler_id`, `bot_ids`, `event_types`, `capabilities`, `transport`, `state`, `connected`, `last_seen`, and `registered_at`.
   - `pacto-bot-admin handlers show <handler_id>` returns a single handler's details.
