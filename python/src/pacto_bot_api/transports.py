@@ -199,6 +199,10 @@ class HttpTransport:
     async def connect(self) -> None:
         if not self.secret:
             raise RuntimeError("HTTP transport requires a secret token")
+        # Allow the transport to be reopened after a previous close. This is
+        # required when an external HttpTransport instance is reused across
+        # PactoClient reconnect attempts.
+        self._closed = False
 
     async def start_sse(self) -> None:
         """Open the SSE stream after the handler has registered."""
