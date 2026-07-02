@@ -1,6 +1,12 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use fs2::FileExt;
+#[cfg(unix)]
+use nix::errno::Errno;
+#[cfg(unix)]
+use nix::sys::signal::{Signal, kill};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use nostr::event::tag::Tag;
 use nostr::key::Keys;
 use nostr::secp256k1::schnorr::Signature;
@@ -759,14 +765,16 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
         }
     }
 
-    lines.push(format!(
-        "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
-        params
-            .relays
-            .first()
-            .map(|s| s.as_str())
-            .unwrap_or("ws://localhost:7000")
-    ));
+    match params.relays.len() {
+        0 => lines.push(
+            "relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]".to_string(),
+        ),
+        1 => lines.push(format!(
+            "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
+            params.relays[0]
+        )),
+        _ => lines.push(format!("relays = {}", format_toml_array(&params.relays))),
+    }
     lines.push(format!(
         "capabilities = {}",
         format_toml_array(&params.capabilities)
@@ -1775,7 +1783,7 @@ fn is_daemon_lock_held(data_dir: &Path) -> bool {
         .open(&path)
     {
         Ok(f) => f,
-        Err(_) => return true,
+        Err(_) => return false,
     };
     file.try_lock_exclusive().is_err()
 }
@@ -1783,14 +1791,12 @@ fn is_daemon_lock_held(data_dir: &Path) -> bool {
 /// Best-effort check that a process with the given PID is still running.
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
-    // Using the shell `kill -0` command avoids unsafe `libc::kill` calls and
-    // is sufficient for verifying liveness on Unix.
-    match std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+    // Send signal 0 (no signal) to test liveness. `kill` returns ESRCH when the
+    // PID does not exist and EPERM when it exists but we lack permission; both
+    // cases mean a daemon is using the lock, so EPERM is treated as alive.
+    match kill(Pid::from_raw(pid as i32), None::<Signal>) {
+        Ok(()) => true,
+        Err(e) => matches!(e as Errno, Errno::EPERM),
     }
 }
 
