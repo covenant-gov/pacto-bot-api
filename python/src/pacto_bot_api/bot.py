@@ -330,7 +330,7 @@ class Bot:
                 self._log_degraded_status()
                 try:
                     await asyncio.wait_for(self._shutdown.wait(), timeout=wait)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     # Cooling-off elapsed; next loop will be half-open.
                     continue
                 else:
@@ -340,14 +340,14 @@ class Bot:
                 self._log(f"reconnecting in {wait}s...")
                 try:
                     await asyncio.wait_for(self._shutdown.wait(), timeout=wait)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     pass
                 else:
                     break
 
             try:
                 await self._run_once(args)
-            except (OSError, TimeoutError, PactoClientError, TransportDisconnected) as exc:
+            except (OSError, TimeoutError, asyncio.TimeoutError, PactoClientError, TransportDisconnected) as exc:
                 if self._shutdown.is_set():
                     break
                 self._log(f"connection lost: {exc}")
@@ -405,7 +405,7 @@ class Bot:
 
         try:
             await self._client.connect()
-        except (OSError, TimeoutError) as exc:
+        except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
             self._log(f"{exc}")
             raise
 
@@ -418,7 +418,7 @@ class Bot:
                 capabilities=self.capabilities,
                 handler_id=self._handler_id,
             )
-        except (PactoClientError, TimeoutError) as exc:
+        except (PactoClientError, TimeoutError, asyncio.TimeoutError) as exc:
             self._log(f"registration failed: {exc}")
             raise
 
@@ -433,7 +433,7 @@ class Bot:
                 self._transport.handler_id = self._handler_id
             try:
                 await self._transport.start_sse()
-            except (OSError, TimeoutError) as exc:
+            except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
                 self._log(str(exc))
                 raise
 
