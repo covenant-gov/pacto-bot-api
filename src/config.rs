@@ -15,7 +15,7 @@ pub struct DaemonConfig {
     pub bots: Vec<BotConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct GlobalDaemonConfig {
     #[serde(default = "default_data_dir")]
@@ -32,6 +32,20 @@ pub struct GlobalDaemonConfig {
     pub handler_stale_timeout_secs: u64,
     #[serde(default = "default_handler_reap_interval_secs")]
     pub handler_reap_interval_secs: u64,
+}
+
+impl Default for GlobalDaemonConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: default_data_dir(),
+            socket_path: default_socket_path(),
+            http_bind: default_http_bind(),
+            http_max_connections: default_http_max_connections(),
+            http_idle_timeout_secs: default_http_idle_timeout_secs(),
+            handler_stale_timeout_secs: default_handler_stale_timeout_secs(),
+            handler_reap_interval_secs: default_handler_reap_interval_secs(),
+        }
+    }
 }
 
 fn default_data_dir() -> String {
@@ -138,6 +152,9 @@ impl DaemonConfig {
         // Validate bot_id uniqueness and signing backend rules.
         validate_bots(&config.bots)?;
 
+        // Validate daemon timing values used by tokio::time::interval.
+        validate_daemon_config(&config.daemon)?;
+
         Ok(config)
     }
 
@@ -199,6 +216,20 @@ fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
     {
         let _ = path;
         // Permission checks are a no-op on non-Unix platforms in this scaffold.
+    }
+    Ok(())
+}
+
+fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError> {
+    if daemon.handler_reap_interval_secs == 0 {
+        return Err(DaemonError::Config(
+            "daemon.handler_reap_interval_secs must be greater than 0".into(),
+        ));
+    }
+    if daemon.handler_stale_timeout_secs == 0 {
+        return Err(DaemonError::Config(
+            "daemon.handler_stale_timeout_secs must be greater than 0".into(),
+        ));
     }
     Ok(())
 }
@@ -596,6 +627,44 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             err.to_string()
                 .contains("must not be writable by group or other")
         );
+    }
+
+    #[test]
+    fn rejects_zero_handler_reap_interval_secs() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[daemon]
+handler_reap_interval_secs = 0
+
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(err.to_string().contains("handler_reap_interval_secs"));
+        assert!(err.to_string().contains("greater than 0"));
+    }
+
+    #[test]
+    fn rejects_zero_handler_stale_timeout_secs() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[daemon]
+handler_stale_timeout_secs = 0
+
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(err.to_string().contains("handler_stale_timeout_secs"));
+        assert!(err.to_string().contains("greater than 0"));
     }
 
     #[test]

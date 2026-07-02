@@ -292,6 +292,31 @@ async def test_http_transport_sse_parses_data_lines(mock_http_connection):
 
 
 @pytest.mark.asyncio
+async def test_http_transport_reopens_after_close(mock_http_connection):
+    """Closing an external HttpTransport must not prevent later reconnects."""
+    first = mock_http_connection(
+        _http_lines([b'data: {"method":"agent.event"}\r\n', b"\r\n"])
+    )
+    transport = HttpTransport("127.0.0.1", 9800, "secret", handler_id="h-1")
+    await transport.connect()
+    await transport.start_sse()
+    line = await transport.readline()
+    assert json.loads(line) == {"method": "agent.event"}
+    await transport.close()
+    assert first.closed
+
+    second = mock_http_connection(
+        _http_lines([b'data: {"method":"agent.status"}\r\n', b"\r\n"])
+    )
+    await transport.connect()
+    await transport.start_sse()
+    line = await transport.readline()
+    assert json.loads(line) == {"method": "agent.status"}
+    assert second.closed is False
+    await transport.close()
+
+
+@pytest.mark.asyncio
 async def test_http_transport_start_sse_connection_refused(monkeypatch):
     async def fake_open_connection(_host: str, _port: int):
         raise ConnectionRefusedError("Connection refused")
