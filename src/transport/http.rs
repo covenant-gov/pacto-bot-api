@@ -1,4 +1,5 @@
 use crate::errors::DaemonError;
+use crate::handlers::ConnectionHandle;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
     JsonRpcMessage, MAX_FRAME_BYTES, Method, parse_message, parse_method, serialize_message,
@@ -25,14 +26,16 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 use subtle::ConstantTimeEq;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, oneshot};
-use tokio_stream::StreamExt;
+use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tower::ServiceExt;
 use tracing::info;
@@ -124,7 +127,7 @@ impl HttpTransport {
         self,
         listener: TcpListener,
         handler: MessageHandler,
-        _disconnect_tx: mpsc::Sender<Option<String>>,
+        disconnect_tx: mpsc::Sender<Option<String>>,
         shutdown: oneshot::Receiver<()>,
     ) -> Result<(), DaemonError> {
         let addr = listener.local_addr().map_err(|e| {
@@ -147,6 +150,7 @@ impl HttpTransport {
             token,
             max_frame_size: self.max_frame_size,
             outbound: Arc::new(TokioMutex::new(HashMap::new())),
+            disconnect_tx,
         };
 
         info!(addr = %addr, "localhost HTTP transport bound");
@@ -222,6 +226,8 @@ struct AppState {
     /// Channels created during `handler.register` that the SSE endpoint can
     /// take over to stream daemon-to-handler notifications.
     outbound: OutboundMap,
+    /// Notifies the dispatch consumer when an SSE stream ends.
+    disconnect_tx: mpsc::Sender<Option<String>>,
 }
 
 async fn http_handler(
@@ -277,10 +283,11 @@ async fn http_handler(
                         );
                     }
                     // Non-registration requests do not need a persistent
-                    // outbound channel, so we pass a disconnected sender.
-                    let (out_tx, _out_rx) = tokio::sync::mpsc::channel(1);
+                    // outbound channel, so we pass a disconnected handle.
+                    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+                    let connection = ConnectionHandle::new(tx);
                     let handler_id_owned = handler_id.map(|s| s.to_string());
-                    match (state.handler)(msg, out_tx, handler_id_owned).await {
+                    match (state.handler)(msg, connection, handler_id_owned).await {
                         Ok(resp) => resp,
                         Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
                     }
@@ -314,8 +321,9 @@ async fn handle_register(
     id: Option<Value>,
 ) -> Option<JsonRpcMessage> {
     let (out_tx, out_rx) = tokio::sync::mpsc::channel(64);
+    let connection = ConnectionHandle::with_transport(out_tx.clone(), "http");
 
-    let response = match (state.handler)(msg, out_tx, None).await {
+    let response = match (state.handler)(msg, connection, None).await {
         Ok(resp) => resp,
         Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
     };
@@ -336,6 +344,37 @@ async fn handle_register(
     response
 }
 
+/// SSE stream that notifies the dispatch consumer when the client disconnects.
+struct NotifyingReceiverStream {
+    inner: ReceiverStream<JsonRpcMessage>,
+    handler_id: String,
+    disconnect_tx: Option<mpsc::Sender<Option<String>>>,
+}
+
+impl Stream for NotifyingReceiverStream {
+    type Item = Result<SseEvent, std::convert::Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(msg)) => {
+                let event_type = msg.method().unwrap_or("message").to_string();
+                let data = serialize_message(&msg).unwrap_or_default();
+                Poll::Ready(Some(Ok(SseEvent::default().event(event_type).data(data))))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for NotifyingReceiverStream {
+    fn drop(&mut self) {
+        if let Some(tx) = self.disconnect_tx.take() {
+            let _ = tx.try_send(Some(self.handler_id.clone()));
+        }
+    }
+}
+
 async fn events_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -354,11 +393,11 @@ async fn events_handler(
         }
     };
 
-    let stream = ReceiverStream::new(receiver).map(|msg| {
-        let event_type = msg.method().unwrap_or("message").to_string();
-        let data = serialize_message(&msg).unwrap_or_default();
-        Ok::<_, std::convert::Infallible>(SseEvent::default().event(event_type).data(data))
-    });
+    let stream = NotifyingReceiverStream {
+        inner: ReceiverStream::new(receiver),
+        handler_id: query.handler_id,
+        disconnect_tx: Some(state.disconnect_tx.clone()),
+    };
 
     Sse::new(stream)
         .keep_alive(KeepAlive::new())

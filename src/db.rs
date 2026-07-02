@@ -155,13 +155,16 @@ impl Database {
         let mut handlers = Vec::new();
         for row in rows {
             let (id, bot_ids, event_types, capabilities, registered_at) = row?;
+            let registered_at = DateTime::from_timestamp(registered_at, 0).unwrap_or_else(Utc::now);
             handlers.push(HandlerRef {
                 id,
                 connection: None,
                 bot_ids: serde_json::from_str(&bot_ids)?,
                 event_types: serde_json::from_str(&event_types)?,
                 capabilities: serde_json::from_str(&capabilities)?,
-                registered_at: DateTime::from_timestamp(registered_at, 0).unwrap_or_else(Utc::now),
+                registered_at,
+                last_seen: registered_at,
+                transport: "unknown".to_string(),
             });
         }
         Ok(handlers)
@@ -205,13 +208,16 @@ mod tests {
         event_types: &[EventType],
         capabilities: &[&str],
     ) -> HandlerRef {
+        let now = Utc::now();
         HandlerRef {
             id: id.to_string(),
             connection: Some(disconnected_handle()),
             bot_ids: bot_ids.iter().map(|s| s.to_string()).collect(),
             event_types: event_types.to_vec(),
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
-            registered_at: Utc::now(),
+            registered_at: now,
+            last_seen: now,
+            transport: "unknown".to_string(),
         }
     }
 

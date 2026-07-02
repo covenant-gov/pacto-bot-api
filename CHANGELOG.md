@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- End-to-end handler lifecycle management: visibility, self-healing registrations, stale-handler reaping, and operational cleanup.
+  - `pacto-bot-admin handlers list` shows every registered handler with `handler_id`, `bot_ids`, `event_types`, `capabilities`, `transport`, `state`, `connected`, `last_seen`, and `registered_at`.
+  - `pacto-bot-admin handlers show <handler_id>` returns a single handler's details.
+  - `pacto-bot-admin handlers unregister <handler_id>` forcibly removes a stale handler from the routing table.
+  - `pacto-bot-admin status` now includes the same `handlers` array in JSON output and prints handler details in text output.
+  - New JSON-RPC admin methods `agent.list_handlers` and `agent.unregister_handler` expose the daemon's routing table to the CLI.
+  - Handler records track `transport`, `last_seen`, `registered_at`, and a `connected`/`disconnected` state; the reaper removes disconnected handlers after a configurable timeout (default 30s).
+  - The Python SDK `Bot` loop now automatically reconnects and re-registers after a daemon restart, reusing the same `handler_id` across reconnects.
+  - The Python SDK's `PactoClient` read loop exits on transport disconnect so the reconnect loop can run.
+
 ### Changed
 
 - Python scaffold `docker-compose.yml` now always runs the daemon + bot stack by default. The Nostr relay is optional via the `relay` profile and the NIP-46 bunker is optional via the `with-bunker` profile. The `full` profile is retained as an alias for everything.

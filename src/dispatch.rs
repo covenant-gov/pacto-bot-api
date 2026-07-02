@@ -16,6 +16,7 @@ use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::{
+    AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
     AgentVersionResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
     parse_method,
 };
@@ -169,6 +170,9 @@ impl Default for RateLimiter {
     }
 }
 
+/// Default time a handler may be disconnected before the reaper removes it.
+const HANDLER_STALE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Event dispatch router.
 #[derive(Debug)]
 pub struct Dispatch {
@@ -180,6 +184,7 @@ pub struct Dispatch {
     handlers_registered: AtomicU64,
     last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
     dispatch_timeout: Duration,
+    handler_stale_timeout: Duration,
 }
 
 impl Dispatch {
@@ -198,6 +203,7 @@ impl Dispatch {
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
             dispatch_timeout: DISPATCH_TIMEOUT,
+            handler_stale_timeout: HANDLER_STALE_TIMEOUT,
         }
     }
 
@@ -217,12 +223,18 @@ impl Dispatch {
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
             dispatch_timeout: DISPATCH_TIMEOUT,
+            handler_stale_timeout: HANDLER_STALE_TIMEOUT,
         }
     }
 
     /// Override the dispatch timeout. Intended for tests only.
     pub fn set_dispatch_timeout(&mut self, timeout: Duration) {
         self.dispatch_timeout = timeout;
+    }
+
+    /// Override the stale-handler timeout. Intended for tests only.
+    pub fn set_handler_stale_timeout(&mut self, timeout: Duration) {
+        self.handler_stale_timeout = timeout;
     }
 
     /// Return the current diagnostics health snapshot.
@@ -443,15 +455,15 @@ impl Dispatch {
 
     /// Handle an incoming JSON-RPC message from a transport.
     ///
-    /// `out_tx` is the outbound channel for the connection that sent `msg`.
-    /// It is used to wire the live connection during `handler.register` so
-    /// that the daemon can push `agent.event` and `agent.status`
-    /// notifications back to the handler.
+    /// `connection` is the handle for the connection that sent `msg`. It is
+    /// used to wire the live connection during `handler.register` so that the
+    /// daemon can push `agent.event` and `agent.status` notifications back to
+    /// the handler.
     pub async fn handle_message(
         &self,
         msg: JsonRpcMessage,
         handler_id: Option<&str>,
-        out_tx: Option<mpsc::Sender<JsonRpcMessage>>,
+        connection: Option<ConnectionHandle>,
     ) -> Result<Option<JsonRpcMessage>, DaemonError> {
         let id = msg.id().cloned();
 
@@ -475,13 +487,15 @@ impl Dispatch {
 
         let params = message_params(&msg);
         let result = match method {
-            Method::HandlerRegister => self.handle_register(params, out_tx).await,
+            Method::HandlerRegister => self.handle_register(params, connection).await,
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
             Method::AgentMetrics => self.handle_metrics().await,
+            Method::AgentListHandlers => self.handle_list_handlers().await,
+            Method::AgentUnregisterHandler => self.handle_admin_unregister_handler(params).await,
             Method::AgentVersion => self.handle_version().await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
@@ -495,7 +509,7 @@ impl Dispatch {
     async fn handle_register(
         &self,
         params: Option<&Value>,
-        out_tx: Option<mpsc::Sender<JsonRpcMessage>>,
+        connection: Option<ConnectionHandle>,
     ) -> Result<Option<Value>, DaemonError> {
         let params =
             params.ok_or_else(|| DaemonError::Config("handler.register missing params".into()))?;
@@ -523,13 +537,10 @@ impl Dispatch {
             .and_then(Value::as_str)
             .map(String::from);
 
-        let connection = out_tx.map_or_else(
-            || {
-                let (tx, _rx) = mpsc::channel(1);
-                ConnectionHandle::new(tx)
-            },
-            ConnectionHandle::new,
-        );
+        let connection = connection.unwrap_or_else(|| {
+            let (tx, _rx) = mpsc::channel(1);
+            ConnectionHandle::new(tx)
+        });
 
         let bot_configs = {
             let cm = self.client_manager.read().await;
@@ -777,12 +788,106 @@ impl Dispatch {
         Ok(Some(serde_json::to_value(response)?))
     }
 
+    async fn handle_list_handlers(&self) -> Result<Option<Value>, DaemonError> {
+        let stale_timeout = self.handler_stale_timeout;
+        let handlers = {
+            let cm = self.client_manager.read().await;
+            cm.handler_registry.all_handlers()
+        };
+        let entries: Vec<AgentListHandlersEntry> = handlers
+            .into_iter()
+            .map(|h| {
+                let connected = h.is_connected();
+                let state = if connected {
+                    "connected".to_string()
+                } else if h.is_stale(stale_timeout) {
+                    "stale".to_string()
+                } else {
+                    "disconnected".to_string()
+                };
+                AgentListHandlersEntry {
+                    handler_id: h.id,
+                    bot_ids: h.bot_ids,
+                    event_types: h.event_types.iter().map(event_type_name).collect(),
+                    capabilities: h.capabilities,
+                    connected,
+                    state,
+                    transport: h.transport,
+                    last_seen: h.last_seen.to_rfc3339(),
+                    registered_at: h.registered_at.to_rfc3339(),
+                }
+            })
+            .collect();
+
+        let response = AgentListHandlersResponse { handlers: entries };
+        Ok(Some(serde_json::to_value(response)?))
+    }
+
+    async fn handle_admin_unregister_handler(
+        &self,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.unregister_handler missing params".into()))?;
+        let handler_id = params
+            .get("handler_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DaemonError::Config("agent.unregister_handler missing handler_id".into())
+            })?;
+
+        self.unregister_handler(handler_id).await?;
+
+        Ok(Some(serde_json::to_value(
+            AgentUnregisterHandlerResponse { unregistered: true },
+        )?))
+    }
+
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
         let response = AgentVersionResponse {
             version: crate::version::VERSION.to_string(),
             commit: crate::version::GIT_COMMIT_SHORT.to_string(),
         };
         Ok(Some(serde_json::to_value(response)?))
+    }
+
+    /// Spawn a background task that removes disconnected handlers that have
+    /// been stale longer than `stale_timeout`.
+    pub fn spawn_handler_reaper(
+        self: Arc<Self>,
+        stale_timeout: Duration,
+        interval: Duration,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let stale_ids: Vec<String> = {
+                            let cm = self.client_manager.read().await;
+                            cm.handler_registry
+                                .all_handlers()
+                                .into_iter()
+                                .filter(|h| h.is_stale(stale_timeout))
+                                .map(|h| h.id)
+                                .collect()
+                        };
+                        for handler_id in stale_ids {
+                            match self.unregister_handler(&handler_id).await {
+                                Ok(()) => warn!(handler_id = %handler_id, "reaped stale handler"),
+                                Err(e) => warn!(
+                                    handler_id = %handler_id,
+                                    error = %e,
+                                    "failed to reap stale handler"
+                                ),
+                            }
+                        }
+                    }
+                    _ = shutdown.changed() => break,
+                }
+            }
+        })
     }
 
     /// Load the persisted cursor for a bot.
@@ -848,7 +953,7 @@ fn event_type_name(event_type: &EventType) -> String {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-    use crate::handlers::ConnectionHandle;
+    use crate::handlers::{ConnectionHandle, HandlerRegistry};
     use crate::nostr::NostrClient;
     use crate::transport::protocol::JsonRpcMessage;
     use nostr::ToBech32;
@@ -1096,5 +1201,118 @@ mod tests {
                 .iter()
                 .any(|e| e.message.contains("something went wrong"))
         );
+    }
+
+    #[tokio::test]
+    async fn agent_list_handlers_returns_routing_table() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let (tx, rx) = mpsc::channel(1);
+        let handler_id = {
+            let bot_config_for_register = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+            };
+            let mut registry = HandlerRegistry::new();
+            let id = registry
+                .register(
+                    ConnectionHandle::with_transport(tx, "unix"),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config_for_register],
+                )
+                .unwrap();
+            {
+                let mut cm = cm.write().await;
+                cm.handler_registry = registry;
+            }
+            id
+        };
+        let _rx = rx;
+
+        let req =
+            JsonRpcMessage::request(1.into(), "agent.list_handlers", Some(serde_json::json!({})));
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        let handlers = result
+            .get("handlers")
+            .and_then(|v| v.as_array())
+            .expect("handlers array should be present");
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(
+            handlers[0].get("handler_id").and_then(|v| v.as_str()),
+            Some(handler_id.as_str())
+        );
+        assert_eq!(
+            handlers[0].get("transport").and_then(|v| v.as_str()),
+            Some("unix")
+        );
+        assert_eq!(
+            handlers[0].get("state").and_then(|v| v.as_str()),
+            Some("connected")
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_unregister_handler_removes_stale_handler() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let (tx, rx) = mpsc::channel(1);
+        let handler_id = {
+            let bot_config_for_register = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+            };
+            let mut registry = HandlerRegistry::new();
+            let id = registry
+                .register(
+                    ConnectionHandle::new(tx),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config_for_register],
+                )
+                .unwrap();
+            {
+                let mut cm = cm.write().await;
+                cm.handler_registry = registry;
+            }
+            id
+        };
+        let _rx = rx;
+
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "agent.unregister_handler",
+            Some(serde_json::json!({"handler_id": handler_id})),
+        );
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("unregistered").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let cm = cm.read().await;
+        assert!(cm.handler_registry.get_handler(&handler_id).is_none());
     }
 }

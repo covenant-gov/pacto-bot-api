@@ -148,11 +148,11 @@ async fn start_http_daemon(
 
 /// A handler that forwards JSON-RPC messages to the dispatch layer.
 fn dispatch_handler(dispatch: Arc<Dispatch>) -> pacto_bot_api::transport::MessageHandler {
-    message_handler(move |msg, out_tx, handler_id| {
+    message_handler(move |msg, connection, handler_id| {
         let dispatch = Arc::clone(&dispatch);
         async move {
             dispatch
-                .handle_message(msg, handler_id.as_deref(), Some(out_tx))
+                .handle_message(msg, handler_id.as_deref(), Some(connection))
                 .await
         }
     })

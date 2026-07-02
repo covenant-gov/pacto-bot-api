@@ -1,4 +1,5 @@
 use crate::errors::DaemonError;
+use crate::handlers::ConnectionHandle;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
     JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message,
@@ -193,6 +194,7 @@ async fn handle_connection(
     // the dispatcher never blocks on a non-reading handler.
     const OUTBOUND_BUFFER: usize = 128;
     let (out_tx, mut out_rx) = mpsc::channel::<JsonRpcMessage>(OUTBOUND_BUFFER);
+    let connection = ConnectionHandle::with_transport(out_tx.clone(), "unix");
     let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // Writer task: forwards outbound messages to the socket.
@@ -244,7 +246,7 @@ async fn handle_connection(
                 Ok(msg) => {
                     let id = msg.id().cloned();
                     let current_handler_id = handler_id_for_loop.lock().await.clone();
-                    match handler(msg, out_tx.clone(), current_handler_id).await {
+                    match handler(msg, connection.clone(), current_handler_id).await {
                         Ok(resp) => resp,
                         Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
                     }

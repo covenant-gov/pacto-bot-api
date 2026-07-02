@@ -10,7 +10,9 @@
         "socket_path": { "type": "string" },
         "http_bind": { "type": "string" },
         "http_max_connections": { "type": "integer", "description": "Maximum concurrent HTTP connections" },
-        "http_idle_timeout_secs": { "type": "integer", "description": "Idle timeout for HTTP keep-alive connections in seconds" }
+        "http_idle_timeout_secs": { "type": "integer", "description": "Idle timeout for HTTP keep-alive connections in seconds" },
+        "handler_stale_timeout_secs": { "type": "integer", "minimum": 5, "description": "Seconds after a handler disconnect before it is reaped from the routing table" },
+        "handler_reap_interval_secs": { "type": "integer", "minimum": 1, "description": "Seconds between stale-handler reaper sweeps" }
       }
     },
     "bots": {

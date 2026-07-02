@@ -16,9 +16,9 @@ MODELS = ROOT / "python" / "src" / "pacto_bot_api" / "_generated" / "models.py"
 CLIENT = ROOT / "python" / "src" / "pacto_bot_api" / "_generated" / "client.py"
 
 
-HANDLER_REGISTER_PARAMS_SNAPSHOT = """\
+HANDLER_REGISTER_PARAMS_SNAPSHOT = '''\
 class HandlerRegisterParams(BaseModel):
-    \"\"\"
+    """
     Model for JSON-RPC method `handler.register`.
 
     Register a handler connection for event delivery.
@@ -28,7 +28,7 @@ class HandlerRegisterParams(BaseModel):
         >>> HandlerRegisterParams(bot_ids=[], capabilities=[], event_types=[])
 
     jsonrpc_method: ``"handler.register"``
-    \"\"\"
+    """
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Bot identities this handler wants to serve.
     bot_ids: list[str]
@@ -36,8 +36,10 @@ class HandlerRegisterParams(BaseModel):
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
+    # Optional previously assigned handler id to reuse after reconnect.
+    handler_id: str | None = None
 
-"""
+'''
 
 
 @pytest.fixture

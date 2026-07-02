@@ -254,11 +254,15 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         .await
         .map_err(|e| format!("failed to subscribe bots: {e}"))?;
 
-    let dispatch = Arc::new(Dispatch::new(
+    let mut dispatch = Dispatch::new(
         Arc::new(RwLock::new(client_manager)),
         db,
         diagnostics.clone(),
+    );
+    dispatch.set_handler_stale_timeout(Duration::from_secs(
+        config.daemon.handler_stale_timeout_secs,
     ));
+    let dispatch = Arc::new(dispatch);
 
     if let Err(e) = dispatch.restore_handlers().await {
         return Err(format!("failed to restore handler registrations: {e}"));
@@ -268,6 +272,13 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     let metrics_handle = dispatch
         .clone()
         .spawn_periodic_metrics(Duration::from_secs(30), metrics_shutdown_rx);
+
+    let (reaper_shutdown_tx, reaper_shutdown_rx) = watch::channel(false);
+    let reaper_handle = dispatch.clone().spawn_handler_reaper(
+        Duration::from_secs(config.daemon.handler_stale_timeout_secs),
+        Duration::from_secs(config.daemon.handler_reap_interval_secs),
+        reaper_shutdown_rx,
+    );
 
     let http_token = if cli.enable_http {
         Some(
@@ -350,6 +361,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     emit_agent_status(&diagnostics, &dispatch, DaemonStatus::ShuttingDown).await;
 
     let _ = metrics_shutdown_tx.send(true);
+    let _ = reaper_shutdown_tx.send(true);
 
     let force_rx = coordinator.force_rx;
     let graceful_shutdown = async {
@@ -368,6 +380,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         let _ = transport_shutdown_tx.send(());
         let _ = transport_handle.await;
         let _ = metrics_handle.await;
+        let _ = reaper_handle.await;
 
         nostr_client.disconnect().await;
 

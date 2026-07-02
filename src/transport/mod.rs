@@ -1,6 +1,7 @@
 use crate::config::DaemonConfig;
 use crate::dispatch::Dispatch;
 use crate::errors::DaemonError;
+use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::JsonRpcMessage;
 use std::future::Future;
 use std::path::PathBuf;
@@ -21,14 +22,14 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// Handler closure that processes an incoming JSON-RPC message and optionally
 /// returns a response.
 ///
-/// The transport provides an outbound sender so that the dispatch layer can
+/// The transport provides a [`ConnectionHandle`] so that the dispatch layer can
 /// wire live handler connections (e.g. for `agent.event` notifications). The
 /// `handler_id` argument is the server-generated id for connections that have
 /// already completed `handler.register`; it is `None` before registration.
 pub type MessageHandler = Arc<
     dyn Fn(
             JsonRpcMessage,
-            mpsc::Sender<JsonRpcMessage>,
+            ConnectionHandle,
             Option<String>,
         ) -> BoxFuture<Result<Option<JsonRpcMessage>, DaemonError>>
         + Send
@@ -40,7 +41,7 @@ pub(crate) enum TransportEvent {
     /// Route a JSON-RPC message to dispatch and return the response.
     Message(
         JsonRpcMessage,
-        Option<mpsc::Sender<JsonRpcMessage>>,
+        Option<ConnectionHandle>,
         Option<String>,
         oneshot::Sender<Result<Option<JsonRpcMessage>, DaemonError>>,
     ),
@@ -52,13 +53,10 @@ pub(crate) enum TransportEvent {
 /// Wrap a closure as a [`MessageHandler`].
 pub fn message_handler<F, Fut>(f: F) -> MessageHandler
 where
-    F: Fn(JsonRpcMessage, mpsc::Sender<JsonRpcMessage>, Option<String>) -> Fut
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(JsonRpcMessage, ConnectionHandle, Option<String>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Option<JsonRpcMessage>, DaemonError>> + Send + 'static,
 {
-    Arc::new(move |msg, out_tx, handler_id| Box::pin(f(msg, out_tx, handler_id)))
+    Arc::new(move |msg, connection, handler_id| Box::pin(f(msg, connection, handler_id)))
 }
 
 /// Combined transport layer exposing JSON-RPC over Unix socket and localhost HTTP.
@@ -135,13 +133,13 @@ impl TransportLayer {
             }
         });
 
-        let handler = message_handler(move |msg, out_tx, handler_id| {
+        let handler = message_handler(move |msg, connection, handler_id| {
             let tx = event_tx.clone();
             async move {
                 let (resp_tx, resp_rx) = oneshot::channel();
                 tx.send(TransportEvent::Message(
                     msg,
-                    Some(out_tx),
+                    Some(connection),
                     handler_id,
                     resp_tx,
                 ))
@@ -241,9 +239,9 @@ async fn dispatch_consumer(
 ) -> Result<(), DaemonError> {
     while let Some(event) = rx.recv().await {
         match event {
-            TransportEvent::Message(msg, out_tx, handler_id, resp_tx) => {
+            TransportEvent::Message(msg, connection, handler_id, resp_tx) => {
                 let resp = dispatch
-                    .handle_message(msg, handler_id.as_deref(), out_tx)
+                    .handle_message(msg, handler_id.as_deref(), connection)
                     .await;
                 let _ = resp_tx.send(resp);
             }

@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 #[cfg(test)]
 use secrecy::SecretString;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
 /// Capability a handler may request for a bot.
@@ -18,11 +19,24 @@ type ValidatedRegistration = (Vec<String>, Vec<EventType>, Vec<Capability>);
 #[derive(Debug, Clone)]
 pub struct ConnectionHandle {
     sender: Sender<JsonRpcMessage>,
+    transport: String,
 }
 
 impl ConnectionHandle {
     pub fn new(sender: Sender<JsonRpcMessage>) -> Self {
-        Self { sender }
+        Self::with_transport(sender, "unknown")
+    }
+
+    pub fn with_transport(sender: Sender<JsonRpcMessage>, transport: impl Into<String>) -> Self {
+        Self {
+            sender,
+            transport: transport.into(),
+        }
+    }
+
+    /// The transport label for this connection (e.g. `unix` or `http`).
+    pub fn transport(&self) -> &str {
+        &self.transport
     }
 
     /// Send a JSON-RPC notification to the connected handler.
@@ -54,6 +68,8 @@ pub struct HandlerRef {
     pub event_types: Vec<EventType>,
     pub capabilities: Vec<Capability>,
     pub registered_at: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub transport: String,
 }
 
 impl HandlerRef {
@@ -66,6 +82,14 @@ impl HandlerRef {
     /// disconnected entry until the handler reconnects.
     pub fn disconnect(&mut self) {
         self.connection = None;
+        self.last_seen = Utc::now();
+    }
+
+    /// Returns true if this handler has been disconnected longer than `timeout`.
+    pub fn is_stale(&self, timeout: Duration) -> bool {
+        !self.is_connected()
+            && Utc::now().signed_duration_since(self.last_seen)
+                > chrono::Duration::from_std(timeout).unwrap_or(chrono::Duration::MAX)
     }
 
     /// Returns true if this handler should receive events for the given bot and event type.
@@ -140,13 +164,17 @@ impl HandlerRegistry {
             Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
 
         let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let transport = connection.transport().to_string();
         let handler = HandlerRef {
             id: id.clone(),
             connection: Some(connection),
             bot_ids,
             event_types,
             capabilities,
-            registered_at: Utc::now(),
+            registered_at: now,
+            last_seen: now,
+            transport,
         };
 
         self.handlers.insert(id.clone(), handler);
@@ -172,11 +200,14 @@ impl HandlerRegistry {
         {
             let (bot_ids, event_types, capabilities) =
                 Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
+            let transport = connection.transport().to_string();
             existing.connection = Some(connection);
             existing.bot_ids = bot_ids;
             existing.event_types = event_types;
             existing.capabilities = capabilities;
             existing.registered_at = Utc::now();
+            existing.last_seen = Utc::now();
+            existing.transport = transport;
             return Ok(id.clone());
         }
 
@@ -184,7 +215,9 @@ impl HandlerRegistry {
     }
 
     /// Insert a persisted handler registration if it is not already present.
-    pub fn restore(&mut self, handler: HandlerRef) {
+    pub fn restore(&mut self, mut handler: HandlerRef) {
+        handler.last_seen = handler.registered_at;
+        handler.transport = "unknown".to_string();
         self.handlers.entry(handler.id.clone()).or_insert(handler);
     }
 
@@ -274,7 +307,16 @@ fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BotConfig, SigningConfig};
+    use crate::client_manager::ClientManager;
+    use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+    use crate::db::Database;
+    use crate::diagnostics::Diagnostics;
+    use crate::dispatch::Dispatch;
+    use crate::nostr::NostrClient;
+    use nostr::ToBech32;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+    use tokio::sync::RwLock;
 
     fn dummy_bot(id: &str, capabilities: &[&str]) -> BotConfig {
         BotConfig {
@@ -611,5 +653,97 @@ mod tests {
             status.capabilities,
             vec!["ReadMessages".to_string(), "SendMessages".to_string()]
         );
+    }
+
+    #[test]
+    fn connection_handle_carries_transport_label() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = ConnectionHandle::with_transport(tx, "http");
+        assert_eq!(handle.transport(), "http");
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = ConnectionHandle::new(tx);
+        assert_eq!(handle.transport(), "unknown");
+    }
+
+    #[test]
+    fn disconnected_handler_is_not_stale_immediately() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+        let handler_id = registry
+            .register(
+                dummy_handle(),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &bots,
+            )
+            .expect("register handler");
+
+        let handler = registry.get_handler_mut(&handler_id).unwrap();
+        handler.disconnect();
+
+        let handler = registry.get_handler(&handler_id).unwrap();
+        assert!(!handler.is_connected());
+        assert!(!handler.is_stale(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn reaping_removes_stale_handlers() {
+        let keys = nostr::Keys::generate();
+        let bot_config = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: keys.public_key().to_bech32().unwrap(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
+            },
+            relays: vec![],
+            capabilities: vec!["ReadMessages".to_string()],
+            ..Default::default()
+        };
+        let bots = vec![bot_config.clone()];
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots,
+        };
+        let nostr_client = NostrClient::new(vec![]).await.unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(config, nostr_client).await.unwrap(),
+        ));
+        let dir = tempdir().unwrap();
+        let db = Database::open(dir.path().join("test.db").as_path()).unwrap();
+        let diagnostics = Diagnostics::new();
+        let mut dispatch = Dispatch::new(cm.clone(), db, diagnostics);
+        dispatch.set_handler_stale_timeout(Duration::from_millis(10));
+        let dispatch = Arc::new(dispatch);
+
+        let handler_id = {
+            let mut cm = cm.write().await;
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            cm.handler_registry
+                .register(
+                    ConnectionHandle::with_transport(tx, "unix"),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config],
+                )
+                .unwrap()
+        };
+
+        // Disconnect the handler and wait for the reaper to remove it.
+        dispatch.disconnect_handler(&handler_id).await;
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reaper = dispatch.clone().spawn_handler_reaper(
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+            shutdown_rx,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let cm = cm.read().await;
+        assert!(cm.handler_registry.get_handler(&handler_id).is_none());
+
+        reaper.abort();
     }
 }

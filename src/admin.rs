@@ -25,12 +25,14 @@ use pacto_bot_api::signer::{Signer, SignerBackend};
 use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
-    JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
+    AgentListHandlersResponse, AgentUnregisterHandlerResponse, JsonRpcMessage, MetricsResponse,
+    parse_message, serialize_message,
 };
 use rusqlite::Connection;
 
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncReadExt;
 #[cfg(not(unix))]
@@ -142,6 +144,17 @@ const DIAGNOSE_AFTER_HELP: &str = r#"Examples:
 const STATUS_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin status
   pacto-bot-admin status --format json
+"#;
+
+const HANDLERS_AFTER_HELP: &str = r#"Examples:
+  # List all registered handlers
+  pacto-bot-admin handlers list
+
+  # Show a single handler
+  pacto-bot-admin handlers show <handler_id>
+
+  # Forcibly unregister a stale handler
+  pacto-bot-admin handlers unregister <handler_id>
 "#;
 
 const SCAFFOLD_AFTER_HELP: &str = r#"Examples:
@@ -306,6 +319,9 @@ enum Command {
         #[arg(short, long, value_name = "FORMAT", default_value = "text")]
         format: String,
     },
+    /// Manage registered handler connections.
+    #[command(subcommand)]
+    Handlers(HandlersCommand),
     /// Scaffold a handler project for an existing bot identity.
     #[command(after_help = SCAFFOLD_AFTER_HELP)]
     Scaffold {
@@ -342,6 +358,23 @@ enum Command {
         /// Output format. Valid values: llm.
         #[arg(short, long, value_name = "FORMAT", default_value = "llm")]
         format: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+#[command(after_help = HANDLERS_AFTER_HELP)]
+enum HandlersCommand {
+    /// List all registered handlers.
+    List,
+    /// Show a single handler by id.
+    Show {
+        #[arg(value_name = "HANDLER_ID")]
+        handler_id: String,
+    },
+    /// Forcibly unregister a handler from the routing table.
+    Unregister {
+        #[arg(value_name = "HANDLER_ID")]
+        handler_id: String,
     },
 }
 
@@ -427,6 +460,7 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         Command::RotateHttpToken => cmd_rotate_http_token(&cli.config, cli.data_dir),
         Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format).await,
         Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
+        Command::Handlers(sub) => cmd_handlers(&cli.config, cli.data_dir, &sub).await,
         Command::Docs { format } => cmd_docs(&format),
     }
 }
@@ -1344,6 +1378,19 @@ async fn cmd_status(
         None
     };
 
+    let live_handlers: Option<AgentListHandlersResponse> = if let Some(socket) = &socket_path {
+        #[cfg(unix)]
+        {
+            call_agent_list_handlers(socket).await.ok()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    } else {
+        None
+    };
+
     let live_snapshot = data_dir.as_deref().and_then(read_latest_report);
 
     // `daemon_running` is derived from the daemon's lock file, which is the
@@ -1365,6 +1412,25 @@ async fn cmd_status(
         .or_else(|| live_snapshot.as_ref().map(|s| s.handlers_registered))
         .unwrap_or(0);
 
+    let handlers: Vec<HandlerStatus> = live_handlers
+        .map(|r| {
+            r.handlers
+                .into_iter()
+                .map(|h| HandlerStatus {
+                    handler_id: h.handler_id,
+                    bot_ids: h.bot_ids,
+                    event_types: h.event_types,
+                    capabilities: h.capabilities,
+                    connected: h.connected,
+                    state: h.state,
+                    transport: h.transport,
+                    last_seen: h.last_seen,
+                    registered_at: h.registered_at,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut bot_statuses = Vec::new();
     if let Some(cfg) = &config {
         for bot in &cfg.bots {
@@ -1384,6 +1450,7 @@ async fn cmd_status(
         daemon_status,
         uptime_seconds,
         handlers_registered,
+        handlers,
         bots: bot_statuses,
     };
 
@@ -1495,6 +1562,138 @@ async fn call_agent_metrics(socket_path: &Path) -> Result<MetricsResponse, Daemo
         ))),
         _ => Err(DaemonError::Config("unexpected metrics response".into())),
     }
+}
+
+#[cfg(unix)]
+async fn call_agent_list_handlers(
+    socket_path: &Path,
+) -> Result<AgentListHandlersResponse, DaemonError> {
+    let request = JsonRpcMessage::request(
+        1.into(),
+        "agent.list_handlers",
+        Some(Value::Object(Default::default())),
+    );
+    let value = call_agent_request(socket_path, &request).await?;
+    let response = serde_json::from_value(value)?;
+    Ok(response)
+}
+
+#[cfg(unix)]
+async fn call_agent_unregister_handler(
+    socket_path: &Path,
+    handler_id: &str,
+) -> Result<AgentUnregisterHandlerResponse, DaemonError> {
+    let request = JsonRpcMessage::request(
+        2.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({"handler_id": handler_id})),
+    );
+    let value = call_agent_request(socket_path, &request).await?;
+    let response = serde_json::from_value(value)?;
+    Ok(response)
+}
+
+#[cfg(unix)]
+async fn call_agent_request(
+    socket_path: &Path,
+    request: &JsonRpcMessage,
+) -> Result<Value, DaemonError> {
+    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
+        .await
+        .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
+    let (reader, mut writer) = stream.into_split();
+    let line = format!("{}\n", serialize_message(request)?);
+    writer.write_all(line.as_bytes()).await?;
+
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    let n = tokio::time::timeout(Duration::from_secs(2), reader.read_until(b'\n', &mut buf))
+        .await
+        .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
+    if n == 0 {
+        return Err(DaemonError::Config("unix socket closed".into()));
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+    }
+    let line = String::from_utf8(buf)
+        .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
+
+    match parse_message(&line)? {
+        JsonRpcMessage::Response {
+            result: Some(value),
+            ..
+        } => Ok(value),
+        JsonRpcMessage::Response { result: None, .. } => {
+            Err(DaemonError::Config("empty daemon response".into()))
+        }
+        JsonRpcMessage::Error { error, .. } => Err(DaemonError::Config(format!(
+            "daemon error: {}",
+            error.message
+        ))),
+        _ => Err(DaemonError::Config("unexpected daemon response".into())),
+    }
+}
+
+#[cfg(unix)]
+async fn cmd_handlers(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    sub: &HandlersCommand,
+) -> Result<(), DaemonError> {
+    let config = match DaemonConfig::load(config_path) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("warning: failed to load config: {e}");
+            None
+        }
+    };
+
+    let data_dir = config
+        .as_ref()
+        .map(|c| resolve_data_dir(c, data_dir_override.clone()))
+        .or_else(|| data_dir_override.as_deref().map(expand_path_buf));
+
+    let socket_path: Option<PathBuf> = config
+        .as_ref()
+        .map(|c| PathBuf::from(c.socket_path()))
+        .or_else(|| data_dir.as_ref().map(|d| d.join("pacto-bot-api.sock")));
+
+    let socket_path = socket_path
+        .ok_or_else(|| DaemonError::Config("unable to determine daemon socket path".into()))?;
+
+    let response = call_agent_list_handlers(&socket_path).await?;
+
+    match sub {
+        HandlersCommand::List => {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        HandlersCommand::Show { handler_id } => {
+            let found = response
+                .handlers
+                .into_iter()
+                .find(|h| h.handler_id == *handler_id)
+                .ok_or_else(|| DaemonError::HandlerNotRegistered)?;
+            println!("{}", serde_json::to_string_pretty(&found)?);
+        }
+        HandlersCommand::Unregister { handler_id } => {
+            let result = call_agent_unregister_handler(&socket_path, handler_id).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn cmd_handlers(
+    _config_path: &Path,
+    _data_dir_override: Option<PathBuf>,
+    _sub: &HandlersCommand,
+) -> Result<(), DaemonError> {
+    Err(DaemonError::Config(
+        "handler management is only available on Unix platforms".into(),
+    ))
 }
 
 fn daemon_status_str(status: DaemonStatus) -> String {
@@ -1995,7 +2194,21 @@ struct StatusReport {
     daemon_status: Option<String>,
     uptime_seconds: u64,
     handlers_registered: u64,
+    handlers: Vec<HandlerStatus>,
     bots: Vec<BotStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct HandlerStatus {
+    handler_id: String,
+    bot_ids: Vec<String>,
+    event_types: Vec<String>,
+    capabilities: Vec<String>,
+    connected: bool,
+    state: String,
+    transport: String,
+    last_seen: String,
+    registered_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2286,6 +2499,19 @@ fn print_status_text(report: &StatusReport) -> Result<(), DaemonError> {
     }
     writeln!(out, "uptime: {}s", report.uptime_seconds).map_err(DaemonError::Io)?;
     writeln!(out, "handlers: {}", report.handlers_registered).map_err(DaemonError::Io)?;
+
+    if !report.handlers.is_empty() {
+        writeln!(out, "\nhandlers:").map_err(DaemonError::Io)?;
+        for h in &report.handlers {
+            writeln!(out, "  - handler_id: {}", h.handler_id).map_err(DaemonError::Io)?;
+            writeln!(out, "    state: {}", h.state).map_err(DaemonError::Io)?;
+            writeln!(out, "    transport: {}", h.transport).map_err(DaemonError::Io)?;
+            writeln!(out, "    bot_ids: {:?}", h.bot_ids).map_err(DaemonError::Io)?;
+            writeln!(out, "    event_types: {:?}", h.event_types).map_err(DaemonError::Io)?;
+            writeln!(out, "    capabilities: {:?}", h.capabilities).map_err(DaemonError::Io)?;
+            writeln!(out, "    last_seen: {}", h.last_seen).map_err(DaemonError::Io)?;
+        }
+    }
 
     if !report.bots.is_empty() {
         writeln!(out, "\nbots:").map_err(DaemonError::Io)?;
