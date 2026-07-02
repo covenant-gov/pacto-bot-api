@@ -399,9 +399,7 @@ fn bot_config_to_snippet(bot_config: &BotConfig) -> Result<String, DaemonError> 
     }
 
     match bot_config.relays.len() {
-        0 => lines.push(
-            "relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]".to_string(),
-        ),
+        0 => lines.push("relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]".to_string()),
         1 => lines.push(format!(
             "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
             bot_config.relays[0]

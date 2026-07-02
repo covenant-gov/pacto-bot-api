@@ -766,9 +766,7 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
     }
 
     match params.relays.len() {
-        0 => lines.push(
-            "relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]".to_string(),
-        ),
+        0 => lines.push("relays = [\"${PACTO_RELAY_URL:-ws://localhost:7000}\"]".to_string()),
         1 => lines.push(format!(
             "relays = [\"${{PACTO_RELAY_URL:-{}}}\"]",
             params.relays[0]
