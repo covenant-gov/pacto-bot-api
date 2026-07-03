@@ -6,6 +6,6 @@ description = "Python LLM bot template"
 [compatibility]
 contract = { name = "pacto-contract", range = ">=0.1.0, <0.2.0" }
 sdk = { name = "pacto-bot-sdk", range = ">=0.2.0, <0.3.0" }
-daemon = { range = ">=0.4.1, <0.5.0" }
+daemon = { range = ">=0.5.0, <0.6.0" }
 
 protected_files = ["bot.py", "tests/test_handlers.py"]

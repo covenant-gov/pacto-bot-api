@@ -146,7 +146,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: AdminLock {
-                    version: "0.4.1".to_string(),
+                    version: "0.5.0".to_string(),
                 },
             },
         }
