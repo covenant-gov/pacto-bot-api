@@ -154,13 +154,16 @@ impl Cache {
             return Ok(v.clone());
         }
 
-        let remote = list_github_contract_versions(name).await?;
+        let remote = list_github_contract_versions(name)
+            .await
+            .unwrap_or_default();
         let choice = remote
             .iter()
             .filter(|v| range.matches(v))
             .max()
             .cloned()
             .or_else(|| cached.into_iter().filter(|v| range.matches(v)).max())
+            .or_else(|| bundled_contract_version().ok().filter(|v| range.matches(v)))
             .ok_or_else(|| {
                 DaemonError::Config(format!(
                     "no published contract version satisfies {range} for {name}"
@@ -208,13 +211,14 @@ impl Cache {
             return Ok(v.clone());
         }
 
-        let remote = list_pypi_versions(name).await?;
+        let remote = list_pypi_versions(name).await.unwrap_or_default();
         let choice = remote
             .iter()
             .filter(|v| range.matches(v))
             .max()
             .cloned()
             .or_else(|| cached.into_iter().filter(|v| range.matches(v)).max())
+            .or_else(|| bundled_sdk_version().ok().filter(|v| range.matches(v)))
             .ok_or_else(|| {
                 DaemonError::Config(format!(
                     "no published SDK version satisfies {range} for {name}"
@@ -283,6 +287,36 @@ impl Cache {
         }
         Ok(removed)
     }
+}
+
+const BUNDLED_SDK_PYPROJECT: &str = include_str!("../../python/pyproject.toml");
+
+fn bundled_sdk_version() -> Result<semver::Version, DaemonError> {
+    let manifest: toml::Value = toml::from_str(BUNDLED_SDK_PYPROJECT)
+        .map_err(|e| DaemonError::Config(format!("bundled SDK pyproject.toml is invalid: {e}")))?;
+    let version_str = manifest
+        .get("project")
+        .and_then(|project| project.get("version"))
+        .and_then(|version| version.as_str())
+        .ok_or_else(|| {
+            DaemonError::Config("bundled SDK pyproject.toml missing project.version".into())
+        })?;
+    semver::Version::parse(version_str)
+        .map_err(|e| DaemonError::Config(format!("bundled SDK version is invalid: {e}")))
+}
+
+const BUNDLED_CONTRACT_JSON: &str = include_str!("../../schemas/jsonrpc.json");
+
+fn bundled_contract_version() -> Result<semver::Version, DaemonError> {
+    let value: serde_json::Value = serde_json::from_str(BUNDLED_CONTRACT_JSON)
+        .map_err(|e| DaemonError::Config(format!("bundled contract JSON is invalid: {e}")))?;
+    let version_str = value
+        .get("info")
+        .and_then(|info| info.get("version"))
+        .and_then(|version| version.as_str())
+        .ok_or_else(|| DaemonError::Config("bundled contract JSON missing info.version".into()))?;
+    semver::Version::parse(version_str)
+        .map_err(|e| DaemonError::Config(format!("bundled contract version is invalid: {e}")))
 }
 
 fn sanitize_dir_name(url: &str) -> String {
@@ -413,5 +447,17 @@ mod tests {
         let removed = cache.prune_older_than(0).unwrap();
         assert_eq!(removed, 1);
         assert!(!stale.exists());
+    }
+
+    #[test]
+    fn bundled_contract_version_parses() {
+        let version = bundled_contract_version().unwrap();
+        assert_eq!(version, semver::Version::new(0, 1, 0));
+    }
+
+    #[test]
+    fn bundled_sdk_version_parses() {
+        let version = bundled_sdk_version().unwrap();
+        assert_eq!(version, semver::Version::new(0, 2, 0));
     }
 }

@@ -24,7 +24,7 @@ Running a Pacto bot today requires orchestrating a lot of heavy, identical infra
 |------|--------------|-------------------|
 | **Bot operator** | Runs and secures the daemon | Configures `pacto-bot-api.toml`, manages keys/bunkers, runs `pacto-bot-admin` |
 | **Bot developer** | Writes bot behavior | Connects a handler over JSON-RPC, or uses the generated Python SDK |
-| **AI assistant** | Helps author or operate bots | Uses `pacto-bot-admin --llm-help` and the `python-pacto-bot` skill |
+| **AI assistant** | Helps author or operate bots | Uses `pacto-bot-admin --llm-help` and the `python-pacto-bot` skill installed from `pacto-bot-templates` |
 
 ## Key metrics
 
