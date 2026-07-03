@@ -330,7 +330,7 @@ async fn github_api_get(url: &str) -> Result<String, DaemonError> {
 }
 
 async fn list_github_contract_versions(name: &str) -> Result<Vec<semver::Version>, DaemonError> {
-    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "logicminds".into());
+    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "covenant-gov".into());
     let repo = std::env::var("PACTO_GITHUB_REPO").unwrap_or_else(|_| "pacto-bot-api".into());
     let url = format!("https://api.github.com/repos/{owner}/{repo}/releases");
     let body = github_api_get(&url).await?;
@@ -378,7 +378,7 @@ async fn list_pypi_versions(name: &str) -> Result<Vec<semver::Version>, DaemonEr
 
 #[allow(dead_code)]
 fn contract_asset_url(name: &str, version: &semver::Version) -> Result<String, DaemonError> {
-    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "logicminds".into());
+    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "covenant-gov".into());
     let repo = std::env::var("PACTO_GITHUB_REPO").unwrap_or_else(|_| "pacto-bot-api".into());
     let crate_version = env!("CARGO_PKG_VERSION");
     Ok(format!(

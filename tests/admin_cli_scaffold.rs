@@ -194,8 +194,8 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
 
     let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
     assert!(
-        compose.contains("ghcr.io/logicminds/pacto-bot-api:latest"),
-        "daemon image must be the published logicminds image"
+        compose.contains("ghcr.io/covenant-gov/pacto-bot-api:latest"),
+        "daemon image must be the published covenant-gov image"
     );
     assert!(
         compose.contains("nip46-bunker"),

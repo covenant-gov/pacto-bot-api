@@ -3,17 +3,17 @@
 # Install the latest (or a specific) pacto-bot-api release from GitHub.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
 #
 # Environment variables:
 #   INSTALL_PREFIX   installation prefix (default: /usr/local; binaries go to $INSTALL_PREFIX/bin)
 #   PACTO_VERSION    release to install, e.g. "0.1.0" or "v0.1.0" (default: latest)
-#   PACTO_REPO       owner/repo to download from (default: logicminds/pacto-bot-api)
+#   PACTO_REPO       owner/repo to download from (default: covenant-gov/pacto-bot-api)
 #   GITHUB_TOKEN     optional GitHub token to raise API rate limits
 #
 set -euo pipefail
 
-REPO="${PACTO_REPO:-logicminds/pacto-bot-api}"
+REPO="${PACTO_REPO:-covenant-gov/pacto-bot-api}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/usr/local}"
 BIN_DIR="${INSTALL_PREFIX}/bin"
 REQUESTED_VERSION="${PACTO_VERSION:-latest}"

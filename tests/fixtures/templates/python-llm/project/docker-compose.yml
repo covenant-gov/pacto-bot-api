@@ -2,7 +2,7 @@ name: {{bot_id}}
 
 services:
   daemon:
-    image: ghcr.io/logicminds/pacto-bot-api:latest
+    image: ghcr.io/covenant-gov/pacto-bot-api:latest
     environment:
       PACTO_DATA_DIR: /var/lib/pacto-bot-api
       PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock

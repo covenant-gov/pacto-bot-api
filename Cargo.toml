@@ -4,7 +4,7 @@ version = "0.4.1"
 edition = "2024"
 authors = ["Pacto Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/logicminds/pacto-bot-api"
+repository = "https://github.com/covenant-gov/pacto-bot-api"
 description = "Standalone daemon that multiplexes Pacto bot identities over JSON-RPC"
 rust-version = "1.96"
 

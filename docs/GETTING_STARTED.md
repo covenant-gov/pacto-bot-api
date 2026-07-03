@@ -135,7 +135,7 @@ The `pacto-bot-api` daemon is under active development in the `pacto-app` repo u
 
 ```bash
 # If it lives as a standalone repo (planned)
-git clone https://github.com/logicminds/pacto-bot-api.git
+git clone https://github.com/covenant-gov/pacto-bot-api.git
 ```
 
 ---

@@ -24,17 +24,17 @@ arm64), downloads the latest GitHub release, verifies the SHA-256 checksum, and
 installs both binaries into `/usr/local/bin`:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
 ```
 
 You can customize the installation with environment variables:
 
 ```bash
 # Install to ~/.local/bin instead of /usr/local/bin
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
 
 # Install a specific version instead of latest
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.4.1 bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.4.1 bash
 ```
 
 #### Build from source
@@ -42,7 +42,7 @@ curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/script
 Requires Rust 1.85 or later.
 
 ```bash
-git clone https://github.com/logicminds/pacto-bot-api
+git clone https://github.com/covenant-gov/pacto-bot-api
 cd pacto-bot-api
 cargo build --release
 ```

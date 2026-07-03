@@ -91,7 +91,7 @@ host socket to create or permission-manage.
 
 ### Images required for the stack
 
-The daemon image is pulled from `ghcr.io/logicminds/pacto-bot-api:latest`. The
+The daemon image is pulled from `ghcr.io/covenant-gov/pacto-bot-api:latest`. The
 relay and bunker images are pulled from the `pacto-dev-env` GHCR repository:
 `ghcr.io/covenant-gov/pacto-dev-env/nostr-relay:main` and
 `ghcr.io/covenant-gov/pacto-dev-env/nip46-bunker:main`.
