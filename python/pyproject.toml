@@ -27,10 +27,7 @@ packages = ["src/pacto_bot_sdk"]
 editable-mode = "lenient"
 
 [tool.hatch.build.targets.sdist]
-only-packages = true
-
-[tool.hatch.build.targets.sdist.exclude]
-paths = [
+exclude = [
     "examples",
     "tests",
     "scripts",
