@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate the pacto-bot-api Python SDK from schemas/jsonrpc.json.
+"""Generate the pacto-bot-sdk Python SDK from schemas/jsonrpc.json.
 
 This script is invoked by `cargo xtask codegen`. It reads the canonical
 OpenRPC catalog and emits typed Pydantic models and a low-level async client
-under python/src/pacto_bot_api/_generated/.
-"""
+under python/src/pacto_bot_sdk/_generated/."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -526,7 +528,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
 
     out.append("class PactoClient:\n")
     out.append(
-        '    \"\"\"Transport-agnostic async client for the pacto-bot-api daemon.\"\"\"\n\n'
+        '    """Transport-agnostic async client for the Pacto daemon."""\n\n'
     )
     out.append("    def __init__(self, transport: Any) -> None:\n")
     out.append("        self.transport = transport\n")
@@ -665,12 +667,40 @@ def read_schema() -> dict[str, Any]:
         return json.load(f)
 
 
+def fetch_contract(source: str) -> dict[str, Any]:
+    """Load the JSON-RPC contract from a local path or a http(s) URL."""
+    parsed = urllib.parse.urlparse(source)
+    if parsed.scheme in {"http", "https"}:
+        with urllib.request.urlopen(source, timeout=30) as response:  # noqa: S310
+            return json.load(response)
+
+    path = Path(source)
+    if not path.is_absolute():
+        path = repo_root() / path
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Generate the pacto-bot-sdk Python SDK from the JSON-RPC contract."
+    )
+    parser.add_argument(
+        "--contract-source",
+        default=None,
+        help="Path or URL to the JSON-RPC contract artifact (default: schemas/jsonrpc.json).",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    schema = read_schema()
-    generated_dir = repo_root() / "python" / "src" / "pacto_bot_api" / "_generated"
+    args = parse_args()
+    schema = fetch_contract(args.contract_source) if args.contract_source else read_schema()
+    generated_dir = repo_root() / "python" / "src" / "pacto_bot_sdk" / "_generated"
     generate_models(schema, generated_dir / "models.py")
     generate_client(schema, generated_dir / "client.py")
-    print("python: generated SDK from schemas/jsonrpc.json")
+    source = args.contract_source or "schemas/jsonrpc.json"
+    print(f"python: generated SDK from {source}")
 
 
 if __name__ == "__main__":

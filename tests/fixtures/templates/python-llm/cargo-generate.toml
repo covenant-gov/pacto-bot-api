@@ -1,0 +1,15 @@
+[template]
+name = "python-llm"
+description = "Python LLM bot template"
+
+[placeholders]
+bot_id = { type = "string", prompt = "Bot identity id, e.g. echo-bot", default = "my-bot" }
+bot_id_snake = { type = "string", prompt = "Snake-case bot id used for file/module names", default = "my_bot" }
+project_dir_name = { type = "string", prompt = "Outer project directory name", default = "my-bot-project" }
+commands = { type = "string", prompt = "Comma-separated slash-command names to stub out", default = "hello" }
+http = { type = "bool", prompt = "Include HTTP client dependencies?", default = false }
+command_handlers = { type = "text", prompt = "Pre-rendered @bot.command handler blocks (provided by the admin CLI)", default = "" }
+test_command_handlers = { type = "text", prompt = "Pre-rendered command test functions (provided by the admin CLI)", default = "" }
+command_list = { type = "text", prompt = "Pre-rendered command list for README (provided by the admin CLI)", default = "" }
+first_command = { type = "string", prompt = "First command name for HTTP test scaffolding", default = "hello" }
+manifest_contract_pieces = { type = "text", prompt = "Pre-rendered JSON contract pieces (provided by the admin CLI)", default = "" }

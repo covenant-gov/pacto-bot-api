@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from pacto_bot_api import (
+from pacto_bot_sdk import (
     AgentErrorParams,
     AgentEventParams,
     AgentMetricsParams,

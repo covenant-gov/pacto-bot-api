@@ -7,6 +7,85 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+fn setup_scaffold_env(cmd: &mut Command, temp: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let fixture_repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("templates");
+    let cache_dir = temp.join("cache");
+    fs::create_dir_all(cache_dir.join("contracts"))?;
+    fs::create_dir_all(cache_dir.join("sdks"))?;
+    fs::write(
+        cache_dir
+            .join("contracts")
+            .join("pacto-contract-0.1.0.json"),
+        "{}",
+    )?;
+    fs::write(
+        cache_dir.join("sdks").join("pacto-bot-sdk-0.2.0.json"),
+        "{}",
+    )?;
+    cmd.env("PACTO_TEMPLATE_REPO", &fixture_repo);
+    cmd.env("PACTO_CACHE_DIR", &cache_dir);
+    Ok(fixture_repo)
+}
+#[test]
+fn new_scaffold_lock_file_contains_expected_fields() -> Result<(), Box<dyn Error>> {
+    let temp = tempfile::tempdir()?;
+    let project_dir = temp.path().join("lock-check");
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "new",
+        "--scaffold",
+        "lock-bot",
+        "--backend",
+        "nsec",
+        "--relays",
+        "ws://localhost:7000",
+        "--commands",
+        "echo",
+        "--project-dir",
+        &project_dir.to_string_lossy(),
+    ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
+    cmd.assert().success();
+
+    let lock_path = project_dir
+        .join(".pacto")
+        .join("bots")
+        .join("lock-bot")
+        .join("scaffold.lock");
+    let lock_text = fs::read_to_string(&lock_path)?;
+
+    assert!(
+        lock_text.contains("lock_version = 1"),
+        "lock_version missing"
+    );
+    assert!(lock_text.contains("[template]"), "template table missing");
+    assert!(
+        lock_text.contains("path = \"python-llm\""),
+        "template path missing"
+    );
+    assert!(lock_text.contains("[contract]"), "contract table missing");
+    assert!(
+        lock_text.contains("name = \"pacto-contract\""),
+        "contract name missing"
+    );
+    assert!(lock_text.contains("[sdk]"), "sdk table missing");
+    assert!(
+        lock_text.contains("name = \"pacto-bot-sdk\""),
+        "sdk name missing"
+    );
+    assert!(lock_text.contains("[admin]"), "admin table missing");
+    assert!(
+        lock_text.contains("version = \"0.4.1\""),
+        "admin version missing"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     let temp = tempfile::tempdir()?;
@@ -26,9 +105,18 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
+    assert!(
+        project_dir
+            .join(".pacto")
+            .join("bots")
+            .join("echo-bot")
+            .join("scaffold.lock")
+            .is_file()
+    );
     assert!(
         project_dir
             .join("bots")
@@ -106,8 +194,8 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
 
     let compose = fs::read_to_string(project_dir.join("docker-compose.yml"))?;
     assert!(
-        compose.contains("ghcr.io/logicminds/pacto-bot-api:latest"),
-        "daemon image must be the published logicminds image"
+        compose.contains("ghcr.io/covenant-gov/pacto-bot-api:latest"),
+        "daemon image must be the published covenant-gov image"
     );
     assert!(
         compose.contains("nip46-bunker"),
@@ -178,6 +266,7 @@ fn new_scaffold_project_name_sets_project_directory() -> Result<(), Box<dyn Erro
         "my-custom-project",
     ]);
     cmd.current_dir(&temp);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
@@ -217,6 +306,7 @@ fn new_scaffold_uses_project_name_default() -> Result<(), Box<dyn Error>> {
         "echo",
     ]);
     cmd.current_dir(&temp);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
@@ -253,6 +343,7 @@ fn new_scaffold_project_dir_overrides_project_name() -> Result<(), Box<dyn Error
         &project_dir.to_string_lossy(),
     ]);
     cmd.current_dir(&temp);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
@@ -287,6 +378,7 @@ fn new_scaffold_no_tests_skips_test_files() -> Result<(), Box<dyn Error>> {
         "ws://localhost:7000",
     ]);
     cmd.current_dir(&temp);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(
@@ -345,6 +437,7 @@ fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Bo
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     let handler_before = fs::read_to_string(
@@ -362,6 +455,7 @@ fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Bo
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     let handler_after = fs::read_to_string(
@@ -402,6 +496,7 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     // Add a second bot identity to the shared config.
@@ -414,6 +509,7 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
         "--relays",
         "ws://localhost:7000",
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     let output = cmd.assert().success();
     let snippet = std::str::from_utf8(&output.get_output().stdout)?;
 
@@ -434,6 +530,7 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     assert!(
@@ -475,6 +572,7 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     fs::write(
@@ -490,6 +588,7 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     let readme = fs::read_to_string(project_dir.join("bots").join("echo-bot").join("README.md"))?;
@@ -520,6 +619,7 @@ fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     let nsec_value = extract_nsec(&project_dir.join("pacto-bot-api.toml"))?;
@@ -553,11 +653,20 @@ fn new_interactive_scaffold_prompts_and_creates_project() -> Result<(), Box<dyn 
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new").write_stdin(stdin);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success().stdout(predicate::str::contains(
         "Created scaffolded project for interactive-bot",
     ));
 
     assert!(project_dir.join("pacto-bot-api.toml").is_file());
+    assert!(
+        project_dir
+            .join(".pacto")
+            .join("bots")
+            .join("interactive-bot")
+            .join("scaffold.lock")
+            .is_file()
+    );
     assert!(
         project_dir
             .join("bots")
@@ -602,6 +711,7 @@ fn new_scaffold_with_http_adds_http_dependencies_and_tests() -> Result<(), Box<d
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
+    setup_scaffold_env(&mut cmd, temp.path())?;
     cmd.assert().success();
 
     let pyproject = fs::read_to_string(

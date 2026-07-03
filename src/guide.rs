@@ -71,6 +71,21 @@ pacto-bot-admin scaffold echo-bot --with-tests"#,
 
     render_command(
         out,
+        "update",
+        "Re-render a scaffolded bot project from its lock file while preserving user edits to protected files.",
+        r#"# Update an existing bot project from its lock file
+pacto-bot-admin update echo-bot
+
+# Force overwrite protected files
+pacto-bot-admin update echo-bot --force
+
+# Update a bot in a specific project directory
+pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
+        "- `--force` — overwrite protected files without prompting (never overwrites signing material or populated `pacto-bot-api.toml`).\n- `--refresh` — re-fetch cached artifacts from the template repository before resolving.\n- `--allow-hooks` — allow `cargo-generate` to execute pre/post-generation hooks.\n- `--project-dir` — target directory containing the bot (default: current directory).\n- The project must contain a `.pacto/bots/<bot-id>/scaffold.lock` file.",
+    );
+
+    render_command(
+        out,
         "publish-profile",
         "Publish a bot profile (kind:0) event.",
         "pacto-bot-admin publish-profile echo-bot",
@@ -165,7 +180,7 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("capabilities = [\"ReadMessages\"]\n");
     out.push_str("```\n\n");
     out.push_str("Signing backends:\n\n");
-    out.push_str("- `nsec` — dev-only local test key. Use `PACT_BOT_NSEC` environment variable or the config file.\n");
+    out.push_str("- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.\n");
     out.push_str("- `bunker_local` — NIP-46 bunker on the same machine.\n");
     out.push_str("- `bunker_remote` — production NIP-46 bunker reachable over `wss://`.\n\n");
     out.push_str("Run the daemon with:\n\n");

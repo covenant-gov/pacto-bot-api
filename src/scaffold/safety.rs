@@ -40,6 +40,10 @@ pub fn decide_write(
     denylist: &[PathBuf],
     prompt_fn: &mut dyn FnMut(&Path) -> Result<bool, DaemonError>,
 ) -> Result<WriteDecision, DaemonError> {
+    if !path.exists() {
+        return Ok(WriteDecision::Write);
+    }
+
     if denylist.iter().any(|p| p.as_path() == path) {
         return Err(DaemonError::Config(format!(
             "refusing to overwrite protected file: {}",
@@ -54,15 +58,11 @@ pub fn decide_write(
         )));
     }
 
-    if path.exists() && contains_secret_material(path)? {
+    if contains_secret_material(path)? {
         return Err(DaemonError::Config(format!(
             "refusing to overwrite protected file: {}",
             path.display()
         )));
-    }
-
-    if !path.exists() {
-        return Ok(WriteDecision::Write);
     }
 
     if policy.force {

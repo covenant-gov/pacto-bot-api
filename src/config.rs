@@ -500,13 +500,13 @@ signing = { backend = "nsec" }
     #[allow(unsafe_code)]
     fn env_var_expansion() {
         // SAFETY: test-only mutation of a unique environment variable name.
-        unsafe { env::set_var("PACT_TEST_NSEC", "nsec1fromenv") };
+        unsafe { env::set_var("PACTO_TEST_NSEC", "nsec1fromenv") };
         let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
 npub = "npub1a"
-signing = { backend = "nsec", nsec = "${PACT_TEST_NSEC}" }
+signing = { backend = "nsec", nsec = "${PACTO_TEST_NSEC}" }
 "#,
         );
 

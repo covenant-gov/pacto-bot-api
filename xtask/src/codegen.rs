@@ -11,7 +11,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Entry point invoked by `cargo xtask codegen`.
-pub fn run() -> Result<()> {
+///
+/// If `contract_source` is provided, the Python SDK generator consumes that
+/// artifact (local path or URL); otherwise it falls back to the in-repo
+/// `schemas/jsonrpc.json` snapshot.
+pub fn run(contract_source: Option<&str>) -> Result<()> {
     let root = find_workspace_root()?;
     let schemas_dir = root.join("schemas");
 
@@ -19,7 +23,7 @@ pub fn run() -> Result<()> {
     generate_protocol(&schemas_dir, &root)?;
     generate_metrics(&schemas_dir, &root)?;
     generate_service_compatibility(&schemas_dir, &root)?;
-    generate_python(&root)?;
+    generate_python(&root, contract_source)?;
 
     println!("codegen: generated Rust types from schemas/");
     Ok(())
@@ -186,16 +190,20 @@ fn generate_service_compatibility(schemas_dir: &Path, root: &Path) -> Result<()>
     Ok(())
 }
 
-fn generate_python(root: &Path) -> Result<()> {
+fn generate_python(root: &Path, contract_source: Option<&str>) -> Result<()> {
     let script = root.join("python").join("scripts").join("generate.py");
     if !script.exists() {
         bail!("python generator script not found: {}", script.display());
     }
 
     let python = std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into());
-    let status = std::process::Command::new(&python)
-        .arg(&script)
-        .current_dir(root)
+    let mut cmd = std::process::Command::new(&python);
+    cmd.arg(&script).current_dir(root);
+    if let Some(source) = contract_source {
+        cmd.arg("--contract-source").arg(source);
+    }
+
+    let status = cmd
         .status()
         .with_context(|| format!("failed to run python generator {}", script.display()))?;
 

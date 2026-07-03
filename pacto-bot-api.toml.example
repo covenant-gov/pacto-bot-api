@@ -10,7 +10,7 @@ http_bind = "127.0.0.1:9800"
 [[bots]]
 id = "echo-bot"
 npub = "npub1echobot..."
-signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }
+signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat", "wss://relay.damus.io"]
 capabilities = ["ReadMessages", "SendMessages"]
 

@@ -1,55 +1,16 @@
 //! Project generation logic for the scaffold command.
 
-use crate::scaffold::safety::{
-    OverwritePolicy, WriteDecision, decide_write, set_config_permissions,
-};
-use crate::scaffold::template::{Template, Value as TemplateValue};
-use include_dir::{Dir, include_dir};
+use crate::scaffold::lock::{ScaffoldLock, lock_path, write_lock};
+use crate::scaffold::merge::{MergeContext, merge_rendered};
+use crate::scaffold::render::render_template;
+use crate::scaffold::resolve::{Resolver, ResolverConfig};
+use crate::scaffold::safety::{OverwritePolicy, decide_write, set_config_permissions};
 use pacto_bot_api::config::BotConfig;
 use pacto_bot_api::errors::DaemonError;
 use secrecy::ExposeSecret;
-use serde::Deserialize;
-use std::collections::HashMap;
 use std::fs;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
-
-/// Templates embedded at compile time so the binary works after `cargo install`
-/// or when distributed without the source `templates/` directory.
-static TEMPLATES_DIR: Dir<'static> = include_dir!("templates");
-
-/// Lazily extracted copy of the embedded templates on disk.
-///
-/// Embedded templates are stored in the binary, but the existing template
-/// rendering code expects a filesystem directory. A one-time extraction to a
-/// temporary directory bridges the two without restructuring the renderer.
-static EMBEDDED_TEMPLATES: LazyLock<Result<tempfile::TempDir, String>> = LazyLock::new(|| {
-    let temp = tempfile::tempdir().map_err(|e| e.to_string())?;
-    extract_embedded_dir(&TEMPLATES_DIR, temp.path()).map_err(|e| e.to_string())?;
-    Ok(temp)
-});
-
-fn extract_embedded_dir(dir: &Dir, dest: &Path) -> Result<(), String> {
-    fs::create_dir_all(dest).map_err(|e| e.to_string())?;
-    // `include_dir` stores file paths relative to the included root, so all
-    // files are written underneath `dest` regardless of how deep we recurse.
-    for file in dir.files() {
-        let target = dest.join(file.path());
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        fs::write(target, file.contents()).map_err(|e| e.to_string())?;
-    }
-    for subdir in dir.dirs() {
-        // Create the subdirectory explicitly so empty directories are preserved,
-        // but keep passing the same `dest` because nested file paths are still
-        // relative to the original included root.
-        fs::create_dir_all(dest.join(subdir.path())).map_err(|e| e.to_string())?;
-        extract_embedded_dir(subdir, dest)?;
-    }
-    Ok(())
-}
 
 /// What kind of scaffold invocation is running.
 #[derive(Debug, Clone)]
@@ -65,38 +26,68 @@ pub enum ScaffoldMode {
 pub struct ScaffoldRequest {
     pub bot_id: String,
     pub language: String,
+    pub kind: String,
     pub commands: Vec<String>,
     pub with_tests: bool,
     pub http: bool,
     pub force: bool,
+    pub allow_hooks: bool,
     pub project_dir: PathBuf,
+    pub template_repo: String,
+    pub template_ref: Option<String>,
+    pub refresh: bool,
     pub mode: ScaffoldMode,
-}
-
-/// Template manifest describing metadata and protected files.
-#[derive(Debug, Clone, Deserialize)]
-struct Manifest {
-    #[serde(default)]
-    protected_files: Vec<String>,
 }
 
 /// Generate the project files described by `request`.
 ///
 /// This is the entry point used by both `pacto-bot-admin new --scaffold` and
 /// `pacto-bot-admin scaffold`.
-pub fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
+pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
     validate_commands(&request.commands)?;
 
-    let template_dir = template_dir_for_language(&request.language)?;
-    let manifest = load_manifest(&template_dir)?;
+    let config = ResolverConfig {
+        template_repo: request.template_repo.clone(),
+        template_ref: request.template_ref.clone(),
+        language: request.language.clone(),
+        kind: request.kind.clone(),
+        refresh: request.refresh,
+    };
+
+    let resolver = Resolver::new(config)?;
+    let bundle = resolver.resolve().await?;
+    let triple = bundle.triple;
+    let template_dir = bundle.template_dir;
+
+    let rendered = render_template(&template_dir, &request, request.allow_hooks)?;
 
     let policy = OverwritePolicy {
         force: request.force,
         interactive: std::io::stdin().is_terminal(),
         skip_existing: matches!(request.mode, ScaffoldMode::ExistingProject { .. }),
     };
-    let denylist = build_denylist(&request, &manifest);
-    let context = build_context(&request);
+
+    let manifest = bundle.manifest;
+
+    let mut denylist = Vec::new();
+    let bot_dir = request.project_dir.join("bots").join(&request.bot_id);
+    let bot_file_name = format!(
+        "{}.py",
+        crate::scaffold::merge::bot_id_snake(&request.bot_id)
+    );
+    for protected in &manifest.protected_files {
+        let resolved = if protected == "bot.py" {
+            bot_file_name.clone()
+        } else {
+            protected.clone()
+        };
+        if resolved == "pacto-bot-api.toml" {
+            denylist.push(request.project_dir.join(&resolved));
+        } else {
+            denylist.push(bot_dir.join(&resolved));
+        }
+    }
+    denylist.push(request.project_dir.join("pacto-bot-api.toml"));
 
     fs::create_dir_all(&request.project_dir).map_err(DaemonError::Io)?;
 
@@ -114,34 +105,21 @@ pub fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
         }
     }
 
-    render_templates(
-        &template_dir,
-        &request.project_dir,
-        &request.bot_id,
-        &context,
-        &policy,
-        &denylist,
-    )?;
+    let merge_context = MergeContext {
+        project_dir: request.project_dir.clone(),
+        bot_id: request.bot_id.clone(),
+        policy,
+        denylist,
+        append_compose: matches!(request.mode, ScaffoldMode::ExistingProject { .. }),
+    };
+    merge_rendered(&rendered.dir, &merge_context)?;
 
-    render_project_templates(
-        &template_dir,
-        &request.project_dir,
-        &context,
-        &policy,
-        &denylist,
-    )?;
-
-    copy_sdk_and_build_wheel(&template_dir, &request.project_dir, &policy)?;
-    copy_skills(&template_dir, &request.project_dir, &policy)?;
-
-    append_compose_services(
-        &template_dir,
-        &request.project_dir,
-        &request.bot_id,
-        &context,
-        &policy,
-        &denylist,
-    )?;
+    let lock = ScaffoldLock {
+        lock_version: crate::scaffold::lock::LOCK_VERSION,
+        triple,
+    };
+    let lock_file = lock_path(&request.project_dir, &request.bot_id);
+    write_lock(&lock_file, &lock)?;
 
     Ok(())
 }
@@ -162,164 +140,6 @@ fn validate_commands(commands: &[String]) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn template_dir_for_language(language: &str) -> Result<PathBuf, DaemonError> {
-    let relative = PathBuf::from("templates").join(language);
-
-    // Try to locate templates relative to the running executable so that
-    // tests and installed binaries can find them without relying on CWD.
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent();
-        while let Some(d) = dir {
-            let candidate = d.join(&relative);
-            if candidate.is_dir() {
-                return Ok(candidate);
-            }
-            dir = d.parent();
-        }
-    }
-
-    // Fallback to the current working directory.
-    if relative.is_dir() {
-        return Ok(relative);
-    }
-
-    // Final fallback: templates embedded at compile time.
-    let embedded = match EMBEDDED_TEMPLATES.as_ref() {
-        Ok(temp) => temp,
-        Err(e) => {
-            return Err(DaemonError::Config(format!(
-                "embedded templates unavailable: {e}"
-            )));
-        }
-    };
-    let candidate = embedded.path().join(language);
-    if candidate.is_dir() {
-        return Ok(candidate);
-    }
-
-    Err(DaemonError::Config(format!(
-        "template directory not found: {}",
-        relative.display()
-    )))
-}
-
-fn load_manifest(template_dir: &Path) -> Result<Manifest, DaemonError> {
-    let path = template_dir.join("manifest.toml");
-    if !path.exists() {
-        return Ok(Manifest {
-            protected_files: Vec::new(),
-        });
-    }
-    let raw = fs::read_to_string(&path).map_err(DaemonError::Io)?;
-    toml::from_str(&raw).map_err(|e| DaemonError::Config(format!("invalid manifest.toml: {e}")))
-}
-
-fn bot_target_dir(project_dir: &Path, bot_id: &str) -> PathBuf {
-    project_dir.join("bots").join(bot_id)
-}
-
-fn build_context(request: &ScaffoldRequest) -> HashMap<String, TemplateValue> {
-    let mut ctx = HashMap::new();
-    ctx.insert(
-        "bot_id".to_string(),
-        TemplateValue::from(request.bot_id.clone()),
-    );
-    ctx.insert(
-        "bot_id_snake".to_string(),
-        TemplateValue::from(bot_id_snake(&request.bot_id)),
-    );
-    ctx.insert(
-        "commands".to_string(),
-        TemplateValue::from(request.commands.clone()),
-    );
-    ctx.insert(
-        "first_command".to_string(),
-        TemplateValue::from(request.commands.first().cloned().unwrap_or_default()),
-    );
-    ctx.insert(
-        "project_dir_name".to_string(),
-        TemplateValue::from(
-            request
-                .project_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&request.bot_id)
-                .to_string(),
-        ),
-    );
-    ctx.insert(
-        "with_tests".to_string(),
-        TemplateValue::from(request.with_tests),
-    );
-    ctx.insert("http".to_string(), TemplateValue::from(request.http));
-    ctx.insert("no_http".to_string(), TemplateValue::from(!request.http));
-    ctx.insert(
-        "manifest_contract_pieces".to_string(),
-        TemplateValue::from(build_manifest_contract_pieces(request)),
-    );
-    ctx.insert("version".to_string(), TemplateValue::from("0.1.0"));
-    ctx
-}
-
-fn build_manifest_contract_pieces(request: &ScaffoldRequest) -> String {
-    let pieces: Vec<String> = request
-        .commands
-        .iter()
-        .map(|command| {
-            format!(
-                r#"    {{
-      "name": "{command}_reply",
-      "type": "event_response",
-      "timeout_seconds": 5,
-      "inject_event": {{
-        "bot_id": "{bot_id}",
-        "event_id": "{command}-0001",
-        "type": "dm_received",
-        "chat_id": null,
-        "content": "/{command}",
-        "rumor_id": "rumor-{command}-0001",
-        "author": "npub1sender",
-        "timestamp": 1700000000000
-      }},
-      "expect_response": {{
-        "event_id": "{command}-0001",
-        "action": "reply"
-      }}
-    }}"#,
-                command = command,
-                bot_id = request.bot_id
-            )
-        })
-        .collect();
-    pieces.join(",\n")
-}
-
-fn bot_id_snake(bot_id: &str) -> String {
-    bot_id.replace(['-', '.'], "_")
-}
-
-fn build_denylist(request: &ScaffoldRequest, manifest: &Manifest) -> Vec<PathBuf> {
-    let mut denylist = Vec::new();
-
-    let bot_dir = bot_target_dir(&request.project_dir, &request.bot_id);
-
-    // When retrofitting an existing bot, never overwrite its populated config.
-    if matches!(request.mode, ScaffoldMode::ExistingProject { .. }) {
-        denylist.push(request.project_dir.join("pacto-bot-api.toml"));
-    }
-
-    // Manifest-declared protected files are relative to the bot directory.
-    for protected in &manifest.protected_files {
-        if protected == "pacto-bot-api.toml" {
-            denylist.push(request.project_dir.join(protected));
-        } else {
-            denylist.push(bot_dir.join(protected));
-        }
-    }
-
-    denylist
-}
-
 fn write_config_snippet(
     path: &Path,
     snippet: &str,
@@ -334,17 +154,17 @@ socket_path = "${PACTO_SOCKET_PATH:-~/.local/share/pacto-bot-api/pacto-bot-api.s
     let full_snippet = format!("{daemon_section}{snippet}");
 
     match decide_write(path, policy, denylist, &mut prompt_overwrite)? {
-        WriteDecision::Write => {
+        crate::scaffold::safety::WriteDecision::Write => {
             fs::write(path, &full_snippet).map_err(DaemonError::Io)?;
             set_config_permissions(path)?;
             println!("Created {}", path.display());
             Ok(())
         }
-        WriteDecision::Skip => {
+        crate::scaffold::safety::WriteDecision::Skip => {
             println!("Skipped {}", path.display());
             Ok(())
         }
-        WriteDecision::Abort => unreachable!(),
+        crate::scaffold::safety::WriteDecision::Abort => unreachable!(),
     }
 }
 
@@ -358,8 +178,6 @@ fn append_config_entry(path: &Path, bot_config: &BotConfig) -> Result<(), Daemon
         return Ok(());
     }
 
-    // Appending a new [[bots]] entry is additive, not destructive, so it does
-    // not require an overwrite prompt.
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(path)
@@ -442,364 +260,6 @@ fn format_toml_array(items: &[String]) -> String {
     }
 }
 
-fn render_templates(
-    template_dir: &Path,
-    project_dir: &Path,
-    bot_id: &str,
-    context: &HashMap<String, TemplateValue>,
-    policy: &OverwritePolicy,
-    denylist: &[PathBuf],
-) -> Result<(), DaemonError> {
-    let target_dir = bot_target_dir(project_dir, bot_id);
-    fs::create_dir_all(&target_dir).map_err(DaemonError::Io)?;
-
-    render_template_tree(
-        template_dir,
-        &target_dir,
-        template_dir,
-        context,
-        policy,
-        denylist,
-    )?;
-
-    Ok(())
-}
-
-/// Render project-level templates (README.md, AGENTS.md, ...) into the project
-/// root. These templates live under `<language>/project/` in the template tree.
-fn render_project_templates(
-    template_dir: &Path,
-    project_dir: &Path,
-    context: &HashMap<String, TemplateValue>,
-    policy: &OverwritePolicy,
-    denylist: &[PathBuf],
-) -> Result<(), DaemonError> {
-    let project_template_dir = template_dir.join("project");
-    if !project_template_dir.is_dir() {
-        return Ok(());
-    }
-
-    render_template_tree(
-        &project_template_dir,
-        project_dir,
-        &project_template_dir,
-        context,
-        policy,
-        denylist,
-    )?;
-
-    Ok(())
-}
-
-/// Copy the vendored SDK source to the project root and build a wheel from it.
-fn copy_sdk_and_build_wheel(
-    template_dir: &Path,
-    project_dir: &Path,
-    policy: &OverwritePolicy,
-) -> Result<(), DaemonError> {
-    let source = template_dir.join("sdk");
-    let target = project_dir.join("sdk");
-    if !source.is_dir() {
-        return Ok(());
-    }
-    if target.exists() && policy.skip_existing {
-        println!("Skipped {}", target.display());
-        return Ok(());
-    }
-    if target.exists() && !policy.force && policy.interactive && !prompt_overwrite_dir(&target)? {
-        println!("Skipped {}", target.display());
-        return Ok(());
-    }
-
-    copy_dir_all(&source, &target)?;
-    println!("Copied {}", target.display());
-
-    // Try to build a wheel from the vendored SDK. Failure is non-fatal: the
-    // source is present and can be built manually.
-    if build_wheel(&target).is_err() {
-        println!(
-            "Warning: failed to build SDK wheel; install the SDK manually with `python -m build --wheel ./sdk`"
-        );
-    }
-
-    Ok(())
-}
-
-/// Copy the agent skill directory to the project root.
-fn copy_skills(
-    template_dir: &Path,
-    project_dir: &Path,
-    policy: &OverwritePolicy,
-) -> Result<(), DaemonError> {
-    let source = template_dir.join("skills");
-    let target = project_dir.join("skills");
-    if !source.is_dir() {
-        return Ok(());
-    }
-    if target.exists() && policy.skip_existing {
-        println!("Skipped {}", target.display());
-        return Ok(());
-    }
-    if target.exists() && !policy.force && policy.interactive && !prompt_overwrite_dir(&target)? {
-        println!("Skipped {}", target.display());
-        return Ok(());
-    }
-
-    copy_dir_all(&source, &target)?;
-    println!("Copied {}", target.display());
-    Ok(())
-}
-
-fn build_wheel(sdk_dir: &Path) -> Result<(), DaemonError> {
-    let output = std::process::Command::new("python")
-        .args(["-m", "build", "--wheel", &sdk_dir.to_string_lossy()])
-        .output()
-        .map_err(DaemonError::Io)?;
-    if !output.status.success() {
-        return Err(DaemonError::Io(std::io::Error::other(format!(
-            "wheel build failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))));
-    }
-    println!("Built SDK wheel in {}", sdk_dir.join("dist").display());
-    Ok(())
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), DaemonError> {
-    fs::create_dir_all(dst).map_err(DaemonError::Io)?;
-    for entry in fs::read_dir(src).map_err(DaemonError::Io)? {
-        let entry = entry.map_err(DaemonError::Io)?;
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
-        if file_name_str == "__pycache__" || file_name_str.ends_with(".pyc") {
-            continue;
-        }
-        let source = entry.path();
-        let target = dst.join(&file_name);
-        if source.is_dir() {
-            copy_dir_all(&source, &target)?;
-        } else {
-            fs::copy(&source, &target).map_err(DaemonError::Io)?;
-        }
-    }
-    Ok(())
-}
-
-fn prompt_overwrite_dir(path: &Path) -> Result<bool, DaemonError> {
-    println!(
-        "Directory {} already exists. Overwrite? [y/N]:",
-        path.display()
-    );
-    let mut buf = String::new();
-    std::io::stdin()
-        .read_line(&mut buf)
-        .map_err(DaemonError::Io)?;
-    Ok(buf.trim().eq_ignore_ascii_case("y"))
-}
-
-fn render_template_tree(
-    template_dir: &Path,
-    target_dir: &Path,
-    current: &Path,
-    context: &HashMap<String, TemplateValue>,
-    policy: &OverwritePolicy,
-    denylist: &[PathBuf],
-) -> Result<(), DaemonError> {
-    for entry in fs::read_dir(current).map_err(DaemonError::Io)? {
-        let entry = entry.map_err(DaemonError::Io)?;
-        let source = entry.path();
-        let file_name = entry.file_name();
-
-        if current == template_dir && file_name == "manifest.toml" {
-            continue;
-        }
-
-        // docker-compose.yml is handled separately so services can be merged
-        // when scaffolding additional bots into an existing project.
-        if current == template_dir && file_name == "docker-compose.yml" {
-            continue;
-        }
-
-        // Project-level templates (README.md, AGENTS.md, etc.) are rendered
-        // directly into the project root rather than under bots/<bot-id>/.
-        if current == template_dir && file_name == "project" && source.is_dir() {
-            continue;
-        }
-
-        // SDK and skills directories are copied as-is to the project root.
-        if current == template_dir
-            && (file_name == "sdk" || file_name == "skills")
-            && source.is_dir()
-        {
-            continue;
-        }
-
-        let relative = source.strip_prefix(current).map_err(|e| {
-            DaemonError::Config(format!("failed to compute relative template path: {e}"))
-        })?;
-
-        let relative_str = relative.to_string_lossy();
-        if relative_str.starts_with("tests/") && !context["with_tests"].is_truthy() {
-            continue;
-        }
-
-        // Skip the tests directory entirely when not generating tests so that
-        // an empty `tests/` folder is not left behind.
-        if source.is_dir()
-            && current == template_dir
-            && file_name == "tests"
-            && !context["with_tests"].is_truthy()
-        {
-            continue;
-        }
-
-        let target = if file_name == "bot.py" {
-            target_dir.join(format!(
-                "{}.py",
-                context["bot_id_snake"].as_str().unwrap_or("bot")
-            ))
-        } else {
-            target_dir.join(relative)
-        };
-
-        if source.is_dir() {
-            fs::create_dir_all(&target).map_err(DaemonError::Io)?;
-            render_template_tree(template_dir, &target, &source, context, policy, denylist)?;
-        } else {
-            render_template_file(&source, &target, context, policy, denylist)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn render_template_file(
-    source: &Path,
-    target: &Path,
-    context: &HashMap<String, TemplateValue>,
-    policy: &OverwritePolicy,
-    denylist: &[PathBuf],
-) -> Result<(), DaemonError> {
-    let raw = fs::read_to_string(source).map_err(DaemonError::Io)?;
-    let template = Template::new(&raw);
-    let rendered = template.render(context)?;
-
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(DaemonError::Io)?;
-    }
-
-    match decide_write(target, policy, denylist, &mut prompt_overwrite)? {
-        WriteDecision::Write => {
-            fs::write(target, rendered).map_err(DaemonError::Io)?;
-            println!("Created {}", target.display());
-        }
-        WriteDecision::Skip => {
-            println!("Skipped {}", target.display());
-        }
-        WriteDecision::Abort => unreachable!(),
-    }
-
-    Ok(())
-}
-
-fn append_compose_services(
-    template_dir: &Path,
-    project_dir: &Path,
-    bot_id: &str,
-    context: &HashMap<String, TemplateValue>,
-    policy: &OverwritePolicy,
-    denylist: &[PathBuf],
-) -> Result<(), DaemonError> {
-    let compose_path = project_dir.join("docker-compose.yml");
-
-    if !compose_path.exists() {
-        // First bot in the project: render the template compose file as-is.
-        let source = template_dir.join("docker-compose.yml");
-        render_template_file(&source, &compose_path, context, policy, denylist)?;
-        return Ok(());
-    }
-
-    // Additional bot: merge services into the existing compose file.
-    let raw = fs::read_to_string(&compose_path).map_err(DaemonError::Io)?;
-    let mut compose: serde_yaml::Value = serde_yaml::from_str(&raw)
-        .map_err(|e| DaemonError::Config(format!("invalid docker-compose.yml: {e}")))?;
-
-    let services = compose
-        .get_mut("services")
-        .and_then(|v| v.as_mapping_mut())
-        .ok_or_else(|| DaemonError::Config("docker-compose.yml missing services mapping".into()))?;
-
-    let bot_service = serde_yaml::Mapping::from_iter([
-        (
-            serde_yaml::Value::String("build".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
-                (
-                    serde_yaml::Value::String("context".to_string()),
-                    serde_yaml::Value::String(".".to_string()),
-                ),
-                (
-                    serde_yaml::Value::String("dockerfile".to_string()),
-                    serde_yaml::Value::String(format!("./bots/{bot_id}/Dockerfile")),
-                ),
-            ])),
-        ),
-        (
-            serde_yaml::Value::String("environment".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([
-                (
-                    serde_yaml::Value::String("PACTO_TRANSPORT".to_string()),
-                    serde_yaml::Value::String("unix".to_string()),
-                ),
-                (
-                    serde_yaml::Value::String("PACTO_SOCKET_PATH".to_string()),
-                    serde_yaml::Value::String("/run/pacto/pacto-bot-api.sock".to_string()),
-                ),
-            ])),
-        ),
-        (
-            serde_yaml::Value::String("volumes".to_string()),
-            serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
-                "pacto-socket:/run/pacto:ro".to_string(),
-            )]),
-        ),
-        (
-            serde_yaml::Value::String("depends_on".to_string()),
-            serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                serde_yaml::Value::String("daemon".to_string()),
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::from_iter([(
-                    serde_yaml::Value::String("condition".to_string()),
-                    serde_yaml::Value::String("service_started".to_string()),
-                )])),
-            )])),
-        ),
-        (
-            serde_yaml::Value::String("restart".to_string()),
-            serde_yaml::Value::String("on-failure".to_string()),
-        ),
-    ]);
-
-    services.insert(
-        serde_yaml::Value::String(bot_id.to_string()),
-        serde_yaml::Value::Mapping(bot_service),
-    );
-
-    let updated = serde_yaml::to_string(&compose)
-        .map_err(|e| DaemonError::Config(format!("failed to serialize docker-compose.yml: {e}")))?;
-
-    match decide_write(&compose_path, policy, denylist, &mut prompt_overwrite)? {
-        WriteDecision::Write => {
-            fs::write(&compose_path, updated).map_err(DaemonError::Io)?;
-            println!("Updated {}", compose_path.display());
-        }
-        WriteDecision::Skip => {
-            println!("Skipped {}", compose_path.display());
-        }
-        WriteDecision::Abort => unreachable!(),
-    }
-
-    Ok(())
-}
-
 fn prompt_overwrite(path: &Path) -> Result<bool, DaemonError> {
     println!("File {} already exists. Overwrite? [y/N]:", path.display());
     let mut buf = String::new();
@@ -820,38 +280,11 @@ mod tests {
     use secrecy::SecretString;
 
     #[test]
-    fn bot_id_snake_replaces_hyphens() {
-        assert_eq!(bot_id_snake("echo-bot"), "echo_bot");
-        assert_eq!(bot_id_snake("my-cool-bot"), "my_cool_bot");
-    }
-
-    #[test]
     fn validate_commands_rejects_invalid_names() {
         assert!(validate_commands(&["echo".to_string(), "help_me".to_string()]).is_ok());
         assert!(validate_commands(&["Echo".to_string()]).is_err());
         assert!(validate_commands(&["echo!".to_string()]).is_err());
         assert!(validate_commands(&["help-me".to_string()]).is_err());
-    }
-
-    #[test]
-    fn build_context_includes_bot_values() {
-        let request = ScaffoldRequest {
-            bot_id: "echo-bot".to_string(),
-            language: "python".to_string(),
-            commands: vec!["echo".to_string()],
-            with_tests: true,
-            http: false,
-            force: false,
-            project_dir: PathBuf::from("/tmp/echo-bot"),
-            mode: ScaffoldMode::NewProject {
-                snippet: "[[bots]]\n".to_string(),
-            },
-        };
-        let ctx = build_context(&request);
-        assert_eq!(ctx["bot_id"].as_str(), Some("echo-bot"));
-        assert_eq!(ctx["bot_id_snake"].as_str(), Some("echo_bot"));
-        assert!(ctx["with_tests"].is_truthy());
-        assert!(!ctx["http"].is_truthy());
     }
 
     #[test]
@@ -870,5 +303,14 @@ mod tests {
         assert!(snippet.contains("id = \"echo-bot\""));
         assert!(snippet.contains("nsec = \"nsec1secret\""));
         assert!(snippet.contains("backend = \"nsec\""));
+    }
+
+    #[test]
+    fn format_toml_array_handles_empty_and_items() {
+        assert_eq!(format_toml_array(&[]), "[]");
+        assert_eq!(
+            format_toml_array(&["a".into(), "b c".into()]),
+            "[\"a\", \"b c\"]"
+        );
     }
 }

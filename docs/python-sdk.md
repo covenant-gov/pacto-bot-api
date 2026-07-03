@@ -2,7 +2,7 @@
 
 The generated Python SDK lives in `python/` and is produced from `schemas/jsonrpc.json` via `cargo xtask codegen`.
 
-> **Migration note:** `examples/pacto_sdk.py` was a temporary hand-written seed. New bots should use the generated SDK (`from pacto_bot_api import Bot`) documented in [`python/README.md`](../python/README.md).
+> **Migration note:** `examples/pacto_sdk.py` was a temporary hand-written seed. New bots should use the generated SDK (`from pacto_bot_sdk import Bot`) documented in [`python/README.md`](../python/README.md).
 
 ## Quick start
 
@@ -31,4 +31,4 @@ See [`python/README.md`](../python/README.md) for:
 cargo xtask codegen
 ```
 
-The generated files under `python/src/pacto_bot_api/_generated/` are checked into git. CI enforces schema sync via `tests/schema_sync.rs`.
+The generated files under `python/src/pacto_bot_sdk/_generated/` are checked into git. CI enforces schema sync via `tests/schema_sync.rs`.

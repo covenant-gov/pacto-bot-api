@@ -29,8 +29,8 @@ const TRACKED_GENERATED_FILES: &[&str] = &[
 
 /// Python files produced by `cargo xtask codegen` from `schemas/jsonrpc.json`.
 const TRACKED_GENERATED_PYTHON_FILES: &[&str] = &[
-    "python/src/pacto_bot_api/_generated/models.py",
-    "python/src/pacto_bot_api/_generated/client.py",
+    "python/src/pacto_bot_sdk/_generated/models.py",
+    "python/src/pacto_bot_sdk/_generated/client.py",
 ];
 
 /// Schema files that are intentionally not represented by a generated Rust

@@ -12,8 +12,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 GENERATOR = ROOT / "python" / "scripts" / "generate.py"
-MODELS = ROOT / "python" / "src" / "pacto_bot_api" / "_generated" / "models.py"
-CLIENT = ROOT / "python" / "src" / "pacto_bot_api" / "_generated" / "client.py"
+MODELS = ROOT / "python" / "src" / "pacto_bot_sdk" / "_generated" / "models.py"
+CLIENT = ROOT / "python" / "src" / "pacto_bot_sdk" / "_generated" / "client.py"
 
 
 HANDLER_REGISTER_PARAMS_SNAPSHOT = '''\

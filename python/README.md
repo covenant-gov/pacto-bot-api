@@ -1,4 +1,4 @@
-# pacto-bot-api Python SDK
+# pacto-bot-sdk Python SDK
 
 Generated, typed Python SDK for the [`pacto-bot-api`](https://github.com/covenant-gov/pacto-bot-api) daemon.
 
@@ -16,7 +16,7 @@ A complete bot in ~30 lines:
 
 ```python
 #!/usr/bin/env python3
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="greeting-bot")
 
@@ -114,7 +114,7 @@ Valid actions are:
 ## High-level `Bot` API
 
 ```python
-from pacto_bot_api import Bot, parse_command
+from pacto_bot_sdk import Bot, parse_command
 
 bot = Bot(
     bot_id="my-bot",
@@ -172,7 +172,7 @@ automatically after the cooling-off period plus a successful probe.
 Install the `http` extra to pull in `httpx` for bots that call external APIs:
 
 ```bash
-pip install "pacto-bot-api[http]"
+pip install "pacto-bot-sdk[http]"
 ```
 
 ### Transport resolution
@@ -192,8 +192,8 @@ Settings resolve in this order: explicit constructor argument → CLI flag → e
 For advanced bots, use the generated async client directly:
 
 ```python
-from pacto_bot_api import PactoClient
-from pacto_bot_api.transports import UnixTransport
+from pacto_bot_sdk import PactoClient
+from pacto_bot_sdk.transports import UnixTransport
 
 transport = UnixTransport("/tmp/pacto.sock")
 client = PactoClient(transport)

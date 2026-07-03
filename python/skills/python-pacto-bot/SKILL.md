@@ -1,19 +1,19 @@
 # python-pacto-bot
 
-Use this skill **only** when the user explicitly asks to write, scaffold, or modify a Python bot for the `pacto-bot-api` daemon using the generated `pacto_bot_api` SDK.
+Use this skill **only** when the user explicitly asks to write, scaffold, or modify a Python bot for the `pacto-bot-api` daemon using the generated `pacto_bot_sdk` SDK.
 
-This skill is **not** for generic bots, Discord bots, Slack bots, Telegram bots, or any other bot framework. If the user says "create a bot" without mentioning Pacto or `pacto_bot_api`, do **not** load this skill.
+This skill is **not** for generic bots, Discord bots, Slack bots, Telegram bots, or any other bot framework. If the user says "create a bot" without mentioning Pacto or `pacto_bot_sdk`, do **not** load this skill.
 
 ## Trigger phrases
 
 - "create a python pacto bot"
 - "write a python bot for pacto-bot-api"
 - "pacto python bot"
-- "pacto_bot_api bot"
-- "pacto_bot_api SDK bot"
+- "pacto_bot_sdk bot"
+- "pacto_bot_sdk SDK bot"
 - "add a pacto python example bot"
 - "pacto python handler"
-- "python bot using pacto_bot_api"
+- "python bot using pacto_bot_sdk"
 
 ## Disambiguation
 
@@ -21,7 +21,7 @@ This skill is **not** for generic bots, Discord bots, Slack bots, Telegram bots,
 |---|---|
 | "create a python pacto bot" | Yes |
 | "write a bot for pacto-bot-api" | Yes |
-| "pacto_bot_api SDK" | Yes |
+| "pacto_bot_sdk SDK" | Yes |
 | "create a bot" | No — too generic |
 | "discord bot" / "slack bot" / "telegram bot" | No — wrong framework |
 | "rust bot" / "go bot" | No — wrong language |
@@ -61,7 +61,7 @@ pacto-bot-admin scaffold my-bot --commands hello,help
 
 The generated project uses the layout under `templates/python/`. Inside the project:
 
-- `bots/my-bot/my_bot.py` — handler file using `from pacto_bot_api import Bot`.
+- `bots/my-bot/my_bot.py` — handler file using `from pacto_bot_sdk import Bot`.
 - `bots/my-bot/Dockerfile` — container image for the bot.
 - `docker-compose.yml` — compose stack for the bot, daemon, and optional bunker.
 - `pacto-bot-api.toml` — daemon config with the bot identity (mode `0o600`).
@@ -92,7 +92,7 @@ Usage:
 
 from __future__ import annotations
 
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="my-bot")
 
@@ -150,8 +150,8 @@ async def later(event, bot):
 ### Using the low-level client directly
 
 ```python
-from pacto_bot_api import PactoClient
-from pacto_bot_api.transports import UnixTransport
+from pacto_bot_sdk import PactoClient
+from pacto_bot_sdk.transports import UnixTransport
 
 client = PactoClient(UnixTransport("/tmp/pacto.sock"))
 await client.connect()
@@ -233,7 +233,7 @@ pacto-bot-api --config pacto-bot-api.toml --data-dir ~/.local/share/pacto-bot-ap
 
 ## Verification checklist
 
-- [ ] Bot imports `from pacto_bot_api import Bot`.
+- [ ] Bot imports `from pacto_bot_sdk import Bot`.
 - [ ] `Bot(bot_id=...)` is constructed with explicit id.
 - [ ] At least one `@bot.command` or `@bot.default` is registered.
 - [ ] Handler returns a dict with `event_id` and `action`, or `None`.

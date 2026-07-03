@@ -559,10 +559,10 @@ The sidecar hits the sweet spot: always-on, language-agnostic, plaintext stays o
 The sidecar communicates with Pacto over a Unix domain socket at a well-known path:
 
 ```
-$PACT_DATA_DIR/agent.sock
+$PACTO_DATA_DIR/agent.sock
 ```
 
-Where `$PACT_DATA_DIR` is Pacto's per-identity data directory (e.g., `~/.local/share/com.covenant-gov.pacto/<npub>/`).
+Where `$PACTO_DATA_DIR` is Pacto's per-identity data directory (e.g., `~/.local/share/com.covenant-gov.pacto/<npub>/`).
 
 **Why Unix sockets over localhost TCP:**
 - Filesystem permissions provide access control (only the user running Pacto can connect)
@@ -827,7 +827,7 @@ asyncio.run(main())
 
 Pacto discovers the sidecar by checking for the socket file:
 
-1. On startup, Pacto checks `$PACT_DATA_DIR/agent.sock`
+1. On startup, Pacto checks `$PACTO_DATA_DIR/agent.sock`
 2. If present, Pacto connects and waits for `agent.status {state:"ready"}`
 3. If absent, Pacto shows "No agent running" in the UI
 4. Pacto can start the agent process itself (spawn a child process) or expect the user to start it separately
@@ -994,7 +994,7 @@ These are the concrete modifications to Pacto's `src-tauri/src/` that Approach B
 | # | Change | File(s) | Lines | Description |
 |---|--------|---------|-------|-------------|
 | 1 | **Headless nsec auth** | `lib.rs` | ~50 | New `Builder::setup_headless(nsec_hex)` path that derives keys, opens `vector.db`, initializes `ChatState`, and starts the Nostr client — all without Tauri webview. Activated via `--headless` CLI flag in `main.rs`. |
-| 2 | **External event bridge** | `lib.rs` | ~100 | A `UnixListener` on `$PACT_DATA_DIR/agent.sock` that mirrors every `app_handle.emit()` call as a JSON-RPC notification. Reuses existing event payloads; no new serialization. |
+| 2 | **External event bridge** | `lib.rs` | ~100 | A `UnixListener` on `$PACTO_DATA_DIR/agent.sock` that mirrors every `app_handle.emit()` call as a JSON-RPC notification. Reuses existing event payloads; no new serialization. |
 | 3 | **Bot flag enforcement** | `message.rs`, `mls.rs`, `evm/` | ~10 | If `profiles.bot = 1`, reject `initiate_mutiny`, `deploy_squad`, `sign_treasury_tx`. Read-only guard; not a full permission system. |
 
 **Tier 2 — Unlocks Phase 2 (remote bunker + MLS concurrency): ~450 lines total**
@@ -1697,7 +1697,7 @@ This is a **Phase 4** effort — after the sidecar (Phase 1), remote bunker (Pha
 **Deliverables:**
 - `crates/pacto-bot-api/` workspace member in Pacto's repo — a single Rust binary linking `nostr-sdk`, `mdk_core`, `mdk_sqlite_storage`, `alloy`, `rusqlite`
 - `ClientManager` for one bot identity (single-bot MVP; multi-bot in Phase 3)
-- Unix socket transport at `$PACT_DATA_DIR/pacto-bot-api.sock` with `0o600` permissions
+- Unix socket transport at `$PACTO_DATA_DIR/pacto-bot-api.sock` with `0o600` permissions
 - JSON-RPC 2.0 protocol as specified in §7.7.3–7.7.4
 - DM send/receive via `nostr-sdk` (NIP-17/44/59 gift wrap pipeline)
 - `agent.db` SQLite database for bot identity, event cursors, and handler state

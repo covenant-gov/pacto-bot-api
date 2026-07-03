@@ -1,0 +1,123 @@
+name: {{bot_id}}
+
+services:
+  daemon:
+    image: ghcr.io/covenant-gov/pacto-bot-api:latest
+    environment:
+      PACTO_DATA_DIR: /var/lib/pacto-bot-api
+      PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock
+      PACTO_RELAY_URL: ${PACTO_RELAY_URL:-ws://localhost:7000}
+      PACTO_BUNKER_URI: ${PACTO_BUNKER_URI:-}
+    volumes:
+      - pacto-data:/var/lib/pacto-bot-api
+      - pacto-socket:/run/pacto
+      - ./pacto-bot-api.toml:/etc/pacto/pacto-bot-api.toml:ro
+    command:
+      - pacto-bot-api
+      - --config
+      - /etc/pacto/pacto-bot-api.toml
+      - --data-dir
+      - /var/lib/pacto-bot-api
+    restart: on-failure
+
+  {{bot_id}}:
+    build:
+      context: .
+      dockerfile: ./bots/{{bot_id}}/Dockerfile
+    environment:
+      PACTO_TRANSPORT: unix
+      PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock
+    volumes:
+      - pacto-socket:/run/pacto:ro
+    depends_on:
+      daemon:
+        condition: service_started
+    restart: on-failure
+
+  nip46-bunker:
+    image: ghcr.io/covenant-gov/pacto-dev-env/nip46-bunker:main
+    profiles:
+      - with-bunker
+      - full
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgresql://bunker46:bunker46@nip46-bunker-db:5432/bunker46
+      JWT_SECRET: ${JWT_SECRET:-changeme-jwt-secret-must-be-at-least-32-characters-long}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-changeme-refresh-secret-must-be-at-least-32-characters-long}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-changeme-encryption-key-must-be-at-least-32-characters-long}
+      JWT_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGINS: http://localhost:8080
+      COOKIE_SECURE: ""
+      REDIS_URL: redis://nip46-bunker-redis:6379
+      LOG_LEVEL: info
+      ALLOW_REGISTRATION: false
+      NOSTR_DEFAULT_RELAYS: ""
+    depends_on:
+      nip46-bunker-db:
+        condition: service_healthy
+      nip46-bunker-redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:3000/api/auth/config',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  nip46-bunker-db:
+    image: postgres:17-alpine
+    profiles:
+      - with-bunker
+      - full
+    environment:
+      POSTGRES_USER: bunker46
+      POSTGRES_PASSWORD: bunker46
+      POSTGRES_DB: bunker46
+    volumes:
+      - nip46-bunker-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bunker46"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nip46-bunker-redis:
+    image: redis:8-alpine
+    profiles:
+      - with-bunker
+      - full
+    volumes:
+      - nip46-bunker-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nostr-relay:
+    image: ghcr.io/covenant-gov/pacto-dev-env/nostr-relay:main
+    profiles:
+      - relay
+      - full
+    container_name: {{bot_id}}-nostr-relay
+    ports:
+      - "7000:8080"
+    volumes:
+      - ./docker/relay-config.toml:/usr/src/app/config.toml:ro
+      - nostr-relay-data:/usr/src/app/db
+    restart: unless-stopped
+
+volumes:
+  pacto-data:
+  pacto-socket:
+  nostr-relay-data:
+  nip46-bunker-db-data:
+  nip46-bunker-redis-data:

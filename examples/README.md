@@ -59,7 +59,7 @@ from `echo_bot.py`.
 
 > **Note:** This is a *manual seed*, not the generated Python client. The
 > generated SDK is now available in [`python/`](../python/) and is derived from
-> `schemas/jsonrpc.json`. New bots should import from `pacto_bot_api` instead.
+> `schemas/jsonrpc.json`. New bots should import from `pacto_bot_sdk` instead.
 
 Example usage:
 

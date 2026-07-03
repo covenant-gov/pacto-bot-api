@@ -64,6 +64,51 @@ jobs:
       #     cargo install --locked cargo-deny
       #     cargo deny check
 
+  contract-verification:
+    name: Verify contract artifact
+    runs-on: ubuntu-latest
+    needs: cache-dependencies
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Build contract artifact and checksum
+        id: artifact
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('schemas/jsonrpc.json'))['info']['version'])")
+          cp schemas/jsonrpc.json "pacto-contract-${version}.json"
+          sha256sum "pacto-contract-${version}.json" > "pacto-contract-${version}.json.sha256"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify artifact matches snapshot
+        run: |
+          diff -q \
+            "pacto-contract-${{ steps.artifact.outputs.version }}.json" \
+            schemas/jsonrpc.json
+
+      - name: Verify checksum file
+        run: |
+          sha256sum -c "pacto-contract-${{ steps.artifact.outputs.version }}.json.sha256"
+
+      - name: Verify SDK generation from local artifact path
+        run: |
+          python python/scripts/generate.py \
+            --contract-source "pacto-contract-${{ steps.artifact.outputs.version }}.json"
+          git diff --exit-code python/src/pacto_bot_sdk/_generated/
+
+      - name: Verify SDK generation from artifact URL
+        run: |
+          python3 -m http.server 8000 &
+          sleep 1
+          python python/scripts/generate.py \
+            --contract-source "http://localhost:8000/pacto-contract-${{ steps.artifact.outputs.version }}.json"
+          git diff --exit-code python/src/pacto_bot_sdk/_generated/
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -84,6 +129,9 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install cargo-generate
+        run: cargo install cargo-generate --version 0.23.12
 
       - name: Run tests and generate coverage reports
         run: |
@@ -235,8 +283,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r examples/requirements.txt
           python -m pip install -e python/
+          python -m pip install -r examples/requirements.txt
 
       - name: Run Python SDK tests
         env:
@@ -288,8 +336,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r examples/requirements.txt
           python -m pip install -e python/
+          python -m pip install -r examples/requirements.txt
 
       - name: Run examples contract tests
         id: pytest

@@ -82,8 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `pacto-bot-admin scaffold` subcommand and `pacto-bot-admin new --scaffold`
-  flag for generating opinionated Python bot handler projects from templates
-  under `templates/python/`.
+  flag for generating opinionated Python bot handler projects from external
+  cargo-generate templates resolved from `pacto-bot-templates`.
 - Multi-stage Dockerfile packaging both `pacto-bot-api` and `pacto-bot-admin`
   binaries, running as a non-root `pacto` user with a `/var/lib/pacto-bot-api`
   volume.
@@ -148,7 +148,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Release install script defaults to `logicminds/pacto-bot-api` and correctly
+- Release install script defaults to `covenant-gov/pacto-bot-api` and correctly
   verifies checksums with the `dist/` prefix.
 - Config file permission enforcement handles relative config paths correctly.
 

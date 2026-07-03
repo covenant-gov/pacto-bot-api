@@ -17,7 +17,7 @@ Usage:
 
 from __future__ import annotations
 
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="greeting-bot")
 

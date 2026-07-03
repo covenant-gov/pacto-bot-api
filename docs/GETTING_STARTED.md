@@ -337,7 +337,7 @@ The easiest path for bot development is to start with the default Docker stack a
    [[bots]]
    id = "echo-bot"
    npub = "npub1..."
-   signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }
+   signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
    relays = ["ws://localhost:7000"]
    capabilities = ["ReadMessages", "SendMessages"]
    ```
@@ -345,18 +345,26 @@ The easiest path for bot development is to start with the default Docker stack a
 4. Export the key and run the daemon:
 
    ```bash
-   export PACT_BOT_NSEC="nsec1..."
+   export PACTO_BOT_NSEC="nsec1..."
    cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml
    ```
 
-5. In another terminal, run the example handler:
+6. In another terminal, run the example handler:
 
    ```bash
    cd examples
    python echo_bot.py
    ```
 
-6. Send a DM to the bot's `npub` from any Nostr client pointed at `ws://localhost:7000` and the handler will echo it back.
+   Alternatively, scaffold a full Python handler project with
+   `pacto-bot-admin new --scaffold`. This requires `cargo-generate`
+   (`cargo install cargo-generate --version 0.23.0`) and resolves templates
+   from the `covenant-gov/pacto-bot-templates` repository. Set `GITHUB_TOKEN`
+   in your environment to avoid unauthenticated GitHub API rate limits. The
+   generated project includes a `scaffold.lock` file so it can be refreshed later
+   with `pacto-bot-admin update`.
+
+7. Send a DM to the bot's `npub` from any Nostr client pointed at `ws://localhost:7000` and the handler will echo it back.
 
 ### Required Docker services
 
@@ -452,7 +460,7 @@ For production bunkers, use `wss://` URIs and set a real `ENCRYPTION_KEY` in `de
 ### Bot daemon says "Unknown bot_id" or "Unauthorized"
 
 - Check that the `npub` in `pacto-bot-api.toml` matches the signer backend.
-- For `nsec` backend, confirm `PACT_BOT_NSEC` is exported in the same shell.
+- For `nsec` backend, confirm `PACTO_BOT_NSEC` is exported in the same shell.
 - For bunker backends, verify the bunker URI and that the bunker's pubkey matches the configured `npub`.
 
 ### Foundry/Anvil deployment fails
@@ -472,7 +480,7 @@ For production bunkers, use `wss://` URIs and set a real `ENCRYPTION_KEY` in `de
 
 - All local services bind to `localhost` only by default. Do not expose Anvil, the relay, or the bot API HTTP port to the public internet.
 - The `nsec` signing backend logs a warning and is for local testing only. Use a NIP-46 bunker for any shared or production deployment.
-- Never commit private keys, bunker URIs, or `PACT_BOT_NSEC` values to Git.
+- Never commit private keys, bunker URIs, or `PACTO_BOT_NSEC` values to Git.
 
 ---
 

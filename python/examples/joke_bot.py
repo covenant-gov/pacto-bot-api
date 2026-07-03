@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="joke-bot")
 

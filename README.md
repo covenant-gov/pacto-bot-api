@@ -24,17 +24,17 @@ arm64), downloads the latest GitHub release, verifies the SHA-256 checksum, and
 installs both binaries into `/usr/local/bin`:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
 ```
 
 You can customize the installation with environment variables:
 
 ```bash
 # Install to ~/.local/bin instead of /usr/local/bin
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
 
 # Install a specific version instead of latest
-curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.4.1 bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.4.1 bash
 ```
 
 #### Build from source
@@ -71,26 +71,56 @@ cp pacto-bot-api.toml.example pacto-bot-api.toml
 chmod 0o600 pacto-bot-api.toml
 ```
 
-Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the `nsec` via the `PACT_BOT_NSEC` environment variable, and adjust `relays` as needed.
+Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the `nsec` via the `PACTO_BOT_NSEC` environment variable, and adjust `relays` as needed.
 
 ### 4. Run the daemon
 
 ```bash
-PACT_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
+PACTO_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
 ```
 
 Add `--enable-http` to start the optional localhost HTTP transport on `127.0.0.1:9800`.
 
 If you built from source, use `cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml` instead.
 
-### 5. Connect a handler
+### 5. Scaffold a Python handler project (optional)
 
-The easiest way to write a handler is with the generated Python SDK in
-[`python/`](python/). It handles JSON-RPC framing, transport selection,
-registration, command dispatch, and response shaping:
+The admin CLI can bootstrap a full bot handler project from an external
+`cargo-generate` template repository instead of writing files by hand. First
+install `cargo-generate`:
+
+```bash
+cargo install cargo-generate --version 0.23.0
+```
+
+Then scaffold a project:
+
+```bash
+pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo
+```
+
+> **Note:** The first scaffold may make unauthenticated GitHub API requests that are rate-limited to 60 requests per hour. Set `GITHUB_TOKEN` in your environment to use authenticated requests and avoid rate limits.
+
+This resolves a compatible contract/SDK/template triple, caches the artifacts
+locally, renders the project with `cargo-generate`, and writes a per-bot
+`.pacto/bots/echo-bot/scaffold.lock` file so the project can be refreshed later.
+
+To update an existing project from its lock file:
+
+```bash
+pacto-bot-admin update echo-bot
+```
+
+`update` protects user-edited files declared in the template's `manifest.toml`;
+use `--force` to override them.
+
+### 6. Connect a handler
+
+The easiest way to write a handler is with the generated Python SDK, now
+published to PyPI as `pacto-bot-sdk`:
 
 ```python
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="echo-bot")
 
@@ -116,7 +146,7 @@ if __name__ == "__main__":
 Save it as `echo_bot.py` and run it against the daemon's Unix socket:
 
 ```bash
-pip install -e python/
+pip install pacto-bot-sdk
 python echo_bot.py --socket ~/.local/share/pacto-bot-api/pacto-bot-api.sock
 ```
 
@@ -158,7 +188,7 @@ pacto-bot-api/
 ├── src/                       # Daemon and admin CLI source
 ├── tests/                     # In-process integration tests
 ├── python/                    # Generated Python SDK and Python tests
-│   ├── src/pacto_bot_api/     # SDK package (`Bot`, `PactoClient`, models)
+│   ├── src/pacto_bot_sdk/     # SDK package (`Bot`, `PactoClient`, models)
 │   ├── examples/              # Reference bots using the generated SDK
 │   └── tests/                 # Python SDK tests
 ├── examples/                  # Legacy standard-library seed handler/tests

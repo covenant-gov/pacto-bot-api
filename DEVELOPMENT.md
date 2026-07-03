@@ -38,7 +38,7 @@ Project tooling:
 ## Python SDK
 
 The generated Python SDK lives in `python/` and is produced from
-`schemas/jsonrpc.json` via `cargo xtask codegen`. Bot authors use `from pacto_bot_api import Bot`;
+`schemas/jsonrpc.json` via `cargo xtask codegen`. Bot authors use `from pacto_bot_sdk import Bot`;
 contributors working on the SDK should read [`python/README.md`](python/README.md)
 and [`docs/python-sdk.md`](docs/python-sdk.md).
 
@@ -59,7 +59,7 @@ After changing `schemas/jsonrpc.json`:
 cargo xtask codegen
 ```
 
-Generated files under `python/src/pacto_bot_api/_generated/` are checked into
+Generated files under `python/src/pacto_bot_sdk/_generated/` are checked into
 git. CI enforces schema sync via `tests/schema_sync.rs`.
 
 ## Git hooks
@@ -202,7 +202,7 @@ socket_path = "~/.local/share/pacto-bot-api/pacto-bot-api.sock"
 [[bots]]
 id = "echo-bot"
 npub = "npub1..."
-signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }
+signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat"]
 capabilities = ["ReadMessages", "SendMessages"]
 ```
@@ -265,7 +265,7 @@ rm ~/.local/share/pacto-bot-api/daemon.lock
 
 ### `nsec` not found
 
-If using `signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }`, ensure the environment variable is exported in the daemon's environment.
+If using `signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }`, ensure the environment variable is exported in the daemon's environment.
 
 ## Getting help
 

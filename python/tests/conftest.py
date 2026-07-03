@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the pacto-bot-api Python SDK tests."""
+"""Shared pytest fixtures for the pacto-bot-sdk Python SDK tests."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from pacto_bot_api import Bot, PactoClient
+from pacto_bot_sdk import Bot, PactoClient
 
 
 class MockTransport:

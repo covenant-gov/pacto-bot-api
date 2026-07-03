@@ -69,6 +69,29 @@ Notes:
 - `--project-dir` — target directory (default: current directory).
 - The bot identity must already exist in `pacto-bot-api.toml`.
 
+### `update`
+
+Re-render a scaffolded bot project from its lock file while preserving user edits to protected files.
+
+Examples:
+```bash
+# Update an existing bot project from its lock file
+pacto-bot-admin update echo-bot
+
+# Force overwrite protected files
+pacto-bot-admin update echo-bot --force
+
+# Update a bot in a specific project directory
+pacto-bot-admin update echo-bot --project-dir /path/to/my-project
+```
+
+Notes:
+- `--force` — overwrite protected files without prompting (never overwrites signing material or populated `pacto-bot-api.toml`).
+- `--refresh` — re-fetch cached artifacts from the template repository before resolving.
+- `--allow-hooks` — allow `cargo-generate` to execute pre/post-generation hooks.
+- `--project-dir` — target directory containing the bot (default: current directory).
+- The project must contain a `.pacto/bots/<bot-id>/scaffold.lock` file.
+
 ### `publish-profile`
 
 Publish a bot profile (kind:0) event.
@@ -191,7 +214,7 @@ capabilities = ["ReadMessages"]
 
 Signing backends:
 
-- `nsec` — dev-only local test key. Use `PACT_BOT_NSEC` environment variable or the config file.
+- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.
 - `bunker_local` — NIP-46 bunker on the same machine.
 - `bunker_remote` — production NIP-46 bunker reachable over `wss://`.
 

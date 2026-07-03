@@ -7,7 +7,7 @@
   "coverage": [
     {
       "id": "R1",
-      "summary": "The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACT_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler id...",
+      "summary": "The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i...",
       "tests": [
         "tests/transport_unix.rs",
         "tests/integration_test.rs"
@@ -95,7 +95,7 @@
     },
     {
       "id": "R6",
-      "summary": "The daemon supports three signing backends per bot identity: (a) **local test key** \u2014 nsec hex in config or `PACT_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** \u2014 a bunker on t...",
+      "summary": "The daemon supports three signing backends per bot identity: (a) **local test key** \u2014 nsec hex in config or `PACTO_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** \u2014 a bunker on ...",
       "tests": [
         "tests/admin_cli_bunker.rs",
         "tests/secret_redaction.rs",

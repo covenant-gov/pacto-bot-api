@@ -20,7 +20,7 @@ The daemon-first approach (architecture doc §7.9) solves both: one copy of the 
 
 ### API surface
 
-- R1. The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACT_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler identity is not cryptographically verified in Phase 1.
+- R1. The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler identity is not cryptographically verified in Phase 1.
 - R2. The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret is generated on first run with a CSPRNG (32-byte / 256-bit hex), stored at `$DATA_DIR/bot_secret_token` with `0o600` permissions, and must never be logged or returned in error responses. The token can be rotated via `pacto-bot-admin rotate-http-token`; rotation is a hard cutover (old token invalid immediately). The HTTP transport is disabled by default; enable with `--enable-http`.
 - R3. The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transport layer enforces a maximum number of concurrent connections and an idle timeout.
 - R4. The API supports the full method catalog defined in the architecture doc §7.7.4, adapted for daemon→handler direction (see High-Level Technical Design).
@@ -28,7 +28,7 @@ The daemon-first approach (architecture doc §7.9) solves both: one copy of the 
 ### Bot identity and key management
 
 - R5. The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidirectional `bot_id` ↔ `npub` mapping for routing. In Phase 1, bot identities are loaded from static config; runtime registration, removal, or pausing of bot identities is deferred to Phase 3.
-- R6. The daemon supports three signing backends per bot identity: (a) **local test key** — nsec hex in config or `PACT_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** — a bunker on the same machine, to prove the remote-signing path; (c) **production NIP-46 bunker** — a remote bunker. The daemon logs a warning when a local test key is in use. For bunker backends, the daemon verifies the bunker's pubkey matches the configured npub at connection time and fails hard on mismatch. The `nsec` backend uses `zeroize` to clear key material from memory on drop. Production bunker URIs must use `wss://` (not `ws://`). The daemon must not log the nsec, bunker URI, HTTP secret token, or any derived signing material.
+- R6. The daemon supports three signing backends per bot identity: (a) **local test key** — nsec hex in config or `PACTO_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** — a bunker on the same machine, to prove the remote-signing path; (c) **production NIP-46 bunker** — a remote bunker. The daemon logs a warning when a local test key is in use. For bunker backends, the daemon verifies the bunker's pubkey matches the configured npub at connection time and fails hard on mismatch. The `nsec` backend uses `zeroize` to clear key material from memory on drop. Production bunker URIs must use `wss://` (not `ws://`). The daemon must not log the nsec, bunker URI, HTTP secret token, or any derived signing material.
 - R7. Bot identities are configured via a TOML config file (`pacto-bot-api.toml`) listing each bot's npub, signing backend (one of `nsec`, `bunker_local`, `bunker_remote`), relay list, and capabilities. `bot_id` values must be unique within the config; duplicate `bot_id` is a validation error. The daemon refuses to start if the config file is readable by group or other (must be `0o600` or more restrictive).
 - R8. A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` ↔ `npub` mapping, and duplicate `bot_id` values within a single config are a validation error.
 - R9. Bot identities are created and deleted only through the `pacto-bot-admin` CLI; the daemon runtime never creates or deletes identities.
@@ -262,7 +262,7 @@ The daemon exposes JSON-RPC 2.0 over two transports. The method catalog is adapt
 
 **Naming convention:** JSON-RPC method and parameter names use `snake_case` (e.g., `agent.event`, `handler.register`). Corresponding Rust structs/enums use `PascalCase` with `serde(rename_all = "snake_case")` so the wire format stays consistent across languages.
 
-**Transport:** Unix socket at `$PACT_DATA_DIR/pacto-bot-api.sock` (permissions `0o600`) and localhost HTTP at `127.0.0.1:9800`. Both use newline-delimited JSON frames.
+**Transport:** Unix socket at `$PACTO_DATA_DIR/pacto-bot-api.sock` (permissions `0o600`) and localhost HTTP at `127.0.0.1:9800`. Both use newline-delimited JSON frames.
 
 ## Agentic Verification & Feedback Layer
 
@@ -440,7 +440,7 @@ http_bind = "127.0.0.1:9800"
 [[bots]]
 id = "echo-bot"
 npub = "npub1echobot..."
-signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }
+signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat", "wss://relay.damus.io"]
 capabilities = ["ReadMessages", "SendMessages"]
 
