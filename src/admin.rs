@@ -173,6 +173,20 @@ const SCAFFOLD_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin scaffold price-bot --commands price
 "#;
 
+const UPDATE_AFTER_HELP: &str = r#"Examples:
+  # Update an existing bot project from its lock file
+  pacto-bot-admin update echo-bot
+
+  # Force overwrite protected files
+  pacto-bot-admin update echo-bot --force
+
+  # Refresh cached artifacts from remote sources
+  pacto-bot-admin update echo-bot --refresh
+
+  # Update a bot in a specific project directory
+  pacto-bot-admin update echo-bot --project-dir /path/to/my-project
+"#;
+
 #[derive(Parser, Debug)]
 #[command(name = "pacto-bot-admin")]
 #[command(about = "Pacto bot admin CLI")]
@@ -271,6 +285,35 @@ enum Command {
         /// Ignored when `--project-dir` is also supplied.
         #[arg(long, value_name = "NAME")]
         project_name: Option<String>,
+
+        /// Bot kind (selects a template directory in the template repository).
+        #[arg(short, long, value_name = "KIND", default_value = "llm")]
+        kind: String,
+
+        /// Template repository URL or local path.
+        #[arg(
+            long,
+            value_name = "URL",
+            env = "PACTO_TEMPLATE_REPO",
+            default_value = "https://github.com/pacto-bot/pacto-bot-templates"
+        )]
+        template_repo: String,
+
+        /// Pin a template git ref (tag, branch, or commit).
+        #[arg(long, value_name = "REF")]
+        template_ref: Option<String>,
+
+        /// Re-fetch cached artifacts from remote sources before resolving.
+        #[arg(long)]
+        refresh: bool,
+
+        /// Prune stale cache entries before resolving.
+        #[arg(long)]
+        prune_cache: bool,
+
+        /// Allow `cargo-generate` to execute pre/post-generation hooks.
+        #[arg(long)]
+        allow_hooks: bool,
     },
     /// Publish a bot profile (kind:0) event.
     #[command(after_help = PUBLISH_PROFILE_AFTER_HELP)]
@@ -352,6 +395,58 @@ enum Command {
         /// Project directory (default: current directory).
         #[arg(long, value_name = "DIR")]
         project_dir: Option<PathBuf>,
+
+        /// Bot kind (selects a template directory in the template repository).
+        #[arg(short, long, value_name = "KIND", default_value = "llm")]
+        kind: String,
+
+        /// Template repository URL or local path.
+        #[arg(
+            long,
+            value_name = "URL",
+            env = "PACTO_TEMPLATE_REPO",
+            default_value = "https://github.com/pacto-bot/pacto-bot-templates"
+        )]
+        template_repo: String,
+
+        /// Pin a template git ref (tag, branch, or commit).
+        #[arg(long, value_name = "REF")]
+        template_ref: Option<String>,
+
+        /// Re-fetch cached artifacts from remote sources before resolving.
+        #[arg(long)]
+        refresh: bool,
+
+        /// Allow `cargo-generate` to execute pre/post-generation hooks.
+        #[arg(long)]
+        allow_hooks: bool,
+    },
+    /// Update an existing bot project from its lock file.
+    #[command(after_help = UPDATE_AFTER_HELP)]
+    Update {
+        /// Bot identity name to update.
+        #[arg(value_name = "BOT_ID")]
+        bot_id: String,
+
+        /// Overwrite protected files without prompting.
+        #[arg(long)]
+        force: bool,
+
+        /// Re-fetch cached artifacts from remote sources before resolving.
+        #[arg(long)]
+        refresh: bool,
+
+        /// Prune stale cache entries before resolving.
+        #[arg(long)]
+        prune_cache: bool,
+
+        /// Allow `cargo-generate` to execute pre/post-generation hooks.
+        #[arg(long)]
+        allow_hooks: bool,
+
+        /// Project directory containing the bot (default: current directory).
+        #[arg(long, value_name = "DIR")]
+        project_dir: Option<PathBuf>,
     },
     /// Print documentation in the requested format.
     Docs {
@@ -414,21 +509,36 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             force,
             project_dir,
             project_name,
-        } => cmd_new(
-            bot_id.as_deref(),
-            &backend,
-            &relays,
-            &capabilities,
-            uri,
-            scaffold,
-            &language,
-            &commands,
-            !no_tests,
-            http,
-            force,
-            project_dir.as_deref(),
-            project_name.as_deref(),
-        ),
+            kind,
+            template_repo,
+            template_ref,
+            refresh,
+            prune_cache,
+            allow_hooks,
+        } => {
+            cmd_new(
+                bot_id.as_deref(),
+                &backend,
+                &relays,
+                &capabilities,
+                uri,
+                scaffold,
+                &language,
+                &kind,
+                &commands,
+                !no_tests,
+                http,
+                force,
+                project_dir.as_deref(),
+                project_name.as_deref(),
+                &template_repo,
+                template_ref.as_deref(),
+                refresh,
+                prune_cache,
+                allow_hooks,
+            )
+            .await
+        }
         Command::Scaffold {
             bot_id,
             language,
@@ -437,15 +547,43 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             http,
             force,
             project_dir,
+            kind,
+            template_repo,
+            template_ref,
+            refresh,
+            allow_hooks,
         } => {
             cmd_scaffold(
                 &cli.config,
                 &bot_id,
                 &language,
+                &kind,
                 &commands,
                 with_tests,
                 http,
                 force,
+                project_dir.as_deref(),
+                &template_repo,
+                template_ref.as_deref(),
+                refresh,
+                allow_hooks,
+            )
+            .await
+        }
+        Command::Update {
+            bot_id,
+            force,
+            refresh,
+            prune_cache,
+            allow_hooks,
+            project_dir,
+        } => {
+            cmd_update(
+                &bot_id,
+                force,
+                refresh,
+                prune_cache,
+                allow_hooks,
                 project_dir.as_deref(),
             )
             .await
@@ -482,7 +620,7 @@ fn cmd_docs(format: &str) -> Result<(), DaemonError> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cmd_new(
+async fn cmd_new(
     bot_id: Option<&str>,
     backend: &str,
     relays: &[String],
@@ -490,12 +628,18 @@ fn cmd_new(
     uri: Option<String>,
     scaffold: bool,
     language: &str,
+    kind: &str,
     commands: &[String],
     with_tests: bool,
     http: bool,
     force: bool,
     project_dir: Option<&Path>,
     project_name: Option<&str>,
+    template_repo: &str,
+    template_ref: Option<&str>,
+    refresh: bool,
+    prune_cache: bool,
+    allow_hooks: bool,
 ) -> Result<(), DaemonError> {
     let interactive = bot_id.is_none();
 
@@ -557,12 +701,24 @@ fn cmd_new(
 
     let snippet = build_bot_snippet(&params, &npub, &nsec);
 
+    if prune_cache {
+        let cache = crate::scaffold::cache::Cache::new()?;
+        let removed = cache.prune()?;
+        println!("Pruned {removed} stale cache entries");
+    }
+
     if scaffold {
         let language = if interactive {
             prompt_language()?
         } else {
             validate_language(language)?;
             language.to_string()
+        };
+        let kind = if interactive {
+            "llm".to_string()
+        } else {
+            validate_kind(kind)?;
+            kind.to_string()
         };
         let commands = if interactive {
             prompt_commands()?
@@ -590,13 +746,19 @@ fn cmd_new(
         scaffold::generate::run_scaffold(scaffold::generate::ScaffoldRequest {
             bot_id: params.bot_id.clone(),
             language,
+            kind,
             commands,
             with_tests,
             http,
             force,
+            allow_hooks,
             project_dir,
+            template_repo: template_repo.to_string(),
+            template_ref: template_ref.map(|s| s.to_string()),
+            refresh,
             mode: scaffold::generate::ScaffoldMode::NewProject { snippet },
-        })?;
+        })
+        .await?;
         println!(
             "Created scaffolded project for {} in {}",
             params.bot_id, project_dir_display
@@ -622,14 +784,20 @@ async fn cmd_scaffold(
     config_path: &Path,
     bot_id: &str,
     language: &str,
+    kind: &str,
     commands: &[String],
     with_tests: bool,
     http: bool,
     force: bool,
     project_dir: Option<&Path>,
+    template_repo: &str,
+    template_ref: Option<&str>,
+    refresh: bool,
+    allow_hooks: bool,
 ) -> Result<(), DaemonError> {
     validate_bot_id(bot_id)?;
     validate_language(language)?;
+    validate_kind(kind)?;
 
     let project_dir = project_dir
         .map(Path::to_path_buf)
@@ -649,16 +817,46 @@ async fn cmd_scaffold(
     scaffold::generate::run_scaffold(scaffold::generate::ScaffoldRequest {
         bot_id: bot_id.to_string(),
         language: language.to_string(),
+        kind: kind.to_string(),
         commands: normalize_commands(commands),
         with_tests,
         http,
         force,
+        allow_hooks,
         project_dir,
+        template_repo: template_repo.to_string(),
+        template_ref: template_ref.map(|s| s.to_string()),
+        refresh,
         mode: scaffold::generate::ScaffoldMode::ExistingProject {
             bot_config: bot.clone(),
         },
-    })?;
+    })
+    .await?;
     println!("Updated scaffold for {bot_id} in {}", project_dir_display);
+    Ok(())
+}
+
+async fn cmd_update(
+    bot_id: &str,
+    force: bool,
+    refresh: bool,
+    prune_cache: bool,
+    allow_hooks: bool,
+    project_dir: Option<&Path>,
+) -> Result<(), DaemonError> {
+    validate_bot_id(bot_id)?;
+
+    if prune_cache {
+        let cache = crate::scaffold::cache::Cache::new()?;
+        let removed = cache.prune()?;
+        println!("Pruned {removed} stale cache entries");
+    }
+
+    let project_dir = project_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    crate::scaffold::update::run_update(&project_dir, bot_id, force, refresh, allow_hooks).await?;
+    println!("Updated scaffold for {bot_id} in {}", project_dir.display());
     Ok(())
 }
 
@@ -667,6 +865,15 @@ fn validate_language(language: &str) -> Result<(), DaemonError> {
         "python" => Ok(()),
         other => Err(DaemonError::Config(format!(
             "unsupported scaffold language: {other}; supported languages: python"
+        ))),
+    }
+}
+
+fn validate_kind(kind: &str) -> Result<(), DaemonError> {
+    match kind {
+        "llm" | "governance" => Ok(()),
+        other => Err(DaemonError::Config(format!(
+            "unsupported scaffold kind: {other}; supported kinds: llm, governance"
         ))),
     }
 }
@@ -2816,8 +3023,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn new_rejects_empty_bot_id() {
+    #[tokio::test]
+    async fn new_rejects_empty_bot_id() {
         let err = cmd_new(
             Some(""),
             "nsec",
@@ -2826,19 +3033,26 @@ mod tests {
             None,
             false,
             "python",
+            "llm",
             &[],
             false,
             false,
             false,
             None,
             None,
+            "",
+            None,
+            false,
+            false,
+            false,
         )
+        .await
         .unwrap_err();
         assert!(err.to_string().contains("bot_id"));
     }
 
-    #[test]
-    fn new_rejects_unknown_backend() {
+    #[tokio::test]
+    async fn new_rejects_unknown_backend() {
         let err = cmd_new(
             Some("x"),
             "invalid",
@@ -2847,13 +3061,20 @@ mod tests {
             None,
             false,
             "python",
+            "llm",
             &[],
             false,
             false,
             false,
             None,
             None,
+            "",
+            None,
+            false,
+            false,
+            false,
         )
+        .await
         .unwrap_err();
         assert!(err.to_string().contains("unknown backend"));
     }

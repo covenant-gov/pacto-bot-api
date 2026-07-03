@@ -29,16 +29,6 @@ def test_command_args_extracts_arguments(content, expected):
     assert _command_args(event) == expected
 
 
-{% for command in commands %}
-@pytest.mark.asyncio
-async def test_{{command}}_command_replies():
-    handler = bot._commands["{{command}}"]
-    event = FakeEvent()
-    event.content = "/{{command}}"
-    result = await handler(event, bot)
-    assert result["action"] == "reply"
-    assert result["event_id"] == "test-event-id-123"
-    assert result.get("content"), "handler returned empty content"
-
-
-{% endfor %}
+{% if test_command_handlers %}
+{{test_command_handlers}}
+{% endif %}

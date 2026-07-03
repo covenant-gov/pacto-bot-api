@@ -5,7 +5,7 @@ This file guides AI assistants working on the `{{bot_id}}` bot handler.
 ## Bot overview
 
 `bots/{{bot_id}}/{{bot_id_snake}}.py` is a Pacto bot handler built on the
-`pacto_bot_api` SDK. It connects to the `pacto-bot-api` daemon and responds to
+`pacto_bot_sdk` SDK. It connects to the `pacto-bot-api` daemon and responds to
 incoming events.
 
 ## Capabilities
@@ -19,12 +19,12 @@ this bot. Common capabilities:
 
 ## SDK reference
 
-The `pacto_bot_api` SDK is vendored in `sdk/` at the project root. The full
-agent skill is at `skills/python-pacto-bot/SKILL.md`.
+The bot depends on the `pacto-bot-sdk` PyPI package. Use the `python-pacto-bot`
+skill for the SDK API and patterns.
 
 ## How to modify this bot
 
-1. Read `skills/python-pacto-bot/SKILL.md` for the SDK API and patterns.
+1. Read the `python-pacto-bot` skill for the SDK API and patterns.
 2. Open `bots/{{bot_id}}/{{bot_id_snake}}.py`.
 3. Use `@bot.command("/name")` to add slash commands or edit existing handlers.
 4. Keep `@bot.default` for unrecognized commands.

@@ -52,9 +52,6 @@ services:
       CORS_ORIGINS: http://localhost:8080
       COOKIE_SECURE: ""
       REDIS_URL: redis://nip46-bunker-redis:6379
-      WEBAUTHN_RP_NAME: Bunker46
-      WEBAUTHN_RP_ID: localhost
-      WEBAUTHN_ORIGIN: http://localhost:8080
       LOG_LEVEL: info
       ALLOW_REGISTRATION: false
       NOSTR_DEFAULT_RELAYS: ""

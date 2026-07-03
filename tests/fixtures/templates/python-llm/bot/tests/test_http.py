@@ -36,6 +36,6 @@ async def test_http_command_uses_external_api():
     # TODO: once the handler above calls the mocked API, also assert:
     # assert route.called
 {% endif %}
-{% if no_http %}# This bot was scaffolded without --http. Add httpx/respx to pyproject.toml
+{% unless http %}# This bot was scaffolded without --http. Add httpx/respx to pyproject.toml
 # and implement HTTP tests here if the bot calls external APIs.
-{% endif %}
+{% endunless %}

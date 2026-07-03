@@ -3,10 +3,9 @@ FROM python:3.14-slim
 
 WORKDIR /app/bots/{{bot_id}}
 
-# Install the vendored SDK wheel from the project root, then the bot itself.
-COPY sdk/ /app/sdk/
+# Copy the bot package and install it. The bot depends on the pacto-bot-sdk
+# package from PyPI, which is resolved automatically by pip.
 COPY bots/{{bot_id}}/ ./
-RUN pip install --no-cache-dir /app/sdk/
 RUN pip install --no-cache-dir .
 
 CMD ["python", "{{bot_id_snake}}.py"]

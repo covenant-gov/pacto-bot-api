@@ -18,7 +18,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run schema/code generation tasks.
-    Codegen,
+    Codegen {
+        /// Path or URL to the JSON-RPC contract artifact.
+        #[arg(value_name = "CONTRACT_SOURCE")]
+        contract_source: Option<String>,
+    },
     /// Run the full verification suite.
     FullCheck,
     /// Probe external dev-env services (placeholder).
@@ -35,10 +39,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Codegen => codegen::run(),
+        Command::Codegen { contract_source } => codegen::run(contract_source.as_deref()),
         Command::FullCheck => {
             secret_lint::run()?;
-            codegen::run()?;
+            codegen::run(None)?;
             coverage::run()?;
             println!("full-check: ok");
             Ok(())
