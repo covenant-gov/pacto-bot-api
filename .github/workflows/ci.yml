@@ -131,7 +131,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Install cargo-generate
-        run: cargo install cargo-generate --version 0.23.0
+        run: cargo install cargo-generate --version 0.23.0 --locked
 
       - name: Run tests and generate coverage reports
         run: |
