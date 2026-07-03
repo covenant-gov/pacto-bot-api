@@ -231,6 +231,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 | `ce-compound` | `everyinc/compound-engineering-plugin` | Document solved problems and project vocabulary in `docs/solutions/` |
 | `ce-compound-refresh` | `everyinc/compound-engineering-plugin` | Audit and refresh stale learnings against the codebase |
 | `python-pacto-bot` | `project-local` | Write Python bots for `pacto-bot-api` using the generated SDK; directs new projects to `pacto-bot-admin new --scaffold` |
+| `nip-lookup` | `project-local` | Look up a NIP and explain the 5 Ws / How plus Pacto-specific use cases |
 
 ### Security note
 
