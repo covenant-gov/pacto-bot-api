@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pacto_bot_api.retry_circuit import RetryCircuit
+from pacto_bot_sdk.retry_circuit import RetryCircuit
 
 
 @pytest.fixture

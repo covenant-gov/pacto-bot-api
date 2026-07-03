@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from pacto_bot_api import (
+from pacto_bot_sdk import (
     AgentEventParams,
     HandlerRegisterParams,
     HandlerRegisterResult,

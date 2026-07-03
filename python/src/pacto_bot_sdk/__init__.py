@@ -1,8 +1,8 @@
-"""Generated Python SDK for the pacto-bot-api daemon."""
+"""Generated Python SDK for the Pacto daemon."""
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from ._generated import models as _models
 from ._generated.client import PactoClient, PactoClientError

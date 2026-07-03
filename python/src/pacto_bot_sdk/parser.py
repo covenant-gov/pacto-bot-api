@@ -1,4 +1,4 @@
-"""Command parser for the pacto-bot-api Python SDK."""
+"""Command parser for the pacto-bot-sdk Python SDK."""
 
 from __future__ import annotations
 

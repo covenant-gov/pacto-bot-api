@@ -1,4 +1,4 @@
-"""Generated code for the pacto-bot-api Python SDK.
+"""Generated code for the pacto-bot-sdk Python SDK.
 
 This package is produced by `cargo xtask codegen`. Do not edit by hand.
 """

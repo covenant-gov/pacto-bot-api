@@ -1,4 +1,4 @@
-"""Tests for the pacto-bot-api transport adapters."""
+"""Tests for the pacto-bot-sdk transport adapters."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from pacto_bot_api.transports import (
+from pacto_bot_sdk.transports import (
     AutoTransport,
     HttpTransport,
     Transport,
@@ -408,7 +408,7 @@ async def test_auto_transport_uses_unix_when_available(tmp_path):
     Path(socket_path).touch()
     auto = AutoTransport(socket_path, "host.docker.internal:9800", str(tmp_path))
     with patch(
-        "pacto_bot_api.transports.asyncio.open_unix_connection",
+        "pacto_bot_sdk.transports.asyncio.open_unix_connection",
         AsyncMock(return_value=(AsyncMock(), AsyncMock())),
     ):
         await auto.connect()
@@ -423,10 +423,10 @@ async def test_auto_transport_falls_back_to_http(tmp_path):
     Path(socket_path).touch()
     auto = AutoTransport(socket_path, "host.docker.internal:9800", str(tmp_path))
     with patch(
-        "pacto_bot_api.transports.asyncio.open_unix_connection",
+        "pacto_bot_sdk.transports.asyncio.open_unix_connection",
         AsyncMock(side_effect=PermissionError(13, "Permission denied")),
     ):
-        with patch("pacto_bot_api.transports.resolve_http_secret", return_value="secret-token"):
+        with patch("pacto_bot_sdk.transports.resolve_http_secret", return_value="secret-token"):
             await auto.connect()
     assert auto._active is auto._http
     assert auto.name == "http://host.docker.internal:9800"
@@ -439,10 +439,10 @@ async def test_auto_transport_error_when_both_fail(tmp_path):
     Path(socket_path).touch()
     auto = AutoTransport(socket_path, "host.docker.internal:9800", str(tmp_path))
     with patch(
-        "pacto_bot_api.transports.asyncio.open_unix_connection",
+        "pacto_bot_sdk.transports.asyncio.open_unix_connection",
         AsyncMock(side_effect=PermissionError(13, "Permission denied")),
     ):
-        with patch("pacto_bot_api.transports.resolve_http_secret", side_effect=RuntimeError("no token")):
+        with patch("pacto_bot_sdk.transports.resolve_http_secret", side_effect=RuntimeError("no token")):
             with pytest.raises(ConnectionError, match="Cannot connect to pacto-bot-api daemon") as exc_info:
                 await auto.connect()
 

@@ -90,7 +90,7 @@ The easiest way to write a handler is with the generated Python SDK in
 registration, command dispatch, and response shaping:
 
 ```python
-from pacto_bot_api import Bot
+from pacto_bot_sdk import Bot
 
 bot = Bot(bot_id="echo-bot")
 
@@ -158,7 +158,7 @@ pacto-bot-api/
 ├── src/                       # Daemon and admin CLI source
 ├── tests/                     # In-process integration tests
 ├── python/                    # Generated Python SDK and Python tests
-│   ├── src/pacto_bot_api/     # SDK package (`Bot`, `PactoClient`, models)
+│   ├── src/pacto_bot_sdk/     # SDK package (`Bot`, `PactoClient`, models)
 │   ├── examples/              # Reference bots using the generated SDK
 │   └── tests/                 # Python SDK tests
 ├── examples/                  # Legacy standard-library seed handler/tests

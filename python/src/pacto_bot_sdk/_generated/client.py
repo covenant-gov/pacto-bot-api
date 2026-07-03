@@ -16,7 +16,7 @@ class PactoClientError(Exception):
     """Error returned by the daemon for a JSON-RPC request."""
 
 class PactoClient:
-    """Transport-agnostic async client for the pacto-bot-api daemon."""
+    """Transport-agnostic async client for the Pacto daemon."""
 
     def __init__(self, transport: Any) -> None:
         self.transport = transport

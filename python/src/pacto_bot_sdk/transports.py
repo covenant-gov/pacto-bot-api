@@ -1,4 +1,4 @@
-"""Transport adapters for the pacto-bot-api Python SDK.
+"""Transport adapters for the pacto-bot-sdk Python SDK.
 
 Provides a Unix-socket (NDJSON) transport and an HTTP+SSE transport using
 only the Python standard library asyncio.

@@ -1,4 +1,4 @@
-"""Tests for the pacto-bot-api high-level Bot layer."""
+"""Tests for the pacto-bot-sdk high-level Bot layer."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pacto_bot_api import Bot, PactoClient, parse_command
-from pacto_bot_api._generated.models import AgentEventParams
-from pacto_bot_api.transports import Transport, UnixTransport
+from pacto_bot_sdk import Bot, PactoClient, parse_command
+from pacto_bot_sdk._generated.models import AgentEventParams
+from pacto_bot_sdk.transports import Transport, UnixTransport
 
 
 # ---------------------------------------------------------------------------
