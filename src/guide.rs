@@ -71,6 +71,21 @@ pacto-bot-admin scaffold echo-bot --with-tests"#,
 
     render_command(
         out,
+        "update",
+        "Re-render a scaffolded bot project from its lock file while preserving user edits to protected files.",
+        r#"# Update an existing bot project from its lock file
+pacto-bot-admin update echo-bot
+
+# Force overwrite protected files
+pacto-bot-admin update echo-bot --force
+
+# Update a bot in a specific project directory
+pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
+        "- `--force` — overwrite protected files without prompting (never overwrites signing material or populated `pacto-bot-api.toml`).\n- `--refresh` — re-fetch cached artifacts from the template repository before resolving.\n- `--allow-hooks` — allow `cargo-generate` to execute pre/post-generation hooks.\n- `--project-dir` — target directory containing the bot (default: current directory).\n- The project must contain a `.pacto/bots/<bot-id>/scaffold.lock` file.",
+    );
+
+    render_command(
+        out,
         "publish-profile",
         "Publish a bot profile (kind:0) event.",
         "pacto-bot-admin publish-profile echo-bot",

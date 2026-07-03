@@ -21,6 +21,7 @@ impl Value {
     }
 
     /// Returns the string contents if this value is a string.
+    #[allow(dead_code)]
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::String(s) => Some(s),
@@ -75,6 +76,10 @@ enum Node {
     Text(String),
     Var(String),
     If {
+        key: String,
+        body: Vec<Node>,
+    },
+    Unless {
         key: String,
         body: Vec<Node>,
     },
@@ -159,6 +164,30 @@ impl Template {
                                 Self::find_block_end(&content[body_start..], "if", "endif")?;
                             let body = Self::parse(&content[body_start..body_start + match_start])?;
                             nodes.push(Node::If { key, body });
+                            rest = &content[body_start + match_end..];
+                        }
+                        "unless" => {
+                            let key = tokens
+                                .next()
+                                .ok_or_else(|| {
+                                    DaemonError::Config(format!(
+                                        "missing key in unless tag: '{{% {inner} %}}'"
+                                    ))
+                                })?
+                                .to_string();
+                            if tokens.next().is_some() {
+                                return Err(DaemonError::Config(format!(
+                                    "unless tag takes exactly one key: '{{% {inner} %}}'"
+                                )));
+                            }
+                            let body_start = end + 2;
+                            let (match_start, match_end) = Self::find_block_end(
+                                &content[body_start..],
+                                "unless",
+                                "endunless",
+                            )?;
+                            let body = Self::parse(&content[body_start..body_start + match_start])?;
+                            nodes.push(Node::Unless { key, body });
                             rest = &content[body_start + match_end..];
                         }
                         "for" => {
@@ -289,6 +318,11 @@ impl Template {
                 }
                 Node::If { key, body } => {
                     if ctx.get(key).map(Value::is_truthy).unwrap_or(false) {
+                        out.push_str(&Self::render_nodes(body, ctx)?);
+                    }
+                }
+                Node::Unless { key, body } => {
+                    if !ctx.get(key).map(Value::is_truthy).unwrap_or(false) {
                         out.push_str(&Self::render_nodes(body, ctx)?);
                     }
                 }
