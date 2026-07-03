@@ -48,7 +48,7 @@ async def price(event, bot):
     }
 ```
 
-After adding commands, update the tests in `bots/{{bot_id}}/tests/test_bot.py`
+After adding commands, update the tests in `bots/{{bot_id}}/tests/test_handlers.py`
 if necessary.
 
 ## Packaging and deployment

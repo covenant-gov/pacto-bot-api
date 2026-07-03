@@ -192,6 +192,7 @@ const UPDATE_AFTER_HELP: &str = r#"Examples:
 #[command(about = "Pacto bot admin CLI")]
 #[command(version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
 #[command(after_help = TOP_LEVEL_AFTER_HELP)]
+#[command(before_help = concat!("pacto-bot-admin ", env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT_SHORT"), ")"))]
 #[command(arg_required_else_help = true)]
 struct Cli {
     /// Path to the bot configuration file.
@@ -237,6 +238,7 @@ enum Command {
 
         /// Capabilities granted to handlers for the new bot.
         /// Valid values: ReadMessages, SendMessages, ManageProfile.
+        /// Defaults to ReadMessages,SendMessages when omitted.
         #[arg(long, value_name = "CAPABILITY")]
         capabilities: Vec<String>,
 
@@ -454,6 +456,8 @@ enum Command {
         #[arg(short, long, value_name = "FORMAT", default_value = "llm")]
         format: String,
     },
+    /// Show the CLI version.
+    Version,
 }
 
 #[derive(Subcommand, Debug)]
@@ -600,6 +604,14 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
         Command::Handlers(sub) => cmd_handlers(&cli.config, cli.data_dir, &sub).await,
         Command::Docs { format } => cmd_docs(&format),
+        Command::Version => {
+            println!(
+                "pacto-bot-admin {} ({})",
+                pacto_bot_api::version::VERSION,
+                pacto_bot_api::version::GIT_COMMIT_SHORT
+            );
+            Ok(())
+        }
     }
 }
 
@@ -659,7 +671,11 @@ async fn cmd_new(
             bot_id: bot_id.to_string(),
             backend: backend.to_string(),
             relays: relays.to_vec(),
-            capabilities: capabilities.to_vec(),
+            capabilities: if capabilities.is_empty() {
+                vec!["ReadMessages".to_string(), "SendMessages".to_string()]
+            } else {
+                capabilities.to_vec()
+            },
             uri,
             display_name: None,
             about: None,

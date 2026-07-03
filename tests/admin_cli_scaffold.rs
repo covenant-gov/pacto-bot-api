@@ -158,7 +158,7 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
             .join("bots")
             .join("echo-bot")
             .join("tests")
-            .join("test_bot.py")
+            .join("test_handlers.py")
             .is_file()
     );
 
@@ -470,7 +470,7 @@ fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Bo
             .join("bots")
             .join("echo-bot")
             .join("tests")
-            .join("test_bot.py")
+            .join("test_handlers.py")
             .is_file()
     );
 
@@ -679,7 +679,7 @@ fn new_interactive_scaffold_prompts_and_creates_project() -> Result<(), Box<dyn 
             .join("bots")
             .join("interactive-bot")
             .join("tests")
-            .join("test_bot.py")
+            .join("test_handlers.py")
             .is_file()
     );
 

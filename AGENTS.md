@@ -54,8 +54,8 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 | `xtask/` | Build/task runner (`codegen`, `docs`, `coverage`, `secret-lint`, `dev-env-probe`). |
 | `tests/fixtures/templates/` | Local cargo-generate fixture template used by the integration tests. |
 | `examples/` | Reference Python bots using the seed/generated SDK and manifest-driven contract tests. |
+| `skills/` | Installable skill files for `npx skills` (project-local skills such as `kind-lookup` and `nip-lookup`; `python-pacto-bot` is provided by the `pacto-bot-templates` repository). |
 | `python/` | Generated Python SDK (Pydantic models, `PactoClient`, `Bot` API) produced from `schemas/jsonrpc.json` and published to PyPI as `pacto-bot-sdk`. |
-| `skills/python-pacto-bot/` | Claude Code / Cursor / Oh My Pi skill for SDK-aware bot authoring. |
 | `scripts/` | Release install script, packaging script, and pre-commit hook. |
 | `.github/workflows/` | CI and release automation. |
 | `docs/` | Architecture research, implementation plans, setup guides, and the generated `pacto-bot-admin-llms.txt`. |

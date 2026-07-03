@@ -27,7 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Python scaffold `docker-compose.yml` now always runs the daemon + bot stack by default. The Nostr relay is optional via the `relay` profile and the NIP-46 bunker is optional via the `with-bunker` profile. The `full` profile is retained as an alias for everything.
+- `python-pacto-bot` skill moved from the main repository to the `pacto-bot-templates` repository (`python-llm/project/.agents/skills/python-pacto-bot/`). The scaffold generator now copies the skill into generated projects from the selected template. Old copies under `skills/python-pacto-bot/`, `.agents/skills/python-pacto-bot/`, `.claude/skills/python-pacto-bot/`, and `.omp/skills/python-pacto-bot/` have been removed.
+- Python scaffold `docker-compose.yml` now always runs the daemon + bot stack by default.
 - Generated scaffold config uses environment-variable placeholders (`${PACTO_RELAY_URL:-...}`, `${PACTO_BUNKER_URI:-...}`, `${PACTO_DATA_DIR:-...}`, `${PACTO_SOCKET_PATH:-...}`) so the same `pacto-bot-api.toml` works inside Docker Compose and on the host.
 - Daemon config parser now supports `${ENV_VAR:-default}` syntax in addition to `${ENV_VAR}`.
 - Scaffolded bot containers connect to the daemon via a shared Docker volume (`pacto-socket`) instead of mounting the host socket, eliminating UID/GID permission mismatches.

@@ -28,13 +28,13 @@ This skill is **not** for generic bots, Discord bots, Slack bots, Telegram bots,
 
 ## Canonical references
 
-Always read these first; they are the single source of truth:
+Always read these first; they are the single source of truth for this project:
 
-- `python/README.md` — installation, quickstart, daemon setup, transport resolution, canonical bot loop.
-- `python/examples/greeting_bot.py` — minimal reply bot using `@bot.command` and `@bot.default`.
-- `python/examples/joke_bot.py` — `defer` action + proactive `bot.send_dm`.
-- `examples/echo_bot.manifest.json` and `python/examples/greeting_bot.manifest.json` — contract harness manifest templates.
-- `examples/test_examples_contract.py` — how new examples are validated.
+- `README.md` (project root) — installation, quickstart, and how to run the compose stack.
+- `bots/<bot-id>/README.md` — bot-specific run and deploy instructions.
+- `bots/<bot-id>/<bot-id_snake>.py` — the generated bot handler.
+- `bots/<bot-id>/manifest.json` — contract harness manifest for this bot.
+- `pacto-bot-api.toml` — daemon config and this bot's capabilities.
 
 ## Bot workflow
 
@@ -155,7 +155,7 @@ async def greet(event, bot):
 If the bot calls external APIs, install the optional `http` extra:
 
 ```bash
-pip install "pacto-bot-api[http]"
+pip install "pacto-bot-sdk[http]"
 ```
 
 Then use `httpx` in a handler:
@@ -200,20 +200,6 @@ client = PactoClient(UnixTransport("/tmp/pacto.sock"))
 await client.connect()
 result = await client.handler_register(...)
 ```
-
-## Adding a new example
-
-If the user wants a new example in `python/examples/`:
-
-1. Create `<name>_bot.py` using the `Bot` decorator API.
-2. Add a module docstring with capabilities and usage.
-3. Create `<name>_bot.manifest.json` matching the schema in `examples/example-manifest.json`.
-4. Run the contract harness:
-   ```bash
-   cd examples
-   python -m pytest test_examples_contract.py -v
-   ```
-5. Ensure `python/examples/<name>_bot.py` is discovered automatically; `examples/conftest.py` scans both `examples/` and `python/examples/`.
 
 ## Admin CLI reference
 
@@ -280,13 +266,12 @@ pacto-bot-api --config pacto-bot-api.toml --data-dir ~/.local/share/pacto-bot-ap
 - [ ] `Bot(bot_id=...)` is constructed with explicit id.
 - [ ] At least one `@bot.command` or `@bot.default` is registered.
 - [ ] Handler returns a dict with `event_id` and `action`, or `None`.
-- [ ] Example has a manifest if it should be validated by the contract harness.
-- [ ] Contract harness passes: `pytest examples/test_examples_contract.py -v`.
+- [ ] Bot has a manifest if it should be validated by the contract harness.
+- [ ] Contract harness passes: `pytest bots/<bot-id>/tests/test_contract.py -v`.
 - [ ] No invented admin CLI commands appear in docs or docstrings.
 - [ ] No real `nsec`, bunker `uri`, or daemon secret tokens are pasted into chat or committed.
 
 ## Anti-patterns
 
-- Do not use the hand-written seed `examples/pacto_sdk.py` for new bots; use the generated SDK.
 - Do not commit real `nsec` values or secret tokens.
 - Do not block the dispatch loop with long synchronous work; use `asyncio.create_task` for deferred actions.

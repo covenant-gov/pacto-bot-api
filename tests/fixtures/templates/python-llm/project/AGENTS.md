@@ -41,7 +41,7 @@ the `pacto_bot_sdk` SDK.
 2. Inspect the existing handler in `bots/{{bot_id}}/{{bot_id_snake}}.py` and the
    capabilities in `pacto-bot-api.toml`.
 3. Add or edit command handlers using the `Bot` decorator API from the SDK.
-4. Run the generated tests in `bots/{{bot_id}}/tests/test_bot.py` to verify.
+4. Run the generated tests in `bots/{{bot_id}}/tests/test_handlers.py` to verify.
 
 ## When asked to add a bot
 
