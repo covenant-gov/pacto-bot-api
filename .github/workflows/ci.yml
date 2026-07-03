@@ -130,6 +130,9 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Install cargo-generate
+        run: cargo install cargo-generate --version 0.23.0
+
       - name: Run tests and generate coverage reports
         run: |
           cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
