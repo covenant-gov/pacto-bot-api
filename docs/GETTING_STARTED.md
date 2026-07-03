@@ -135,7 +135,7 @@ The `pacto-bot-api` daemon is under active development in the `pacto-app` repo u
 
 ```bash
 # If it lives as a standalone repo (planned)
-git clone https://github.com/covenant-gov/pacto-bot-api.git
+git clone https://github.com/logicminds/pacto-bot-api.git
 ```
 
 ---
@@ -359,9 +359,10 @@ The easiest path for bot development is to start with the default Docker stack a
    Alternatively, scaffold a full Python handler project with
    `pacto-bot-admin new --scaffold`. This requires `cargo-generate`
    (`cargo install cargo-generate --version 0.23.0`) and resolves templates
-   from the `covenant-gov/pacto-bot-templates` repository. The generated
-   project includes a `scaffold.lock` file so it can be refreshed later with
-   `pacto-bot-admin update`.
+   from the `covenant-gov/pacto-bot-templates` repository. Set `GITHUB_TOKEN`
+   in your environment to avoid unauthenticated GitHub API rate limits. The
+   generated project includes a `scaffold.lock` file so it can be refreshed later
+   with `pacto-bot-admin update`.
 
 7. Send a DM to the bot's `npub` from any Nostr client pointed at `ws://localhost:7000` and the handler will echo it back.
 

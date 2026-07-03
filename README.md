@@ -42,7 +42,7 @@ curl -sSL https://raw.githubusercontent.com/logicminds/pacto-bot-api/main/script
 Requires Rust 1.85 or later.
 
 ```bash
-git clone https://github.com/covenant-gov/pacto-bot-api
+git clone https://github.com/logicminds/pacto-bot-api
 cd pacto-bot-api
 cargo build --release
 ```
@@ -98,6 +98,8 @@ Then scaffold a project:
 ```bash
 pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo
 ```
+
+> **Note:** The first scaffold may make unauthenticated GitHub API requests that are rate-limited to 60 requests per hour. Set `GITHUB_TOKEN` in your environment to use authenticated requests and avoid rate limits.
 
 This resolves a compatible contract/SDK/template triple, caches the artifacts
 locally, renders the project with `cargo-generate`, and writes a per-bot

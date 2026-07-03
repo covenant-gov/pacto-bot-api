@@ -6,6 +6,7 @@
 //! re-fetch, and `--prune-cache` removes stale entries older than a TTL.
 
 use pacto_bot_api::errors::DaemonError;
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use std::fs;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -188,7 +189,7 @@ impl Cache {
         }
 
         let url = contract_asset_url(name, version)?;
-        let body = http_get(&url).await?;
+        let body = github_api_get(&url).await?;
         fs::write(&path, body).map_err(DaemonError::Io)?;
         Ok(())
     }
@@ -289,12 +290,20 @@ fn sanitize_dir_name(url: &str) -> String {
 }
 
 async fn http_get(url: &str) -> Result<String, DaemonError> {
-    let response = reqwest::get(url)
+    http_get_with_headers(url, HeaderMap::new()).await
+}
+
+/// Send a GET request with optional headers and return the body as text.
+async fn http_get_with_headers(url: &str, headers: HeaderMap) -> Result<String, DaemonError> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .headers(headers)
+        .send()
         .await
         .map_err(|e| DaemonError::Config(format!("failed to fetch {url}: {e}")))?;
     if !response.status().is_success() {
         return Err(DaemonError::Config(format!(
-            "failed to fetch {url}: HTTP {}",
+            "failed to fetch {url}: HTTP {} (set GITHUB_TOKEN to avoid GitHub API rate limits)",
             response.status()
         )));
     }
@@ -304,11 +313,27 @@ async fn http_get(url: &str) -> Result<String, DaemonError> {
         .map_err(|e| DaemonError::Config(format!("failed to read {url}: {e}")))
 }
 
+/// Send a GitHub API request with required Accept header and optional token auth.
+async fn github_api_get(url: &str) -> Result<String, DaemonError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        ACCEPT,
+        HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(USER_AGENT, HeaderValue::from_static("pacto-bot-admin"));
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .map_err(|e| DaemonError::Config(format!("invalid GITHUB_TOKEN: {e}")))?;
+        headers.insert(AUTHORIZATION, value);
+    }
+    http_get_with_headers(url, headers).await
+}
+
 async fn list_github_contract_versions(name: &str) -> Result<Vec<semver::Version>, DaemonError> {
-    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "pacto-bot".into());
+    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "logicminds".into());
     let repo = std::env::var("PACTO_GITHUB_REPO").unwrap_or_else(|_| "pacto-bot-api".into());
     let url = format!("https://api.github.com/repos/{owner}/{repo}/releases");
-    let body = http_get(&url).await?;
+    let body = github_api_get(&url).await?;
     let releases: Vec<serde_json::Value> = serde_json::from_str(&body)
         .map_err(|e| DaemonError::Config(format!("invalid GitHub releases response: {e}")))?;
 
@@ -353,7 +378,7 @@ async fn list_pypi_versions(name: &str) -> Result<Vec<semver::Version>, DaemonEr
 
 #[allow(dead_code)]
 fn contract_asset_url(name: &str, version: &semver::Version) -> Result<String, DaemonError> {
-    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "pacto-bot".into());
+    let owner = std::env::var("PACTO_GITHUB_OWNER").unwrap_or_else(|_| "logicminds".into());
     let repo = std::env::var("PACTO_GITHUB_REPO").unwrap_or_else(|_| "pacto-bot-api".into());
     let crate_version = env!("CARGO_PKG_VERSION");
     Ok(format!(
