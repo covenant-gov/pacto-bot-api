@@ -50,7 +50,7 @@ tempfile = "3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = "0.26"
 hex = "0.4"
-bech32 = "0.11"
+bech32 = "0.12"
 subtle = "2"
 fs2 = "0.4"
 nostr-connect = "0.43"
