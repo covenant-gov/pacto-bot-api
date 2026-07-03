@@ -31,7 +31,7 @@ pub async fn run_update(
     let template_ref = resolve_template_ref_for_update(&lock);
     let config = ResolverConfig {
         template_repo: std::env::var("PACTO_TEMPLATE_REPO")
-            .unwrap_or_else(|_| "https://github.com/pacto-bot/pacto-bot-templates".into()),
+            .unwrap_or_else(|_| "https://github.com/covenant-gov/pacto-bot-templates".into()),
         template_ref,
         language: language_from_template_path(&lock.triple.template.path),
         kind: kind_from_template_path(&lock.triple.template.path),
@@ -55,7 +55,7 @@ pub async fn run_update(
         allow_hooks,
         project_dir: project_dir.to_path_buf(),
         template_repo: std::env::var("PACTO_TEMPLATE_REPO")
-            .unwrap_or_else(|_| "https://github.com/pacto-bot/pacto-bot-templates".into()),
+            .unwrap_or_else(|_| "https://github.com/covenant-gov/pacto-bot-templates".into()),
         template_ref: None,
         refresh,
         mode: ScaffoldMode::ExistingProject {

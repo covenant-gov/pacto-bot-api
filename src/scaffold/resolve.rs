@@ -79,7 +79,7 @@ impl Default for ResolverConfig {
     fn default() -> Self {
         Self {
             template_repo: std::env::var("PACTO_TEMPLATE_REPO")
-                .unwrap_or_else(|_| "https://github.com/pacto-bot/pacto-bot-templates".into()),
+                .unwrap_or_else(|_| "https://github.com/covenant-gov/pacto-bot-templates".into()),
             template_ref: None,
             language: "python".into(),
             kind: "llm".into(),

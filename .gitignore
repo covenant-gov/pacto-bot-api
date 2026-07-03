@@ -15,7 +15,8 @@ node_modules/
 coverage-html/
 coverage.json
 lcov.info
-# Rust build artifacts
+# Local sibling repos or workspace artifacts
+pacto-bot-templates/
 /target
 /dist
 

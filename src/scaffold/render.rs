@@ -371,7 +371,7 @@ mod tests {
             force: false,
             allow_hooks: false,
             project_dir: PathBuf::from("/tmp/echo-bot-project"),
-            template_repo: "https://github.com/pacto-bot/pacto-bot-templates".to_string(),
+            template_repo: "https://github.com/covenant-gov/pacto-bot-templates".to_string(),
             template_ref: None,
             refresh: false,
             mode: ScaffoldMode::NewProject {

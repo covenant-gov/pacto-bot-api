@@ -295,7 +295,7 @@ enum Command {
             long,
             value_name = "URL",
             env = "PACTO_TEMPLATE_REPO",
-            default_value = "https://github.com/pacto-bot/pacto-bot-templates"
+            default_value = "https://github.com/covenant-gov/pacto-bot-templates"
         )]
         template_repo: String,
 
@@ -405,7 +405,7 @@ enum Command {
             long,
             value_name = "URL",
             env = "PACTO_TEMPLATE_REPO",
-            default_value = "https://github.com/pacto-bot/pacto-bot-templates"
+            default_value = "https://github.com/covenant-gov/pacto-bot-templates"
         )]
         template_repo: String,
 
