@@ -66,7 +66,7 @@ pub async fn run_update(
     let rendered = render_template(&template_dir, &request, allow_hooks)?;
 
     let policy = OverwritePolicy {
-        force: true,
+        force,
         interactive: std::io::stdin().is_terminal(),
         skip_existing: false,
     };

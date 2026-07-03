@@ -79,7 +79,7 @@ pub fn read_lock(path: &Path) -> Result<ScaffoldLock, DaemonError> {
     let raw = fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             DaemonError::Config(format!(
-                "scaffold lock file not found: {}. Pre-lock projects are not supported by update; see the migration skill at skills/pacto-bot-migration/SKILL.md for guidance.",
+                "scaffold lock file not found: {}. Pre-lock projects are not supported by update; see the migration skill at .agents/skills/pacto-bot-migration/SKILL.md, .claude/skills/pacto-bot-migration/SKILL.md, or .omp/skills/pacto-bot-migration/SKILL.md for guidance.",
                 path.display()
             ))
         } else {
@@ -114,7 +114,11 @@ pub fn write_lock(path: &Path, lock: &ScaffoldLock) -> Result<(), DaemonError> {
     let raw = toml::to_string_pretty(lock)
         .map_err(|e| DaemonError::Config(format!("failed to serialize scaffold lock: {e}")))?;
 
-    fs::write(path, raw).map_err(DaemonError::Io)?;
+    // Write to a sibling temporary file and rename it into place so readers
+    // never observe a partially-written lock file.
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, raw).map_err(DaemonError::Io)?;
+    fs::rename(&tmp_path, path).map_err(DaemonError::Io)?;
     Ok(())
 }
 
@@ -166,7 +170,7 @@ mod tests {
         let err = read_lock(&path).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("scaffold lock file not found"));
-        assert!(msg.contains("skills/pacto-bot-migration/SKILL.md"));
+        assert!(msg.contains(".claude/skills/pacto-bot-migration/SKILL.md"));
     }
 
     #[test]

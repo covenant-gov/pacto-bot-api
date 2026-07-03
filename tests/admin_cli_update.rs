@@ -66,6 +66,7 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
         "echo-bot",
         "--project-dir",
         &project_dir.to_string_lossy(),
+        "--force",
     ]);
     setup_update_env(&mut update_cmd, temp.path())?;
     update_cmd

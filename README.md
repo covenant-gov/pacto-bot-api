@@ -76,7 +76,7 @@ Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the 
 ### 4. Run the daemon
 
 ```bash
-PACTO_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
+PACT_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
 ```
 
 Add `--enable-http` to start the optional localhost HTTP transport on `127.0.0.1:9800`.

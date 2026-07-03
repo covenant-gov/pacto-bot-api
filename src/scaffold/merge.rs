@@ -2,8 +2,9 @@
 //!
 //! Applies the existing safety model: deny-list for config and secret-bearing
 //! files, protected files from the template manifest, prompt-by-default for
-//! changed non-protected files, and `--force` override. All writes are staged
-//! through temporary paths so a failure leaves the original project unchanged.
+//! changed non-protected files, and `--force` override. Writes are applied
+//! directly after those checks; a failure may leave the project partially
+//! updated.
 
 use crate::scaffold::diff::file_diff;
 use crate::scaffold::safety::{OverwritePolicy, WriteDecision, decide_write};
@@ -113,7 +114,7 @@ fn merge_tree(
                         ),
                     ))
                 })?;
-                println!("Created {}", target_path.display());
+                println!("Wrote {}", target_path.display());
                 written.push(target_path);
             }
             WriteDecision::Skip => {
