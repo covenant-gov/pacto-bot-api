@@ -71,12 +71,12 @@ cp pacto-bot-api.toml.example pacto-bot-api.toml
 chmod 0o600 pacto-bot-api.toml
 ```
 
-Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the `nsec` via the `PACT_BOT_NSEC` environment variable, and adjust `relays` as needed.
+Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the `nsec` via the `PACTO_BOT_NSEC` environment variable, and adjust `relays` as needed.
 
 ### 4. Run the daemon
 
 ```bash
-PACT_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
+PACTO_BOT_NSEC=<nsec-hex> pacto-bot-api --config pacto-bot-api.toml
 ```
 
 Add `--enable-http` to start the optional localhost HTTP transport on `127.0.0.1:9800`.

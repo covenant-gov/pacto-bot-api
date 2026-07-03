@@ -53,7 +53,7 @@ A remote or local signing service that holds the bot's private key. The daemon c
 
 ### `nsec` backend
 
-Development-only backend that reads the raw private key from the `PACT_BOT_NSEC` environment variable. Key material is cleared from memory on drop using `zeroize`. Do not use in production.
+Development-only backend that reads the raw private key from the `PACTO_BOT_NSEC` environment variable. Key material is cleared from memory on drop using `zeroize`. Do not use in production.
 
 ### Gift wrap (kind:1059)
 

@@ -180,7 +180,7 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("capabilities = [\"ReadMessages\"]\n");
     out.push_str("```\n\n");
     out.push_str("Signing backends:\n\n");
-    out.push_str("- `nsec` — dev-only local test key. Use `PACT_BOT_NSEC` environment variable or the config file.\n");
+    out.push_str("- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.\n");
     out.push_str("- `bunker_local` — NIP-46 bunker on the same machine.\n");
     out.push_str("- `bunker_remote` — production NIP-46 bunker reachable over `wss://`.\n\n");
     out.push_str("Run the daemon with:\n\n");

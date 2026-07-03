@@ -202,7 +202,7 @@ socket_path = "~/.local/share/pacto-bot-api/pacto-bot-api.sock"
 [[bots]]
 id = "echo-bot"
 npub = "npub1..."
-signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }
+signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat"]
 capabilities = ["ReadMessages", "SendMessages"]
 ```
@@ -265,7 +265,7 @@ rm ~/.local/share/pacto-bot-api/daemon.lock
 
 ### `nsec` not found
 
-If using `signing = { backend = "nsec", nsec = "${PACT_BOT_NSEC}" }`, ensure the environment variable is exported in the daemon's environment.
+If using `signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }`, ensure the environment variable is exported in the daemon's environment.
 
 ## Getting help
 

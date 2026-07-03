@@ -214,7 +214,7 @@ capabilities = ["ReadMessages"]
 
 Signing backends:
 
-- `nsec` — dev-only local test key. Use `PACT_BOT_NSEC` environment variable or the config file.
+- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.
 - `bunker_local` — NIP-46 bunker on the same machine.
 - `bunker_remote` — production NIP-46 bunker reachable over `wss://`.
 
