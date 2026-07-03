@@ -17,7 +17,6 @@ WORKDIR /usr/src/pacto-bot-api
 COPY Cargo.toml Cargo.lock ./
 COPY xtask xtask
 COPY schemas schemas
-COPY templates templates
 COPY src src
 
 ARG GIT_COMMIT_SHORT=unknown
