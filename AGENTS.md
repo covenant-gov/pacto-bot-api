@@ -52,9 +52,9 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 | `tests/support/` | Shared mock relay, mock bunker, secret scanner, and test helpers. |
 | `schemas/` | Canonical JSON Schema/OpenRPC contracts; source of truth for generated types. |
 | `xtask/` | Build/task runner (`codegen`, `docs`, `coverage`, `secret-lint`, `dev-env-probe`). |
-| `templates/python/` | Python handler project templates used by the scaffold generator. |
+| `tests/fixtures/templates/` | Local cargo-generate fixture template used by the integration tests. |
 | `examples/` | Reference Python bots using the seed/generated SDK and manifest-driven contract tests. |
-| `python/` | Generated Python SDK (Pydantic models, `PactoClient`, `Bot` API) produced from `schemas/jsonrpc.json`. |
+| `python/` | Generated Python SDK (Pydantic models, `PactoClient`, `Bot` API) produced from `schemas/jsonrpc.json` and published to PyPI as `pacto-bot-sdk`. |
 | `skills/python-pacto-bot/` | Claude Code / Cursor / Oh My Pi skill for SDK-aware bot authoring. |
 | `scripts/` | Release install script, packaging script, and pre-commit hook. |
 | `.github/workflows/` | CI and release automation. |

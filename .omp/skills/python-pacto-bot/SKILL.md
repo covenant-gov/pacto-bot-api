@@ -62,7 +62,7 @@ pacto-bot-admin scaffold my-bot --commands hello,help
 pacto-bot-admin scaffold my-bot --commands price --http
 ```
 
-The generated project uses the layout under `templates/python/`. Inside the project:
+The generated project is rendered from the `python-llm` template in the external `pacto-bot-templates` repository. Inside the project:
 
 - `bots/my-bot/my_bot.py` — handler file using `from pacto_bot_sdk import Bot`.
 - `bots/my-bot/Dockerfile` — container image for the bot.

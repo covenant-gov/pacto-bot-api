@@ -349,14 +349,21 @@ The easiest path for bot development is to start with the default Docker stack a
    cargo run --bin pacto-bot-api -- --config pacto-bot-api.toml
    ```
 
-5. In another terminal, run the example handler:
+6. In another terminal, run the example handler:
 
    ```bash
    cd examples
    python echo_bot.py
    ```
 
-6. Send a DM to the bot's `npub` from any Nostr client pointed at `ws://localhost:7000` and the handler will echo it back.
+   Alternatively, scaffold a full Python handler project with
+   `pacto-bot-admin new --scaffold`. This requires `cargo-generate`
+   (`cargo install cargo-generate --version 0.23.0`) and resolves templates
+   from the `covenant-gov/pacto-bot-templates` repository. The generated
+   project includes a `scaffold.lock` file so it can be refreshed later with
+   `pacto-bot-admin update`.
+
+7. Send a DM to the bot's `npub` from any Nostr client pointed at `ws://localhost:7000` and the handler will echo it back.
 
 ### Required Docker services
 
