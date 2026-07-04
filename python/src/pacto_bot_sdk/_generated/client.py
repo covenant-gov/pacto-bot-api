@@ -208,7 +208,7 @@ class PactoClient:
         """
         Call JSON-RPC method `agent.unregister_handler`.
 
-        Forcibly remove a handler from the routing table (admin-only).
+        Forcibly remove a handler from the routing table. The caller must be the target handler itself or have the Admin capability.
 
         Example:
 
@@ -241,7 +241,26 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str], handler_id: str | None = None) -> models.HandlerRegisterResult:
+    async def handler_reconnect(self, handler_id: str, reconnect_token: str) -> models.HandlerReconnectResult:
+        """
+        Call JSON-RPC method `handler.reconnect`.
+
+        Reconnect a previously registered handler using its secret reconnect token.
+
+        Example:
+
+            >>> result = await client.handler_reconnect(...)
+            >>> isinstance(result, HandlerReconnectResult)
+
+        jsonrpc_method: ``"handler.reconnect"``
+        """
+        params = models.HandlerReconnectParams(handler_id=handler_id, reconnect_token=reconnect_token)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("handler.reconnect", params_dict)
+        result = response.get('result')
+        return models.HandlerReconnectResult.model_validate(result)
+
+    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResult:
         """
         Call JSON-RPC method `handler.register`.
 
@@ -254,7 +273,7 @@ class PactoClient:
 
         jsonrpc_method: ``"handler.register"``
         """
-        params = models.HandlerRegisterParams(bot_ids=bot_ids, capabilities=capabilities, event_types=event_types, handler_id=handler_id)
+        params = models.HandlerRegisterParams(bot_ids=bot_ids, capabilities=capabilities, event_types=event_types)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("handler.register", params_dict)
         result = response.get('result')

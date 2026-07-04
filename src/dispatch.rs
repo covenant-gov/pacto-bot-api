@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use nostr::EventId;
@@ -10,19 +10,19 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::client_manager::ClientManager;
-use crate::db::Database;
+use crate::db::Db;
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::{
     AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    AgentVersionResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
+    AgentVersionResponse, HandlerReconnectParams, HandlerReconnectResponse,
+    HandlerRegisterResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
     parse_method,
 };
 
-#[cfg(test)]
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 /// Maximum time to wait for handler responses before advancing the cursor.
 pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -177,7 +177,7 @@ const HANDLER_STALE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 pub struct Dispatch {
     client_manager: Arc<RwLock<ClientManager>>,
-    db: StdMutex<Database>,
+    db: Db,
     pub diagnostics: Diagnostics,
     rate_limiter: RateLimiter,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
@@ -191,12 +191,12 @@ impl Dispatch {
     /// Create a new dispatch router with default rate limits.
     pub fn new(
         client_manager: Arc<RwLock<ClientManager>>,
-        db: Database,
+        db: Db,
         diagnostics: Diagnostics,
     ) -> Self {
         Self {
             client_manager,
-            db: StdMutex::new(db),
+            db,
             diagnostics,
             rate_limiter: RateLimiter::default(),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
@@ -210,13 +210,13 @@ impl Dispatch {
     /// Create a dispatch router with a custom rate limiter (useful in tests).
     pub fn with_rate_limiter(
         client_manager: Arc<RwLock<ClientManager>>,
-        db: Database,
+        db: Db,
         diagnostics: Diagnostics,
         rate_limiter: RateLimiter,
     ) -> Self {
         Self {
             client_manager,
-            db: StdMutex::new(db),
+            db,
             diagnostics,
             rate_limiter,
             pending: Arc::new(TokioMutex::new(HashMap::new())),
@@ -252,16 +252,12 @@ impl Dispatch {
     /// Used by the transport layer when a connection drops, as well as by
     /// explicit `handler.unregister` requests.
     pub async fn unregister_handler(&self, handler_id: &str) -> Result<(), DaemonError> {
-        let mut cm = self.client_manager.write().await;
-        cm.handler_registry.unregister(handler_id)?;
-
         {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.delete_handler(handler_id)?;
+            let mut cm = self.client_manager.write().await;
+            cm.handler_registry.unregister(handler_id)?;
         }
+
+        self.db.delete_handler(handler_id).await?;
 
         self.handlers_registered.fetch_sub(1, Ordering::SeqCst);
         self.diagnostics
@@ -372,11 +368,7 @@ impl Dispatch {
                 let mut last_cursor = self.last_cursor.lock().await;
                 last_cursor.insert(event.bot_id.clone(), (npub.clone(), cursor));
             }
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.save_cursor(&event.bot_id, &npub, cursor)?;
+            self.db.save_cursor(&event.bot_id, &npub, cursor).await?;
         }
 
         Ok(())
@@ -442,13 +434,15 @@ impl Dispatch {
 
     /// Persist the latest cursor for every bot seen by this dispatch instance.
     pub async fn flush_cursors(&self) -> Result<(), DaemonError> {
-        let last_cursor = self.last_cursor.lock().await;
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-        for (bot_id, (npub, cursor)) in last_cursor.iter() {
-            db.save_cursor(bot_id, npub, *cursor)?;
+        let cursors: Vec<(String, String, i64)> = {
+            let last_cursor = self.last_cursor.lock().await;
+            last_cursor
+                .iter()
+                .map(|(bot_id, (npub, cursor))| (bot_id.clone(), npub.clone(), *cursor))
+                .collect()
+        };
+        for (bot_id, npub, cursor) in cursors {
+            self.db.save_cursor(&bot_id, &npub, cursor).await?;
         }
         Ok(())
     }
@@ -488,14 +482,18 @@ impl Dispatch {
         let params = message_params(&msg);
         let result = match method {
             Method::HandlerRegister => self.handle_register(params, connection).await,
+            Method::HandlerReconnect => self.handle_reconnect(params, connection).await,
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
             Method::AgentMetrics => self.handle_metrics().await,
-            Method::AgentListHandlers => self.handle_list_handlers().await,
-            Method::AgentUnregisterHandler => self.handle_admin_unregister_handler(params).await,
+            Method::AgentListHandlers => self.handle_list_handlers(handler_id).await,
+            Method::AgentUnregisterHandler => {
+                self.handle_admin_unregister_handler(handler_id, params)
+                    .await
+            }
             Method::AgentVersion => self.handle_version().await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
@@ -532,10 +530,65 @@ impl Dispatch {
                 .unwrap_or(Value::Array(vec![])),
         )?;
 
-        let preferred_id = params
-            .get("handler_id")
-            .and_then(Value::as_str)
-            .map(String::from);
+        let connection = connection.unwrap_or_else(|| {
+            let (tx, _rx) = mpsc::channel(1);
+            ConnectionHandle::new(tx)
+        });
+
+        let bot_configs = {
+            let cm = self.client_manager.read().await;
+            cm.bots().map(|(_, b)| b.config.clone()).collect::<Vec<_>>()
+        };
+
+        let mut cm = self.client_manager.write().await;
+        let registration = cm.handler_registry.register(
+            connection,
+            bot_ids,
+            event_types,
+            capabilities,
+            &bot_configs,
+        )?;
+        let handler_id = registration.handler_id;
+        let reconnect_token = registration.reconnect_token;
+
+        let registered_events: Vec<String> = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .map(|h| {
+                h.event_types
+                    .iter()
+                    .map(event_type_name)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let handler = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .ok_or_else(|| DaemonError::HandlerNotRegistered)?
+            .clone();
+        drop(cm);
+        self.db.save_handler(&handler).await?;
+
+        self.handlers_registered.fetch_add(1, Ordering::SeqCst);
+        self.diagnostics
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+
+        Ok(Some(serde_json::to_value(HandlerRegisterResponse {
+            handler_id,
+            reconnect_token: reconnect_token.expose_secret().to_string(),
+            registered_events,
+        })?))
+    }
+
+    async fn handle_reconnect(
+        &self,
+        params: Option<&Value>,
+        connection: Option<ConnectionHandle>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params =
+            params.ok_or_else(|| DaemonError::Config("handler.reconnect missing params".into()))?;
+        let reconnect_params: HandlerReconnectParams = serde_json::from_value(params.clone())?;
 
         let connection = connection.unwrap_or_else(|| {
             let (tx, _rx) = mpsc::channel(1);
@@ -547,20 +600,11 @@ impl Dispatch {
             cm.bots().map(|(_, b)| b.config.clone()).collect::<Vec<_>>()
         };
 
-        let existed = {
-            let cm = self.client_manager.read().await;
-            preferred_id
-                .as_ref()
-                .is_some_and(|id| cm.handler_registry.get_handler(id).is_some())
-        };
-
         let mut cm = self.client_manager.write().await;
         let handler_id = cm.handler_registry.reconnect(
-            preferred_id,
+            reconnect_params.handler_id,
+            SecretString::new(reconnect_params.reconnect_token.into()),
             connection,
-            bot_ids,
-            event_types,
-            capabilities,
             &bot_configs,
         )?;
 
@@ -575,28 +619,18 @@ impl Dispatch {
             })
             .unwrap_or_default();
 
-        {
-            let handler = cm
-                .handler_registry
-                .get_handler(&handler_id)
-                .ok_or_else(|| DaemonError::HandlerNotRegistered)?;
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.save_handler(handler)?;
-        }
+        let handler = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .ok_or_else(|| DaemonError::HandlerNotRegistered)?
+            .clone();
+        drop(cm);
+        self.db.save_handler(&handler).await?;
 
-        if !existed {
-            self.handlers_registered.fetch_add(1, Ordering::SeqCst);
-            self.diagnostics
-                .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
-        }
-
-        Ok(Some(serde_json::json!({
-            "handler_id": handler_id,
-            "registered_events": registered_events,
-        })))
+        Ok(Some(serde_json::to_value(HandlerReconnectResponse {
+            handler_id,
+            registered_events,
+        })?))
     }
 
     async fn handle_unregister(
@@ -788,7 +822,12 @@ impl Dispatch {
         Ok(Some(serde_json::to_value(response)?))
     }
 
-    async fn handle_list_handlers(&self) -> Result<Option<Value>, DaemonError> {
+    async fn handle_list_handlers(
+        &self,
+        caller_id: Option<&str>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
         let stale_timeout = self.handler_stale_timeout;
         let handlers = {
             let cm = self.client_manager.read().await;
@@ -825,6 +864,7 @@ impl Dispatch {
 
     async fn handle_admin_unregister_handler(
         &self,
+        caller_id: Option<&str>,
         params: Option<&Value>,
     ) -> Result<Option<Value>, DaemonError> {
         let params = params
@@ -836,11 +876,39 @@ impl Dispatch {
                 DaemonError::Config("agent.unregister_handler missing handler_id".into())
             })?;
 
+        self.require_admin_or_self(caller_id, Some(handler_id))
+            .await?;
+
         self.unregister_handler(handler_id).await?;
 
         Ok(Some(serde_json::to_value(
             AgentUnregisterHandlerResponse { unregistered: true },
         )?))
+    }
+
+    /// Ensure the caller is either the target handler itself or has the Admin capability.
+    async fn require_admin_or_self(
+        &self,
+        caller_id: Option<&str>,
+        target_handler_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let Some(caller_id) = caller_id else {
+            return Err(DaemonError::HandlerNotRegistered);
+        };
+
+        if target_handler_id == Some(caller_id) {
+            return Ok(());
+        }
+
+        let cm = self.client_manager.read().await;
+        let handler = cm
+            .handler_registry
+            .get_handler(caller_id)
+            .ok_or(DaemonError::HandlerNotRegistered)?;
+        if handler.capabilities.contains(&"Admin".to_string()) {
+            return Ok(());
+        }
+        Err(DaemonError::UnauthorizedBot)
     }
 
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
@@ -891,12 +959,8 @@ impl Dispatch {
     }
 
     /// Load the persisted cursor for a bot.
-    pub fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-        db.load_cursor(bot_id)
+    pub async fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
+        self.db.load_cursor(bot_id).await
     }
 
     /// Access the diagnostics collector.
@@ -906,13 +970,7 @@ impl Dispatch {
 
     /// Restore persisted handler registrations as disconnected entries.
     pub async fn restore_handlers(&self) -> Result<(), DaemonError> {
-        let handlers = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.load_handlers()?
-        };
+        let handlers = self.db.load_handlers().await?;
 
         let count = handlers.len() as u64;
         let mut cm = self.client_manager.write().await;
@@ -953,6 +1011,7 @@ fn event_type_name(event_type: &EventType) -> String {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+    use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
     use crate::nostr::NostrClient;
     use crate::transport::protocol::JsonRpcMessage;
@@ -988,7 +1047,9 @@ mod tests {
             ClientManager::new(config, nostr_client).await.unwrap(),
         ));
         let dir = tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path()).unwrap();
+        let db = Db::open(dir.path().join("test.db").as_path())
+            .await
+            .unwrap();
         let diagnostics = Diagnostics::new();
         let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
         (dispatch, cm)
@@ -1107,6 +1168,7 @@ mod tests {
                     &[bot_config_for_register],
                 )
                 .unwrap()
+                .handler_id
         };
 
         let req = JsonRpcMessage::request(
@@ -1180,6 +1242,7 @@ mod tests {
                     &[bot_config_for_register],
                 )
                 .unwrap()
+                .handler_id
         };
 
         let req = JsonRpcMessage::notification(
@@ -1206,8 +1269,12 @@ mod tests {
     #[tokio::test]
     async fn agent_list_handlers_returns_routing_table() {
         let keys = test_keys();
-        let (dispatch, cm) =
-            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+        let (dispatch, cm) = dispatch_with_bots(vec![bot_config(
+            "echo-bot",
+            &keys,
+            &["ReadMessages", "Admin"],
+        )])
+        .await;
 
         let (tx, rx) = mpsc::channel(1);
         let handler_id = {
@@ -1221,10 +1288,11 @@ mod tests {
                     ConnectionHandle::with_transport(tx, "unix"),
                     vec!["echo-bot".to_string()],
                     vec!["dm_received".to_string()],
-                    vec!["ReadMessages".to_string()],
+                    vec!["ReadMessages".to_string(), "Admin".to_string()],
                     &[bot_config_for_register],
                 )
-                .unwrap();
+                .unwrap()
+                .handler_id;
             {
                 let mut cm = cm.write().await;
                 cm.handler_registry = registry;
@@ -1236,7 +1304,7 @@ mod tests {
         let req =
             JsonRpcMessage::request(1.into(), "agent.list_handlers", Some(serde_json::json!({})));
         let resp = dispatch
-            .handle_message(req, None, None)
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap()
             .unwrap();
@@ -1284,7 +1352,8 @@ mod tests {
                     vec!["ReadMessages".to_string()],
                     &[bot_config_for_register],
                 )
-                .unwrap();
+                .unwrap()
+                .handler_id;
             {
                 let mut cm = cm.write().await;
                 cm.handler_registry = registry;
@@ -1299,7 +1368,7 @@ mod tests {
             Some(serde_json::json!({"handler_id": handler_id})),
         );
         let resp = dispatch
-            .handle_message(req, None, None)
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap()
             .unwrap();
@@ -1314,5 +1383,47 @@ mod tests {
 
         let cm = cm.read().await;
         assert!(cm.handler_registry.get_handler(&handler_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn lock_ordering_releases_last_cursor_before_db() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+        let dispatch = Arc::new(dispatch);
+
+        let npub = keys.public_key().to_bech32().unwrap();
+        {
+            let mut last_cursor = dispatch.last_cursor.lock().await;
+            last_cursor.insert("echo-bot".into(), (npub.clone(), 42));
+        }
+
+        let hold = dispatch.last_cursor.clone();
+        let blocker = tokio::spawn(async move {
+            let _guard = hold.lock().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let flush = tokio::spawn({
+            let dispatch = Arc::clone(&dispatch);
+            async move { dispatch.flush_cursors().await.unwrap() }
+        });
+
+        // Give the blocker time to take the last_cursor lock.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // The runtime should still be responsive while flush_cursors waits
+        // for the lock, because no database work has started yet.
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+
+        blocker.await.unwrap();
+        flush.await.unwrap();
+
+        let cursor = dispatch.load_cursor("echo-bot").await.unwrap();
+        assert_eq!(cursor, Some((npub, 42)));
     }
 }

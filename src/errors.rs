@@ -72,6 +72,12 @@ pub enum DaemonError {
     #[error("rate limited")]
     RateLimited,
 
+    #[error("handler already connected")]
+    HandlerAlreadyConnected,
+
+    #[error("invalid reconnect token")]
+    InvalidReconnectToken,
+
     #[error("unauthorized bot")]
     UnauthorizedBot,
 
@@ -83,6 +89,9 @@ pub enum DaemonError {
 
     #[error("frame too large")]
     FrameTooLarge,
+
+    #[error("failed to generate reconnect token: {0}")]
+    TokenGeneration(#[from] getrandom::Error),
 }
 
 impl DaemonError {
@@ -96,11 +105,13 @@ impl DaemonError {
             DaemonError::Nostr(_) => -32004,
             DaemonError::RateLimited => -32005,
             DaemonError::UnauthorizedBot => -32006,
+            DaemonError::HandlerAlreadyConnected => -32007,
+            DaemonError::InvalidReconnectToken => -32008,
             DaemonError::JsonRpc(e) => e.code,
             DaemonError::MethodNotFound => -32601,
-            DaemonError::MethodNotSupported(_) => -32007,
-            // Malformed input or bad params are treated as invalid request/params.
+            DaemonError::MethodNotSupported(_) => -32009,
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
+            DaemonError::TokenGeneration(_) => -32603,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
             DaemonError::Sqlite(_) => -32603,
         }
@@ -139,6 +150,14 @@ mod tests {
         assert_eq!(DaemonError::Nostr("x".into()).to_json_rpc_code(), -32004);
         assert_eq!(DaemonError::RateLimited.to_json_rpc_code(), -32005);
         assert_eq!(DaemonError::UnauthorizedBot.to_json_rpc_code(), -32006);
+        assert_eq!(
+            DaemonError::HandlerAlreadyConnected.to_json_rpc_code(),
+            -32007
+        );
+        assert_eq!(
+            DaemonError::InvalidReconnectToken.to_json_rpc_code(),
+            -32008
+        );
         assert_eq!(DaemonError::MethodNotFound.to_json_rpc_code(), -32601);
     }
 

@@ -2,7 +2,7 @@ use clap::Parser;
 use fs2::FileExt;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::DaemonConfig;
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::Db;
 use pacto_bot_api::dev_env_probe::{log_warnings, run_probe};
 use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::dispatch::Dispatch;
@@ -11,10 +11,10 @@ use pacto_bot_api::signer::Signer;
 use pacto_bot_api::transport::TransportLayer;
 use pacto_bot_api::transport::http;
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions, Permissions};
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::Arc;
@@ -129,8 +129,9 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         "starting pacto-bot-api daemon"
     );
 
-    let config =
-        DaemonConfig::load(&cli.config).map_err(|e| format!("failed to load config: {e}"))?;
+    let config = DaemonConfig::load_async(&cli.config)
+        .await
+        .map_err(|e| format!("failed to load config: {e}"))?;
 
     let data_dir = cli
         .data_dir
@@ -138,22 +139,25 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| config.data_dir().to_string());
 
-    fs::create_dir_all(&data_dir)
+    tokio::fs::create_dir_all(&data_dir)
+        .await
         .map_err(|e| format!("failed to create data directory {}: {e}", data_dir))?;
 
     // Restrict the data directory to the owner. The Unix socket and secret
     // token live (or may live) under this path.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let data_dir_path = Path::new(&data_dir);
-        let metadata = fs::metadata(data_dir_path)
+        let metadata = tokio::fs::metadata(data_dir_path)
+            .await
             .map_err(|e| format!("failed to stat data directory {}: {e}", data_dir))?;
         let mode = metadata.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
-            fs::set_permissions(data_dir_path, std::fs::Permissions::from_mode(0o700)).map_err(
-                |e| format!("failed to set data directory permissions {}: {e}", data_dir),
-            )?;
+            tokio::fs::set_permissions(data_dir_path, Permissions::from_mode(0o700))
+                .await
+                .map_err(|e| {
+                    format!("failed to set data directory permissions {}: {e}", data_dir)
+                })?;
         }
     }
 
@@ -165,33 +169,19 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     });
 
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
-    let mut lock_file = open_lock_file(&lock_path)
-        .map_err(|e| format!("failed to open lock file {}: {e}", lock_path.display()))?;
-
-    if lock_file.try_lock_exclusive().is_err() {
-        return Err(format!(
-            "daemon is already running (lock held at {})",
-            lock_path.display()
-        ));
-    }
-
-    // Write the daemon's PID into the lock file so the admin CLI can verify
-    // the process is still alive without relying solely on the advisory lock.
-    let pid = process::id();
-    if let Err(e) = lock_file.write_all(format!("{pid}\n").as_bytes()) {
-        return Err(format!("failed to write PID to lock file: {e}"));
-    }
-    if let Err(e) = lock_file.flush() {
-        return Err(format!("failed to flush PID to lock file: {e}"));
-    }
+    let lock_file = acquire_lock_file(&lock_path)
+        .await
+        .map_err(|e| format!("failed to acquire lock file {}: {e}", lock_path.display()))?;
 
     let db_path = Path::new(&data_dir).join(AGENT_DB_FILE);
-    let db = Database::open(&db_path)
+    let db = Db::open(&db_path)
+        .await
         .map_err(|e| format!("failed to open database {}: {e}", db_path.display()))?;
 
     for bot in &config.bots {
         let valid = db
             .validate_npub(&bot.id, &bot.npub)
+            .await
             .map_err(|e| format!("failed to validate stored npub for {}: {e}", bot.id))?;
         if !valid {
             warn!(
@@ -199,6 +189,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                 "stored npub does not match config; resetting cursor"
             );
             db.reset_cursor(&bot.id)
+                .await
                 .map_err(|e| format!("failed to reset cursor for {}: {e}", bot.id))?;
         }
     }
@@ -335,13 +326,13 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             biased;
             _ = &mut shutdown_rx => break,
             _ = flush_interval.tick() => {
-                if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
+                if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)).await {
                     warn!(error = %e, "failed to flush diagnostics report");
                 }
             }
-            Some(event_result) = event_stream.next() => {
+            event_result = event_stream.next() => {
                 match event_result {
-                    Ok(event) => {
+                    Some(Ok(event)) => {
                         // Spawn each event dispatch so one bot's slow signer
                         // or a long handler timeout does not block other bots.
                         let dispatch = dispatch.clone();
@@ -351,7 +342,11 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                             }
                         });
                     }
-                    Err(e) => warn!(error = %e, "nostr event error"),
+                    Some(Err(e)) => warn!(error = %e, "nostr event error"),
+                    None => {
+                        warn!("nostr event stream ended, shutting down");
+                        break;
+                    }
                 }
             }
         }
@@ -373,7 +368,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             warn!(error = %e, "failed to flush cursors during shutdown");
         }
 
-        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
+        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)).await {
             warn!(error = %e, "failed to flush diagnostics report during shutdown");
         }
 
@@ -382,16 +377,16 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         let _ = metrics_handle.await;
         let _ = reaper_handle.await;
 
-        nostr_client.disconnect().await;
+        nostr_client.shutdown().await;
 
         // Release the daemon lock before declaring stopped and clean up the
         // lock file so the admin CLI does not see a stale PID.
         drop(lock_file);
-        let _ = fs::remove_file(&lock_path);
+        let _ = tokio::fs::remove_file(&lock_path).await;
 
         emit_agent_status(&diagnostics, &dispatch, DaemonStatus::Stopped).await;
 
-        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)) {
+        if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)).await {
             warn!(error = %e, "failed to flush final diagnostics report");
         }
     };
@@ -432,6 +427,35 @@ fn open_lock_file(path: &Path) -> Result<File, std::io::Error> {
             .truncate(true)
             .open(path)
     }
+}
+
+/// Open the daemon lock file on a blocking thread and attempt to take the
+/// exclusive advisory lock. Returns the locked file handle on success.
+async fn acquire_lock_file(lock_path: &Path) -> Result<File, String> {
+    let lock_path = lock_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<File, String> {
+        let mut file = open_lock_file(&lock_path)
+            .map_err(|e| format!("failed to open lock file {}: {e}", lock_path.display()))?;
+
+        if file.try_lock_exclusive().is_err() {
+            return Err(format!(
+                "daemon is already running (lock held at {})",
+                lock_path.display()
+            ));
+        }
+
+        // Write the daemon's PID into the lock file so the admin CLI can verify
+        // the process is still alive without relying solely on the advisory lock.
+        let pid = process::id();
+        file.write_all(format!("{pid}\n").as_bytes())
+            .map_err(|e| format!("failed to write PID to lock file: {e}"))?;
+        file.flush()
+            .map_err(|e| format!("failed to flush PID to lock file: {e}"))?;
+
+        Ok(file)
+    })
+    .await
+    .map_err(|e| format!("lock file task failed: {e}"))?
 }
 
 /// Emit an `agent.status` lifecycle notification and update diagnostics.

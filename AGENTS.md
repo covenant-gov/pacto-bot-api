@@ -4,7 +4,7 @@
 
 `pacto-bot-api` is a standalone Rust daemon that multiplexes multiple Pacto bot identities onto one shared backend. Bot developers write handlers in any language and connect to the daemon over a language-agnostic JSON-RPC 2.0 API; the daemon owns Nostr relay connections, encrypted DM handling, signing keys, and message routing.
 
-> **Current state:** Active implementation. The daemon, admin CLI, JSON-RPC transports, SQLite persistence, NIP-46 signing, handler dispatch, and bot project scaffolding are all implemented. The crate is currently at version **0.4.1**. See `CHANGELOG.md` for release history and `docs/plans/` for upcoming work.
+> **Current state:** Active implementation. The daemon, admin CLI, JSON-RPC transports, SQLite persistence, NIP-46 signing, handler dispatch, and bot project scaffolding are all implemented. The crate is currently at version **0.5.0**. See `CHANGELOG.md` for release history and `docs/plans/` for upcoming work.
 
 ## Architecture & Data Flow
 
@@ -65,7 +65,7 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 ## Development Commands
 
 ```bash
-# Full validation suite (fmt, clippy, tests) — run this before committing
+# Full validation suite (fmt, clippy) — run this before committing
 make validate
 
 # Build all targets
@@ -108,7 +108,7 @@ make deny
 make install-hooks
 ```
 
-**Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the full test suite. Do not commit code that fails this gate.
+**Always run `make validate` before committing.** It runs `cargo fmt --check` and `cargo clippy`. Do not commit code that fails this gate.
 
 Ecosystem-wide setup for local services (relay, EVM testnet, bunker):
 
@@ -157,7 +157,7 @@ docker compose --profile bunker up -d --build
 
 | File | Purpose |
 |------|---------|
-| `Cargo.toml` | Package manifest, workspace definition, lints, and dependency set. Current version is 0.4.1. |
+| `Cargo.toml` | Package manifest, workspace definition, lints, and dependency set. Current version is 0.5.0. |
 | `Makefile` | Development shortcuts including validation, cross-compilation, packaging, and hooks. |
 | `pacto-bot-api.toml` | Runtime daemon config (gitignored in production; example in repo root or docs). |
 | `README.md` | Operator-facing quickstart and installation guide. |
@@ -230,7 +230,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 | `cargo-nextest` | `laurigates/claude-plugins` | Fast, structured test runs with `cargo nextest` |
 | `ce-compound` | `everyinc/compound-engineering-plugin` | Document solved problems and project vocabulary in `docs/solutions/` |
 | `ce-compound-refresh` | `everyinc/compound-engineering-plugin` | Audit and refresh stale learnings against the codebase |
-| `python-pacto-bot` | `project-local` | Write Python bots for `pacto-bot-api` using the generated SDK; directs new projects to `pacto-bot-admin new --scaffold` |
+| `python-pacto-bot` | `covenant-gov/pacto-bot-templates` | Write Python bots for `pacto-bot-api` using the generated SDK; directs new projects to `pacto-bot-admin new --scaffold` |
 | `nip-lookup` | `project-local` | Look up a NIP and explain the 5 Ws / How plus Pacto-specific use cases |
 | `kind-lookup` | `project-local` | Look up a Nostr event kind and explain the 5 Ws / How plus Pacto-specific use cases |
 
@@ -241,7 +241,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 ## Notes for AI Assistants
 
 - `src/` and `tests/` exist. Use `grep` and `ast_grep` to find code; do not assume the repo is planning-only.
-- **Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the full test suite. Do not commit code that fails this gate.
+- **Always run `make validate` before committing.** It runs `cargo fmt --check` and `cargo clippy`. Do not commit code that fails this gate.
 - Respect the planned separation of concerns: runtime logic belongs in the daemon, lifecycle/identity operations belong in `pacto-bot-admin`, and bot authoring belongs in the Python SDK / scaffold generator.
 - When generating config examples, enforce `0o600` permissions and warn against committing real nsec values.
 - Prefer deterministic, Docker-free tests; gate external-service tests behind `#[ignore]`.

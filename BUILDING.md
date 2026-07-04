@@ -2,7 +2,7 @@
 
 ## Native build
 
-Requires Rust 1.85 or later.
+Requires Rust 1.96 or later.
 
 ```bash
 cargo build

@@ -6,6 +6,8 @@ use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 mod common;
 mod support;
@@ -348,6 +350,7 @@ async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::er
     )
     .await?;
     let handler_id = handler.handler_id().to_string();
+    let reconnect_token = handler.reconnect_token().to_string();
     drop(handler);
 
     let pid = child.id();
@@ -371,11 +374,12 @@ async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::er
     );
     drop(db);
 
-    // Second daemon run: reconnect with the persisted handler_id.
+    // Second daemon run: reconnect using the secret reconnect token.
     let child = spawn_until_ready(&config).await?;
-    let reconnected = common::HandlerClient::register_with_id(
+    let reconnected = common::HandlerClient::reconnect(
         &socket_path,
-        Some(&handler_id),
+        &handler_id,
+        &reconnect_token,
         &["echo-bot"],
         &["dm_received"],
         &["ReadMessages"],
@@ -435,5 +439,40 @@ async fn unregister_deletes_persisted_handler_row() -> Result<(), Box<dyn std::e
     let db = Database::open(&db_path)?;
     let loaded = db.load_handlers()?;
     assert!(loaded.is_empty(), "unregister should delete persisted row");
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_path_completes_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot])?;
+
+    // The daemon startup path performs config parsing, filesystem setup,
+    // lock acquisition and SQLite open/migrations in the same process as the
+    // daemon. If any of that ran on the async runtime, the timer ticks below
+    // would be starved.
+    let mut interval = tokio::time::interval(Duration::from_millis(5));
+    let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ticks_clone = Arc::clone(&ticks);
+    let timer = tokio::spawn(async move {
+        for _ in 0..50 {
+            interval.tick().await;
+            ticks_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+
+    let child = tokio::time::timeout(Duration::from_secs(10), spawn_until_ready(&config))
+        .await
+        .map_err(|_| "daemon startup timed out")??;
+
+    common::shutdown_daemon(child).await?;
+    timer.await?;
+
+    let tick_count = ticks.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        tick_count >= 5,
+        "runtime was blocked during daemon startup; only {tick_count} timer ticks fired"
+    );
     Ok(())
 }

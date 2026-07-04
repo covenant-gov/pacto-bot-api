@@ -55,8 +55,8 @@ fn status_transitions() {
     assert_eq!(diag.snapshot().status, DaemonStatus::Stopped);
 }
 
-#[test]
-fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let diag = Diagnostics::new();
 
@@ -84,7 +84,7 @@ fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         },
     ]);
 
-    diag.flush_report(tmp.path())?;
+    diag.flush_report(tmp.path()).await?;
 
     let contents = read_latest_report(tmp.path())?;
     let parsed: HealthSnapshot = serde_json::from_str(&contents)?;
@@ -99,8 +99,8 @@ fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let diag = Diagnostics::new();
 
@@ -114,7 +114,7 @@ fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::Error>
         "token=super-secret-token and secret=do-not-share",
         None,
     );
-    diag.flush_report(tmp.path())?;
+    diag.flush_report(tmp.path()).await?;
 
     let contents = read_latest_report(tmp.path())?;
 
@@ -126,13 +126,13 @@ fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-#[test]
-fn report_directory_is_created_lazily() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn report_directory_is_created_lazily() -> Result<(), Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
     let nested = tmp.path().join("a").join("b");
     let diag = Diagnostics::new();
 
-    diag.flush_report(&nested)?;
+    diag.flush_report(&nested).await?;
 
     let contents = read_latest_report(&nested)?;
     assert!(contents.contains("\"status\""));

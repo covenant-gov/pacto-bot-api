@@ -1,14 +1,15 @@
 /// req(R14, R15, R16, R17, R18, R26, R27, R30)
 mod support;
 
+use crate::support::mock_relay::MockRelay;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::support::mock_relay::MockRelay;
 use nostr::{Kind, ToBech32};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::Db;
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::{
     DEFAULT_BOT_BURST, DEFAULT_BOT_RATE, DEFAULT_HANDLER_BURST, DEFAULT_HANDLER_RATE, Dispatch,
@@ -68,7 +69,7 @@ async fn setup_dispatch_with_client(
     };
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
     let dir = tempdir()?;
-    let db = Database::open(dir.path().join("test.db").as_path())?;
+    let db = Db::open(dir.path().join("test.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let mut dispatch = match rate_limiter {
         Some(limiter) => Dispatch::with_rate_limiter(cm.clone(), db, diagnostics, limiter),
@@ -139,20 +140,26 @@ async fn fan_out_delivers_event_and_advances_cursor() -> Result<(), Box<dyn std:
 
     let (handler_id1, handler_id2) = {
         let mut cm = cm.write().await;
-        let id1 = cm.handler_registry.register(
-            ConnectionHandle::new(tx1),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string(), "SendMessages".to_string()],
-            std::slice::from_ref(&bot_config_for_register),
-        )?;
-        let id2 = cm.handler_registry.register(
-            ConnectionHandle::new(tx2),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?;
+        let id1 = cm
+            .handler_registry
+            .register(
+                ConnectionHandle::new(tx1),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id;
+        let id2 = cm
+            .handler_registry
+            .register(
+                ConnectionHandle::new(tx2),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id;
         (id1, id2)
     };
 
@@ -221,7 +228,7 @@ async fn fan_out_delivers_event_and_advances_cursor() -> Result<(), Box<dyn std:
     h2.await
         .map_err(|e| DaemonError::Config(format!("handler 2 task panicked: {e}")))??;
 
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, Some((keys.public_key().to_bech32()?, 42)));
 
     Ok(())
@@ -245,13 +252,15 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let dispatch_for_h = Arc::clone(&dispatch);
@@ -286,7 +295,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
     h.await
         .map_err(|e| DaemonError::Config(format!("handler task panicked: {e}")))??;
 
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, None);
 
     Ok(())
@@ -310,13 +319,15 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let req = JsonRpcMessage::request(
@@ -345,7 +356,8 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
 #[tokio::test]
 async fn rate_limit_rejects_excess_calls_with_32005() -> Result<(), Box<dyn std::error::Error>> {
     let keys = test_keys();
-    let nostr_client = NostrClient::new(vec!["wss://localhost:4242".to_string()]).await?;
+    let relay = MockRelay::start().await?;
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let (dispatch, cm) = setup_dispatch_with_client(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
         nostr_client,
@@ -362,13 +374,15 @@ async fn rate_limit_rejects_excess_calls_with_32005() -> Result<(), Box<dyn std:
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let req = JsonRpcMessage::request(
@@ -407,7 +421,8 @@ async fn rate_limit_rejects_excess_calls_with_32005() -> Result<(), Box<dyn std:
 async fn rate_limit_increments_rate_limited_total_counter() -> Result<(), Box<dyn std::error::Error>>
 {
     let keys = test_keys();
-    let nostr_client = NostrClient::new(vec!["wss://localhost:4242".to_string()]).await?;
+    let relay = MockRelay::start().await?;
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let (dispatch, cm) = setup_dispatch_with_client(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
         nostr_client,
@@ -424,13 +439,15 @@ async fn rate_limit_increments_rate_limited_total_counter() -> Result<(), Box<dy
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let req = set_profile_request(1, "echo-bot");
@@ -514,13 +531,15 @@ async fn default_rate_limit_rejects_11th_handler_call_within_one_second()
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     // Burst of 20 calls is allowed by the per-handler bucket.
@@ -577,23 +596,27 @@ async fn default_rate_limit_enforces_bot_aggregate_with_two_handlers()
     let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
     let handler_id1 = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx1),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            std::slice::from_ref(&bot_config_for_register),
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx1),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id
     };
     let handler_id2 = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx2),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            std::slice::from_ref(&bot_config_for_register),
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx2),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id
     };
 
     // Two handlers together can burst up to the per-bot aggregate burst of 40.
@@ -690,20 +713,26 @@ async fn slow_handler_does_not_block_fast_handler_and_cursor_advances()
 
     let (_handler_id_slow, handler_id_fast) = {
         let mut cm = cm.write().await;
-        let id_slow = cm.handler_registry.register(
-            ConnectionHandle::new(tx_slow),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string(), "SendMessages".to_string()],
-            std::slice::from_ref(&bot_config_for_register),
-        )?;
-        let id_fast = cm.handler_registry.register(
-            ConnectionHandle::new(tx_fast),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?;
+        let id_slow = cm
+            .handler_registry
+            .register(
+                ConnectionHandle::new(tx_slow),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id;
+        let id_fast = cm
+            .handler_registry
+            .register(
+                ConnectionHandle::new(tx_fast),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id;
         (id_slow, id_fast)
     };
 
@@ -770,7 +799,7 @@ async fn slow_handler_does_not_block_fast_handler_and_cursor_advances()
     );
 
     // Cursor advances even though the slow handler never responded.
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, Some((keys.public_key().to_bech32()?, 42)));
 
     Ok(())
@@ -827,7 +856,13 @@ async fn disconnected_handler_unregistered_and_registry_cleaned()
     }
     assert_eq!(dispatch.registered_handler_count(), 1);
 
-    let unregister_req = JsonRpcMessage::request(2.into(), "handler.unregister", None);
+    let unregister_req = JsonRpcMessage::request(
+        2.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": handler_id,
+        })),
+    );
     let resp = dispatch
         .handle_message(unregister_req, Some(&handler_id), None)
         .await?;
@@ -873,7 +908,7 @@ async fn disconnected_handler_unregistered_and_registry_cleaned()
 }
 
 #[tokio::test]
-async fn unregister_without_registered_connection_returns_32602()
+async fn unregister_without_registered_connection_returns_32001()
 -> Result<(), Box<dyn std::error::Error>> {
     let keys = test_keys();
     let (dispatch, _cm) = setup_dispatch(
@@ -883,16 +918,22 @@ async fn unregister_without_registered_connection_returns_32602()
     )
     .await?;
 
-    let req = JsonRpcMessage::request(1.into(), "handler.unregister", None);
+    let req = JsonRpcMessage::request(
+        1.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": "nonexistent-handler",
+        })),
+    );
     let resp = dispatch.handle_message(req, None, None).await?;
     match resp {
         Some(JsonRpcMessage::Error { error, .. }) => {
             assert_eq!(
-                error.code, -32602,
-                "expected invalid params when connection is not registered"
+                error.code, -32001,
+                "expected HandlerNotRegistered when caller is not registered"
             );
         }
-        _ => return Err(DaemonError::Config("expected invalid params error".into()).into()),
+        _ => return Err(DaemonError::Config("expected HandlerNotRegistered error".into()).into()),
     }
 
     Ok(())
@@ -916,13 +957,15 @@ async fn unauthorized_set_profile_returns_32006() -> Result<(), Box<dyn std::err
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let req = JsonRpcMessage::request(
@@ -968,13 +1011,15 @@ async fn authorized_set_profile_publishes_kind_0_event() -> Result<(), Box<dyn s
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["profile-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ManageProfile".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["profile-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ManageProfile".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let req = JsonRpcMessage::request(
@@ -1085,13 +1130,15 @@ async fn rate_limit_rejects_excess_agent_error_notifications_with_32005()
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     // First notification consumes the single-token burst.
@@ -1139,13 +1186,15 @@ async fn agent_error_preserves_code_and_data_in_diagnostics()
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
     let handler_id = {
         let mut cm = cm.write().await;
-        cm.handler_registry.register(
-            ConnectionHandle::new(tx),
-            vec!["echo-bot".to_string()],
-            vec!["dm_received".to_string()],
-            vec!["ReadMessages".to_string()],
-            &[bot_config_for_register],
-        )?
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
     };
 
     let data = serde_json::json!({
@@ -1268,6 +1317,372 @@ async fn periodic_metrics_notification_reaches_registered_handler()
 
     let _ = shutdown_tx.send(true);
     let _ = metrics_handle.await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn handler_register_returns_server_assigned_id_and_reconnect_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, _cm) = setup_dispatch(
+        vec![bot_config("echo-bot", &keys, &["ReadMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
+    let register_req = JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+
+    let resp = dispatch
+        .handle_message(register_req, None, Some(ConnectionHandle::new(tx)))
+        .await?
+        .ok_or(DaemonError::Config(
+            "handler.register returned no response".into(),
+        ))?;
+    let (handler_id, reconnect_token) = match resp {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => {
+            let handler_id = r
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .ok_or(DaemonError::Config("missing handler_id".into()))?;
+            let reconnect_token = r
+                .get("reconnect_token")
+                .and_then(|v| v.as_str())
+                .ok_or(DaemonError::Config("missing reconnect_token".into()))?;
+            assert!(!handler_id.is_empty());
+            assert!(!reconnect_token.is_empty());
+            assert!(
+                reconnect_token.len() >= 64,
+                "reconnect_token should be at least 256 bits hex encoded"
+            );
+            (handler_id.to_string(), reconnect_token.to_string())
+        }
+        _ => return Err(DaemonError::Config("expected handler.register response".into()).into()),
+    };
+
+    // Reconnect with the same token should reuse the handler id.
+    {
+        let mut cm = _cm.write().await;
+        cm.handler_registry
+            .get_handler_mut(&handler_id)
+            .unwrap()
+            .disconnect();
+    }
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
+    let reconnect_req = JsonRpcMessage::request(
+        3.into(),
+        "handler.reconnect",
+        Some(serde_json::json!({
+            "handler_id": handler_id,
+            "reconnect_token": reconnect_token,
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(reconnect_req, None, Some(ConnectionHandle::new(tx2)))
+        .await?
+        .ok_or(DaemonError::Config(
+            "handler.reconnect returned no response".into(),
+        ))?;
+    match resp {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => {
+            assert_eq!(
+                r.get("handler_id").and_then(|v| v.as_str()),
+                Some(handler_id.as_str())
+            );
+        }
+        _ => return Err(DaemonError::Config("expected handler.reconnect response".into()).into()),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn handler_reconnect_rejects_invalid_token() -> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, _cm) = setup_dispatch(
+        vec![bot_config("echo-bot", &keys, &["ReadMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
+    let register_req = JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(register_req, None, Some(ConnectionHandle::new(tx)))
+        .await?
+        .ok_or(DaemonError::Config(
+            "handler.register returned no response".into(),
+        ))?;
+    let handler_id = match resp {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => r
+            .get("handler_id")
+            .and_then(|v| v.as_str())
+            .ok_or(DaemonError::Config("missing handler_id".into()))?
+            .to_string(),
+        _ => return Err(DaemonError::Config("expected handler.register response".into()).into()),
+    };
+
+    // Drop the connection first so reconnect is allowed.
+    {
+        let mut cm = _cm.write().await;
+        cm.handler_registry
+            .get_handler_mut(&handler_id)
+            .unwrap()
+            .disconnect();
+    }
+
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
+    let reconnect_req = JsonRpcMessage::request(
+        2.into(),
+        "handler.reconnect",
+        Some(serde_json::json!({
+            "handler_id": handler_id,
+            "reconnect_token": "deadbeef-dead-beef-dead-beefdeadbeef",
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(reconnect_req, None, Some(ConnectionHandle::new(tx2)))
+        .await?;
+    match resp {
+        Some(JsonRpcMessage::Error { error, .. }) => {
+            assert_eq!(error.code, -32008, "expected InvalidReconnectToken");
+        }
+        _ => return Err(DaemonError::Config("expected InvalidReconnectToken error".into()).into()),
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn handler_reconnect_rejects_live_takeover() -> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, _cm) = setup_dispatch(
+        vec![bot_config("echo-bot", &keys, &["ReadMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
+    let register_req = JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(register_req, None, Some(ConnectionHandle::new(tx)))
+        .await?
+        .ok_or(DaemonError::Config(
+            "handler.register returned no response".into(),
+        ))?;
+    let handler_id = match &resp {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => r
+            .get("handler_id")
+            .and_then(|v| v.as_str())
+            .ok_or(DaemonError::Config("missing handler_id".into()))?
+            .to_string(),
+        _ => return Err(DaemonError::Config("expected handler.register response".into()).into()),
+    };
+    let reconnect_token = match &resp {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => r
+            .get("reconnect_token")
+            .and_then(|v| v.as_str())
+            .ok_or(DaemonError::Config("missing reconnect_token".into()))?
+            .to_string(),
+        _ => return Err(DaemonError::Config("expected handler.register response".into()).into()),
+    };
+
+    // Attempting to reconnect while the handler is still connected is a takeover.
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
+    let reconnect_req = JsonRpcMessage::request(
+        2.into(),
+        "handler.reconnect",
+        Some(serde_json::json!({
+            "handler_id": handler_id,
+            "reconnect_token": reconnect_token,
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(reconnect_req, None, Some(ConnectionHandle::new(tx2)))
+        .await?;
+    match resp {
+        Some(JsonRpcMessage::Error { error, .. }) => {
+            assert_eq!(error.code, -32007, "expected HandlerAlreadyConnected");
+        }
+        _ => {
+            return Err(
+                DaemonError::Config("expected HandlerAlreadyConnected error".into()).into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_unregister_handler_authorizes_self_and_admin()
+-> Result<(), Box<dyn std::error::Error>> {
+    let self_keys = test_keys();
+    let admin_keys = nostr::Keys::generate();
+    let other_keys = nostr::Keys::generate();
+    let (dispatch, cm) = setup_dispatch(
+        vec![
+            bot_config("self-bot", &self_keys, &["ReadMessages"]),
+            bot_config("admin-bot", &admin_keys, &["ReadMessages", "Admin"]),
+            bot_config("other-bot", &other_keys, &["ReadMessages"]),
+        ],
+        None,
+        None,
+    )
+    .await?;
+
+    // Register three handlers.
+    let mut handlers = Vec::new();
+    for (name, caps) in [
+        ("self-bot", vec!["ReadMessages"]),
+        ("admin-bot", vec!["ReadMessages", "Admin"]),
+        ("other-bot", vec!["ReadMessages"]),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::channel(64);
+        let caps_str: Vec<&str> = caps.to_vec();
+        let req = JsonRpcMessage::request(
+            (handlers.len() + 1).into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": [name],
+                "event_types": ["dm_received"],
+                "capabilities": caps_str,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, None, Some(ConnectionHandle::new(tx)))
+            .await?
+            .ok_or(DaemonError::Config(
+                "handler.register returned no response".into(),
+            ))?;
+        let handler_id = match resp {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => r
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .ok_or(DaemonError::Config("missing handler_id".into()))?
+                .to_string(),
+            _ => {
+                return Err(
+                    DaemonError::Config("expected handler.register response".into()).into(),
+                );
+            }
+        };
+        handlers.push(handler_id);
+    }
+
+    // A non-admin handler cannot unregister another handler.
+    let unauthorized_req = JsonRpcMessage::request(
+        10.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": &handlers[2],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(unauthorized_req, Some(&handlers[0]), None)
+        .await?;
+    match resp {
+        Some(JsonRpcMessage::Error { error, .. }) => {
+            assert_eq!(error.code, -32006, "expected UnauthorizedBot");
+        }
+        _ => return Err(DaemonError::Config("expected UnauthorizedBot error".into()).into()),
+    }
+
+    // An admin handler can unregister another handler.
+    let admin_req = JsonRpcMessage::request(
+        11.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": &handlers[2],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(admin_req, Some(&handlers[1]), None)
+        .await?;
+    match resp {
+        Some(JsonRpcMessage::Response {
+            result: Some(r), ..
+        }) => {
+            assert_eq!(r, serde_json::json!({ "unregistered": true }));
+        }
+        _ => return Err(DaemonError::Config("expected admin unregister response".into()).into()),
+    }
+
+    // A handler can unregister itself.
+    let self_req = JsonRpcMessage::request(
+        12.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": &handlers[0],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(self_req, Some(&handlers[0]), None)
+        .await?;
+    match resp {
+        Some(JsonRpcMessage::Response {
+            result: Some(r), ..
+        }) => {
+            assert_eq!(r, serde_json::json!({ "unregistered": true }));
+        }
+        _ => return Err(DaemonError::Config("expected self unregister response".into()).into()),
+    }
+
+    // Both unregistered handlers are gone.
+    let cm = cm.read().await;
+    assert!(cm.handler_registry.get_handler(&handlers[0]).is_none());
+    assert!(cm.handler_registry.get_handler(&handlers[2]).is_none());
+    assert!(cm.handler_registry.get_handler(&handlers[1]).is_some());
+    drop(cm);
 
     Ok(())
 }

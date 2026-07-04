@@ -157,6 +157,8 @@ pub fn serialize_message(msg: &JsonRpcMessage) -> Result<String, DaemonError> {
 pub enum Method {
     #[serde(rename = "handler.register")]
     HandlerRegister,
+    #[serde(rename = "handler.reconnect")]
+    HandlerReconnect,
     #[serde(rename = "handler.unregister")]
     HandlerUnregister,
     #[serde(rename = "agent.send_dm")]
@@ -186,6 +188,7 @@ impl Method {
     pub const fn all() -> &'static [Method] {
         &[
             Method::HandlerRegister,
+            Method::HandlerReconnect,
             Method::HandlerUnregister,
             Method::AgentSendDm,
             Method::AgentSetProfile,
@@ -207,6 +210,7 @@ impl FromStr for Method {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "handler.register" => Ok(Self::HandlerRegister),
+            "handler.reconnect" => Ok(Self::HandlerReconnect),
             "handler.unregister" => Ok(Self::HandlerUnregister),
             "agent.send_dm" => Ok(Self::AgentSendDm),
             "agent.set_profile" => Ok(Self::AgentSetProfile),
@@ -236,6 +240,28 @@ pub fn parse_method(method: &str) -> Result<Method, DaemonError> {
 pub struct HandlerUnregisterResponse {
     /// Always `true` for a successful unregistration.
     pub unregistered: bool,
+}
+
+/// Typed payload returned by the `handler.register` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandlerRegisterResponse {
+    pub handler_id: String,
+    pub reconnect_token: String,
+    pub registered_events: Vec<String>,
+}
+
+/// Typed payload for the `handler.reconnect` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandlerReconnectParams {
+    pub handler_id: String,
+    pub reconnect_token: String,
+}
+
+/// Typed payload returned by the `handler.reconnect` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandlerReconnectResponse {
+    pub handler_id: String,
+    pub registered_events: Vec<String>,
 }
 
 /// Typed payload returned by the `agent.metrics` JSON-RPC method.
@@ -356,6 +382,7 @@ mod tests {
     fn parse_serialize_catalog_methods() -> Result<(), DaemonError> {
         let methods = [
             "handler.register",
+            "handler.reconnect",
             "handler.unregister",
             "agent.send_dm",
             "agent.set_profile",

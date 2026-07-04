@@ -1,6 +1,6 @@
 use crate::bot_state::BotState;
 use crate::config::DaemonConfig;
-use crate::db::Database;
+use crate::db::Db;
 use crate::diagnostics::{BotHealth, Diagnostics};
 use crate::errors::DaemonError;
 
@@ -94,9 +94,9 @@ impl ClientManager {
     ///
     /// Must be called after signers are registered with the underlying
     /// [`NostrClient`] so that incoming events can be decrypted.
-    pub async fn subscribe_bots(&mut self, db: &Database) -> Result<(), DaemonError> {
+    pub async fn subscribe_bots(&mut self, db: &Db) -> Result<(), DaemonError> {
         for (pubkey, bot) in self.bots.iter_mut() {
-            let since = match db.load_cursor(bot.bot_id())? {
+            let since = match db.load_cursor(bot.bot_id()).await? {
                 Some((stored_npub, cursor)) if stored_npub == bot.npub() => {
                     Some(Timestamp::from(cursor as u64))
                 }
@@ -289,7 +289,8 @@ mod tests {
                 vec!["ReadMessages".into()],
                 &[bot_cfg],
             )
-            .unwrap();
+            .unwrap()
+            .handler_id;
 
         assert!(
             manager

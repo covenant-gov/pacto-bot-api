@@ -260,6 +260,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
         let expects_result = matches!(
             method.name.as_str(),
             "handler.register"
+                | "handler.reconnect"
                 | "handler.unregister"
                 | "agent.send_dm"
                 | "agent.set_profile"

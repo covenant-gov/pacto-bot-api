@@ -105,6 +105,7 @@ class Bot:
         self._shutdown = asyncio.Event()
         self._reader_task: asyncio.Task[None] | None = None
         self._handler_id: str | None = None
+        self._reconnect_token: str | None = None
 
         self._install_signal_handlers()
 
@@ -412,12 +413,18 @@ class Bot:
         self._log(f"connected via {self._transport.name}")
 
         try:
-            result = await self._client.handler_register(
-                bot_ids=[self.bot_id],
-                event_types=self.event_types,
-                capabilities=self.capabilities,
-                handler_id=self._handler_id,
-            )
+            if self._handler_id and self._reconnect_token:
+                result = await self._client.handler_reconnect(
+                    handler_id=self._handler_id,
+                    reconnect_token=self._reconnect_token,
+                )
+            else:
+                result = await self._client.handler_register(
+                    bot_ids=[self.bot_id],
+                    event_types=self.event_types,
+                    capabilities=self.capabilities,
+                )
+                self._reconnect_token = result.reconnect_token
         except (PactoClientError, TimeoutError, asyncio.TimeoutError) as exc:
             self._log(f"registration failed: {exc}")
             raise

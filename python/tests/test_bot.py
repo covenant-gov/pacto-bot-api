@@ -159,7 +159,7 @@ async def test_command_handler_receives_parsed_args_and_sends_response(bot, tran
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -221,7 +221,7 @@ async def test_unknown_command_routes_to_default(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -263,7 +263,7 @@ async def test_unknown_command_without_default_ignores(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -361,7 +361,7 @@ async def test_bot_degraded_logs_recovery_when_circuit_closes(
     transport.inject({
         "jsonrpc": "2.0",
         "id": register_frame["id"],
-        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
     })
 
     await asyncio.sleep(0.1)
@@ -425,7 +425,7 @@ async def test_bot_reconnect_after_transient_disconnect(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
     await asyncio.sleep(0.05)
@@ -434,22 +434,21 @@ async def test_bot_reconnect_after_transient_disconnect(
     # the read loop treats as EOF and ends the dispatch loop.
     transport.inject_eof()
 
-    # Poll for the second registration attempt after the disconnect.
+    # Poll for the reconnect frame after the disconnect.
     deadline = asyncio.get_running_loop().time() + 5.0
-    register_frames: list[dict[str, Any]] = []
-    while len(register_frames) < 2 and asyncio.get_running_loop().time() < deadline:
+    reconnect_frame = None
+    while reconnect_frame is None and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.05)
-        register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 2
-    first_register_id = register_frames[0]["id"]
-    for frame in register_frames:
-        if frame.get("id") != first_register_id:
-            transport.inject({
-                "jsonrpc": "2.0",
-                "id": frame["id"],
-                "result": {"handler_id": "h-2", "registered_events": ["dm_received"]},
-            })
-            break
+        for frame in transport.frames:
+            if frame.get("method") == "handler.reconnect":
+                reconnect_frame = frame
+                break
+    assert reconnect_frame is not None
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": reconnect_frame["id"],
+        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+    })
 
     await asyncio.sleep(0.05)
 
@@ -457,7 +456,9 @@ async def test_bot_reconnect_after_transient_disconnect(
     await task
 
     register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 2
+    assert len(register_frames) == 1
+    reconnect_frames = [f for f in transport.frames if f.get("method") == "handler.reconnect"]
+    assert len(reconnect_frames) == 1
 
 
 @pytest.mark.asyncio
@@ -564,29 +565,28 @@ async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
     await asyncio.sleep(0.05)
 
     transport.inject_eof()
 
-    # Poll for the second registration attempt after the disconnect.
+    # Poll for the reconnect frame after the disconnect.
     deadline = asyncio.get_running_loop().time() + 5.0
-    register_frames: list[dict[str, Any]] = []
-    while len(register_frames) < 2 and asyncio.get_running_loop().time() < deadline:
+    reconnect_frame = None
+    while reconnect_frame is None and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.05)
-        register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 2
-    first_register_id = register_frames[0]["id"]
-    for frame in register_frames:
-        if frame.get("id") != first_register_id:
-            transport.inject({
-                "jsonrpc": "2.0",
-                "id": frame["id"],
-                "result": {"handler_id": "h-2", "registered_events": ["dm_received"]},
-            })
-            break
+        for frame in transport.frames:
+            if frame.get("method") == "handler.reconnect":
+                reconnect_frame = frame
+                break
+    assert reconnect_frame is not None
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": reconnect_frame["id"],
+        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+    })
 
     await asyncio.sleep(0.05)
 
@@ -596,7 +596,9 @@ async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
     # The same transport instance was used for both attempts.
     assert bot._transport is transport
     register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
-    assert len(register_frames) >= 2
+    assert len(register_frames) == 1
+    reconnect_frames = [f for f in transport.frames if f.get("method") == "handler.reconnect"]
+    assert len(reconnect_frames) == 1
 
 
 @pytest.mark.asyncio
@@ -640,7 +642,7 @@ async def test_handler_exception_replies_with_friendly_error_by_default(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -692,7 +694,7 @@ async def test_handler_exception_is_silent_when_reply_on_error_disabled(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -738,7 +740,7 @@ async def test_registration_sends_correct_capabilities(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 
@@ -776,7 +778,7 @@ async def test_status_handler_called(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
             })
             break
 

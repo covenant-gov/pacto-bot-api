@@ -2,7 +2,7 @@ use nostr::ToBech32;
 /// req(R1, R3, R28)
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::{Database, Db};
 use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::nostr::NostrClient;
@@ -59,7 +59,7 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
     let nostr_client = NostrClient::new(vec![]).await?;
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
     let dir = tempfile::tempdir()?;
-    let db = Database::open(dir.path().join("agent.db").as_path())?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));
     Ok((dispatch, dir))
@@ -127,14 +127,23 @@ async fn unix_transport_unregisters_handler_on_disconnect() -> Result<(), Box<dy
         let mut response_line = String::new();
         stream.read_line(&mut response_line).await?;
         let response: JsonRpcMessage = serde_json::from_str(&response_line)?;
-        let handler_id = match response {
+        let (handler_id, _reconnect_token) = match response {
             JsonRpcMessage::Response {
                 result: Some(r), ..
-            } => r
-                .get("handler_id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .ok_or("handler_id missing")?,
+            } => {
+                let handler_id = r
+                    .get("handler_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .ok_or("handler_id missing")?;
+                let reconnect_token = r
+                    .get("reconnect_token")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .ok_or("reconnect_token missing")?;
+                assert!(!reconnect_token.is_empty());
+                (handler_id, reconnect_token)
+            }
             JsonRpcMessage::Error { error, .. } => {
                 return Err(format!("register failed: {}", error.message).into());
             }
@@ -531,14 +540,23 @@ async fn unix_handler_unregister_returns_unregistered_flag()
         let mut response_line = String::new();
         stream.read_line(&mut response_line).await?;
         let response: JsonRpcMessage = serde_json::from_str(&response_line)?;
-        let _handler_id = match response {
+        let handler_id = match response {
             JsonRpcMessage::Response {
                 result: Some(r), ..
-            } => r
-                .get("handler_id")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .ok_or("handler_id missing")?,
+            } => {
+                let handler_id = r
+                    .get("handler_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .ok_or("handler_id missing")?;
+                let reconnect_token = r
+                    .get("reconnect_token")
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+                    .ok_or("reconnect_token missing")?;
+                assert!(!reconnect_token.is_empty());
+                handler_id
+            }
             JsonRpcMessage::Error { error, .. } => {
                 return Err(format!("register failed: {}", error.message).into());
             }
@@ -546,8 +564,14 @@ async fn unix_handler_unregister_returns_unregistered_flag()
         };
         assert_eq!(dispatch.registered_handler_count(), 1);
 
-        // Unregister using only the connection-derived id; no handler_id in params.
-        let unregister = JsonRpcMessage::request(2.into(), "handler.unregister", None);
+        // Unregister using the authorized agent.unregister_handler RPC.
+        let unregister = JsonRpcMessage::request(
+            2.into(),
+            "agent.unregister_handler",
+            Some(serde_json::json!({
+                "handler_id": handler_id,
+            })),
+        );
         let line = serialize_message(&unregister)?;
         stream.write_all(line.as_bytes()).await?;
         stream.write_all(b"\n").await?;

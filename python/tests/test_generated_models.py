@@ -280,6 +280,7 @@ def test_handler_register_params_requires_all_fields():
 def test_handler_register_result_constructs_with_valid_data():
     result = HandlerRegisterResult(
         handler_id="h-123",
+        reconnect_token="rt-123",
         registered_events=["dm_received"],
     )
     assert result.handler_id == "h-123"
