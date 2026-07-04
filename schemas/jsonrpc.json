@@ -433,6 +433,43 @@
           "$ref": "version.json"
         }
       }
+    },
+    {
+      "name": "admin.send_test_dm",
+      "summary": "Send a test DM as the specified bot (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will send the message."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the recipient."
+              },
+              "content": {
+                "type": "string",
+                "description": "Plaintext message body."
+              }
+            },
+            "required": ["bot_id", "recipient", "content"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "event_id": { "type": "string" }
+          },
+          "required": ["event_id"]
+        }
+      }
     }
   ]
 }

@@ -11,6 +11,7 @@ use pacto_bot_api::signer::Signer;
 use pacto_bot_api::transport::TransportLayer;
 use pacto_bot_api::transport::http;
 use std::collections::HashSet;
+use std::env;
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::Write;
 #[cfg(unix)]
@@ -45,18 +46,30 @@ struct Cli {
     /// Enable the optional localhost HTTP transport.
     #[arg(long)]
     enable_http: bool,
+
+    /// Logging level filter for the daemon.
+    #[arg(short, long, value_name = "LEVEL", default_value = "info")]
+    log_level: String,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    let env_filter = if let Some(rust_log) = env::var_os("RUST_LOG").and_then(|s| {
+        if cli.log_level != "info" {
+            // A CLI flag overrides the environment variable.
+            None
+        } else {
+            s.into_string().ok().filter(|v| !v.is_empty())
+        }
+    }) {
+        tracing_subscriber::EnvFilter::new(rust_log)
+    } else {
+        tracing_subscriber::EnvFilter::new(&cli.log_level)
+    };
+
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     if let Err(e) = run_daemon(cli).await {
         eprintln!("{e}");

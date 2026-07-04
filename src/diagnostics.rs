@@ -90,12 +90,16 @@ pub struct HealthSnapshot {
     pub bunker_sign_failures_total: u64,
     /// Total incoming events rejected due to failed signature verification.
     pub invalid_events_total: u64,
+    /// Total reply DMs that failed to publish.
+    pub reply_send_failed_total: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
     /// Recent redacted error records, oldest first.
     pub errors: Vec<ErrorRecord>,
     /// UTC timestamp when this snapshot was produced.
     pub reported_at: DateTime<Utc>,
+    /// Activity counts in the last 10 minutes.
+    pub recent_counts: RecentCounts,
 }
 
 impl Default for HealthSnapshot {
@@ -112,9 +116,11 @@ impl Default for HealthSnapshot {
             relay_reconnects_total: 0,
             bunker_sign_failures_total: 0,
             invalid_events_total: 0,
+            reply_send_failed_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
             reported_at: now,
+            recent_counts: RecentCounts::default(),
         }
     }
 }
@@ -126,12 +132,83 @@ impl HealthSnapshot {
     }
 }
 
+/// Activity counts observed in a recent time window.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct RecentCounts {
+    /// Number of events received from Nostr relays.
+    pub events_received: u64,
+    /// Number of events dispatched to registered handlers.
+    pub events_dispatched: u64,
+    /// Number of reply DMs attempted.
+    pub replies: u64,
+    /// Number of reply DMs that failed to publish.
+    pub reply_send_failed: u64,
+    /// Length of the window in seconds that these counts cover.
+    #[serde(default)]
+    pub window_seconds: u64,
+}
+
+/// Fixed-size sliding-window counters indexed by minute.
+#[derive(Debug, Clone)]
+struct RecentBuckets {
+    start: Instant,
+    buckets: Vec<u64>,
+    current_minute: usize,
+    capacity: usize,
+}
+
+impl RecentBuckets {
+    fn new(capacity_minutes: usize) -> Self {
+        Self {
+            start: Instant::now(),
+            buckets: vec![0; capacity_minutes],
+            current_minute: 0,
+            capacity: capacity_minutes,
+        }
+    }
+
+    fn record(&mut self) {
+        let minute = self.start.elapsed().as_secs() as usize / 60;
+        if minute >= self.current_minute + self.capacity {
+            // Window has rolled beyond capacity; reset all buckets.
+            self.buckets.fill(0);
+            self.current_minute = minute;
+        } else if minute > self.current_minute {
+            // Zero buckets for the minutes that passed since the last write.
+            for m in (self.current_minute + 1)..=minute {
+                self.buckets[m % self.capacity] = 0;
+            }
+            self.current_minute = minute;
+        }
+        self.buckets[self.current_minute % self.capacity] += 1;
+    }
+
+    fn count_last_n_minutes(&self, n: usize) -> u64 {
+        let current = self.start.elapsed().as_secs() as usize / 60;
+        if current >= self.current_minute + self.capacity {
+            // No writes in the last `capacity` minutes.
+            return 0;
+        }
+        let count = n.min(self.capacity);
+        let mut total = 0u64;
+        for i in 0..count {
+            let idx = (self.current_minute + self.capacity - i) % self.capacity;
+            total += self.buckets[idx];
+        }
+        total
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     snapshot: HealthSnapshot,
     startup_instant: Instant,
     errors: VecDeque<ErrorRecord>,
     metrics_tx: watch::Sender<HealthSnapshot>,
+    received: RecentBuckets,
+    dispatched: RecentBuckets,
+    replies: RecentBuckets,
+    reply_failed: RecentBuckets,
 }
 
 /// Thread-safe diagnostics aggregator.
@@ -156,6 +233,10 @@ impl Diagnostics {
                 startup_instant: Instant::now(),
                 errors: VecDeque::with_capacity(ERROR_BUFFER_CAPACITY),
                 metrics_tx,
+                received: RecentBuckets::new(60),
+                dispatched: RecentBuckets::new(60),
+                replies: RecentBuckets::new(60),
+                reply_failed: RecentBuckets::new(60),
             })),
         }
     }
@@ -167,6 +248,13 @@ impl Diagnostics {
         let now = Utc::now();
         inner.snapshot.reported_at = now;
         inner.snapshot.uptime_seconds = inner.startup_instant.elapsed().as_secs();
+        inner.snapshot.recent_counts = RecentCounts {
+            events_received: inner.received.count_last_n_minutes(10),
+            events_dispatched: inner.dispatched.count_last_n_minutes(10),
+            replies: inner.replies.count_last_n_minutes(10),
+            reply_send_failed: inner.reply_failed.count_last_n_minutes(10),
+            window_seconds: 600,
+        };
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap.clone());
         snap
@@ -184,12 +272,20 @@ impl Diagnostics {
 
     /// Increment the counter for events received from Nostr relays.
     pub fn record_event_received(&self) {
-        self.with_snapshot(|snapshot| snapshot.events_received_total += 1);
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.events_received_total += 1;
+        inner.received.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for events dispatched to registered handlers.
     pub fn record_event_dispatched(&self) {
-        self.with_snapshot(|snapshot| snapshot.events_dispatched_total += 1);
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.events_dispatched_total += 1;
+        inner.dispatched.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for rate-limited events.
@@ -210,6 +306,23 @@ impl Diagnostics {
     /// Increment the counter for events rejected due to failed verification.
     pub fn record_invalid_event(&self) {
         self.with_snapshot(|snapshot| snapshot.invalid_events_total += 1);
+    }
+
+    /// Record that a reply DM was attempted.
+    pub fn record_reply(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.replies.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Increment the counter for reply DMs that failed to publish.
+    pub fn record_reply_send_failed(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.reply_send_failed_total += 1;
+        inner.reply_failed.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Set the number of registered handlers.
@@ -247,7 +360,8 @@ impl Diagnostics {
         let reports_dir = data_dir.join("reports");
         tokio::fs::create_dir_all(&reports_dir).await?;
 
-        let tmp_path = reports_dir.join("latest.json.tmp");
+        let tmp_name = format!("latest.json.tmp.{}", uuid::Uuid::new_v4());
+        let tmp_path = reports_dir.join(tmp_name);
         let final_path = reports_dir.join("latest.json");
 
         let json = serde_json::to_string_pretty(&snapshot)?;

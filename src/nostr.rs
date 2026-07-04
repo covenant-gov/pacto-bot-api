@@ -13,7 +13,7 @@ use nostr::nips::{nip44, nip59};
 use nostr::secp256k1::schnorr::Signature;
 use nostr::{
     Event, EventBuilder, EventId, Filter, JsonUtil, Keys, Kind, PublicKey, SubscriptionId,
-    Timestamp, UnsignedEvent,
+    Timestamp, ToBech32, UnsignedEvent,
 };
 use nostr_sdk::{Client, RelayPoolNotification};
 use serde_json::{Value, json};
@@ -21,6 +21,8 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+use tracing::{error, info};
 
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
@@ -141,6 +143,17 @@ impl NostrClient {
         content: &str,
         reply_to: Option<&str>,
     ) -> Result<EventId, DaemonError> {
+        let bot_npub = signer
+            .public_key()
+            .to_bech32()
+            .unwrap_or_else(|_| signer.public_key().to_hex());
+        info!(
+            bot_npub = %bot_npub,
+            recipient = %recipient_npub,
+            reply_to = ?reply_to,
+            "sending DM"
+        );
+
         let recipient = PublicKey::parse(recipient_npub)
             .map_err(|e| DaemonError::Nostr(format!("invalid recipient npub: {e}")))?;
 
@@ -185,11 +198,15 @@ impl NostrClient {
             .sign_with_keys(&ephemeral)
             .map_err(|e| DaemonError::Nostr(format!("failed to sign gift wrap: {e}")))?;
 
-        let output = self
-            .client
-            .send_event(&gift_event)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("failed to publish event: {e}")))?;
+        let output = self.client.send_event(&gift_event).await.map_err(|e| {
+            error!(
+                bot_npub = %bot_npub,
+                recipient = %recipient_npub,
+                error = %e,
+                "failed to publish DM"
+            );
+            DaemonError::Nostr(format!("failed to publish event: {e}"))
+        })?;
 
         Ok(*output.id())
     }
@@ -204,6 +221,16 @@ impl NostrClient {
         about: Option<&str>,
         picture: Option<&str>,
     ) -> Result<EventId, DaemonError> {
+        let bot_npub = signer
+            .public_key()
+            .to_bech32()
+            .unwrap_or_else(|_| signer.public_key().to_hex());
+        info!(
+            bot_npub = %bot_npub,
+            name = ?name,
+            "setting profile"
+        );
+
         let mut metadata = serde_json::Map::new();
         if let Some(name) = name {
             let _ = metadata.insert("name".to_string(), json!(name));
@@ -225,11 +252,15 @@ impl NostrClient {
         );
         let event = sign_unsigned_event(signer, unsigned).await?;
 
-        let output = self
-            .client
-            .send_event(&event)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("failed to publish profile event: {e}")))?;
+        let output = self.client.send_event(&event).await.map_err(|e| {
+            error!(
+                bot_npub = %bot_npub,
+                name = ?name,
+                error = %e,
+                "failed to publish profile event"
+            );
+            DaemonError::Nostr(format!("failed to publish profile event: {e}"))
+        })?;
 
         Ok(*output.id())
     }

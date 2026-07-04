@@ -42,7 +42,18 @@ impl Database {
                 capabilities TEXT NOT NULL,
                 reconnect_token TEXT NOT NULL,
                 registered_at INTEGER
-            );",
+            );
+            CREATE TABLE IF NOT EXISTS event_trace (
+                bot_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                author TEXT,
+                content_preview TEXT,
+                action TEXT NOT NULL,
+                reply_event_id TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_event_trace_bot_created
+                ON event_trace (bot_id, created_at DESC);",
         )?;
         Ok(())
     }
@@ -184,6 +195,68 @@ impl Database {
             .execute("DELETE FROM handlers WHERE handler_id = ?1", [handler_id])?;
         Ok(())
     }
+
+    /// Persist an event trace row.
+    pub fn save_event_trace(
+        &self,
+        bot_id: &str,
+        event_id: &str,
+        author: &str,
+        content_preview: &str,
+        action: &str,
+        reply_event_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let created_at = Utc::now().timestamp();
+        self.conn.execute(
+            "INSERT INTO event_trace (bot_id, event_id, author, content_preview, action, reply_event_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (bot_id, event_id, author, content_preview, action, reply_event_id, created_at),
+        )?;
+        Ok(())
+    }
+
+    /// Load event trace rows for a bot since a given UTC time.
+    pub fn load_event_trace(
+        &self,
+        bot_id: &str,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<EventTraceRow>, DaemonError> {
+        let since_ts = since.timestamp();
+        let mut stmt = self.conn.prepare(
+            "SELECT event_id, author, content_preview, action, reply_event_id, created_at
+             FROM event_trace
+             WHERE bot_id = ?1 AND created_at >= ?2
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map((bot_id, since_ts, limit as i64), |row| {
+            Ok(EventTraceRow {
+                event_id: row.get(0)?,
+                author: row.get(1)?,
+                content_preview: row.get(2)?,
+                action: row.get(3)?,
+                reply_event_id: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+/// A single row from the event trace table.
+#[derive(Debug, Clone)]
+pub struct EventTraceRow {
+    pub event_id: String,
+    pub author: String,
+    pub content_preview: String,
+    pub action: String,
+    pub reply_event_id: Option<String>,
+    pub created_at: i64,
 }
 
 /// Async wrapper around [`Database`] that runs blocking SQLite work on
@@ -269,6 +342,47 @@ impl Db {
     pub async fn delete_handler(&self, handler_id: &str) -> Result<(), DaemonError> {
         let handler_id = handler_id.to_string();
         self.run(move |db| db.delete_handler(&handler_id)).await
+    }
+
+    /// Persist an event trace row.
+    pub async fn save_event_trace(
+        &self,
+        bot_id: &str,
+        event_id: &str,
+        author: &str,
+        content_preview: &str,
+        action: &str,
+        reply_event_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let event_id = event_id.to_string();
+        let author = author.to_string();
+        let content_preview = content_preview.to_string();
+        let action = action.to_string();
+        let reply_event_id = reply_event_id.map(|s| s.to_string());
+        self.run(move |db| {
+            db.save_event_trace(
+                &bot_id,
+                &event_id,
+                &author,
+                &content_preview,
+                &action,
+                reply_event_id.as_deref(),
+            )
+        })
+        .await
+    }
+
+    /// Load event trace rows for a bot since a given UTC time.
+    pub async fn load_event_trace(
+        &self,
+        bot_id: &str,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<EventTraceRow>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        self.run(move |db| db.load_event_trace(&bot_id, since, limit))
+            .await
     }
 }
 
@@ -584,5 +698,45 @@ mod tests {
             tick_count >= 45,
             "runtime was blocked; only {tick_count} timer ticks fired"
         );
+    }
+
+    #[tokio::test]
+    async fn event_trace_round_trip() -> Result<(), DaemonError> {
+        let dir = tempfile::tempdir()?;
+        let db = Db::open(&dir.path().join("agent.db")).await?;
+
+        db.save_event_trace(
+            "bot-1",
+            "event-id-1",
+            "author-1",
+            "hello world",
+            "reply",
+            Some("reply-id-1"),
+        )
+        .await?;
+
+        db.save_event_trace(
+            "bot-1",
+            "event-id-2",
+            "author-2",
+            "ack content",
+            "ack",
+            None,
+        )
+        .await?;
+
+        let since = Utc::now() - chrono::Duration::minutes(1);
+        let rows = db.load_event_trace("bot-1", since, 10).await?;
+        assert_eq!(rows.len(), 2);
+
+        let reply_row = rows.iter().find(|r| r.action == "reply").unwrap();
+        assert_eq!(reply_row.event_id, "event-id-1");
+        assert_eq!(reply_row.author, "author-1");
+        assert_eq!(reply_row.content_preview, "hello world");
+        assert_eq!(reply_row.reply_event_id.as_deref(), Some("reply-id-1"));
+
+        let ack_row = rows.iter().find(|r| r.action == "ack").unwrap();
+        assert_eq!(ack_row.reply_event_id, None);
+        Ok(())
     }
 }

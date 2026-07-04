@@ -109,6 +109,25 @@ class PactoClient:
                 break
             yield notification
 
+    async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str) -> models.AdminSendTestDmResult:
+        """
+        Call JSON-RPC method `admin.send_test_dm`.
+
+        Send a test DM as the specified bot (admin-only).
+
+        Example:
+
+            >>> result = await client.admin_send_test_dm(...)
+            >>> isinstance(result, AdminSendTestDmResult)
+
+        jsonrpc_method: ``"admin.send_test_dm"``
+        """
+        params = models.AdminSendTestDmParams(bot_id=bot_id, content=content, recipient=recipient)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("admin.send_test_dm", params_dict)
+        result = response.get('result')
+        return models.AdminSendTestDmResult.model_validate(result)
+
     async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:
         """
         Send JSON-RPC notification `agent.error`.

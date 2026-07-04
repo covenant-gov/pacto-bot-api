@@ -177,6 +177,56 @@ pacto-bot-admin diagnose --format json
 Notes:
 `--format` accepts `text` or `json`.
 
+### `doctor`
+
+Run a quick health check and print colored PASS/FAIL results with fix suggestions.
+
+Examples:
+```bash
+pacto-bot-admin doctor
+```
+
+Notes:
+Checks config validity, data directory, daemon lock, configured bots, relay reachability, registered handlers, and HTTP token permissions. Non-zero exit if any check fails.
+
+### `logs`
+
+Tail the daemon log file (if present).
+
+Examples:
+```bash
+pacto-bot-admin logs
+pacto-bot-admin logs --follow
+```
+
+Notes:
+`--follow` keeps streaming new lines as they are appended. Logs are only available if the daemon writes to a log file; if the daemon is running in a terminal, logs are in that terminal.
+
+### `send-test-dm`
+
+Send a test DM as a bot from the daemon and print the resulting event ID.
+
+Examples:
+```bash
+pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello"
+```
+
+Notes:
+The bot must have the `Admin` capability. Useful for verifying the daemon can sign and publish without involving a client.
+
+### `trace-events`
+
+Read recent event trace rows from the daemon database.
+
+Examples:
+```bash
+pacto-bot-admin trace-events echo-bot
+pacto-bot-admin trace-events echo-bot --since 30 --limit 50
+```
+
+Notes:
+`--since` is the number of minutes to look back (default: 10). `--limit` caps the number of rows (default: 100).
+
 ### `status`
 
 Show daemon status, connectivity, and registered handlers.
@@ -255,7 +305,7 @@ Handlers must declare capabilities at registration. The daemon rejects calls tha
 
 ## When to use which
 
-- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, and checking status.
+- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, checking status, running quick health checks (`doctor`), and tracing recent events (`trace-events`).
 - **Daemon (`pacto-bot-api`)** — use as the long-lived runtime: it owns relay connections, decrypts DMs, enforces capabilities, and persists cursors. Start it once and leave it running.
 - **Handler JSON-RPC** — use when writing bot logic in any language: connect a handler to the daemon's Unix socket or HTTP transport, register for events, and respond with `agent.send_dm` or `agent.set_profile`.
 
@@ -266,4 +316,4 @@ Typical workflow:
 3. Run `pacto-bot-admin validate-config` to verify the file.
 4. Start `pacto-bot-api --config pacto-bot-api.toml`.
 5. Connect a handler over JSON-RPC and register for events.
-6. Use `pacto-bot-admin status` or `diagnose` to monitor health.
+6. Use `pacto-bot-admin doctor` or `diagnose` to monitor health, and `trace-events` to inspect recent traffic.

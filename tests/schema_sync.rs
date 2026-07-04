@@ -268,6 +268,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.list_handlers"
                 | "agent.unregister_handler"
                 | "agent.version"
+                | "admin.send_test_dm"
         );
         if expects_result {
             assert!(

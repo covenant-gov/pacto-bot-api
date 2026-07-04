@@ -142,6 +142,38 @@ pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
 
     render_command(
         out,
+        "doctor",
+        "Run a quick health check and print colored PASS/FAIL results with fix suggestions.",
+        "pacto-bot-admin doctor",
+        "Checks config validity, data directory, daemon lock, configured bots, relay reachability, registered handlers, and HTTP token permissions. Non-zero exit if any check fails.",
+    );
+
+    render_command(
+        out,
+        "logs",
+        "Tail the daemon log file (if present).",
+        "pacto-bot-admin logs\npacto-bot-admin logs --follow",
+        "`--follow` keeps streaming new lines as they are appended. Logs are only available if the daemon writes to a log file; if the daemon is running in a terminal, logs are in that terminal.",
+    );
+
+    render_command(
+        out,
+        "send-test-dm",
+        "Send a test DM as a bot from the daemon and print the resulting event ID.",
+        r#"pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello""#,
+        "The bot must have the `Admin` capability. Useful for verifying the daemon can sign and publish without involving a client.",
+    );
+
+    render_command(
+        out,
+        "trace-events",
+        "Read recent event trace rows from the daemon database.",
+        "pacto-bot-admin trace-events echo-bot\npacto-bot-admin trace-events echo-bot --since 30 --limit 50",
+        "`--since` is the number of minutes to look back (default: 10). `--limit` caps the number of rows (default: 100).",
+    );
+
+    render_command(
+        out,
         "status",
         "Show daemon status, connectivity, and registered handlers.",
         "pacto-bot-admin status\npacto-bot-admin status --format json",
@@ -217,7 +249,7 @@ fn render_handler_jsonrpc(out: &mut String) {
 
 fn render_when_to_use(out: &mut String) {
     out.push_str("## When to use which\n\n");
-    out.push_str("- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, and checking status.\n");
+    out.push_str("- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, checking status, running quick health checks (`doctor`), and tracing recent events (`trace-events`).\n");
     out.push_str("- **Daemon (`pacto-bot-api`)** — use as the long-lived runtime: it owns relay connections, decrypts DMs, enforces capabilities, and persists cursors. Start it once and leave it running.\n");
     out.push_str("- **Handler JSON-RPC** — use when writing bot logic in any language: connect a handler to the daemon's Unix socket or HTTP transport, register for events, and respond with `agent.send_dm` or `agent.set_profile`.\n\n");
     out.push_str("Typical workflow:\n\n");
@@ -226,7 +258,7 @@ fn render_when_to_use(out: &mut String) {
     out.push_str("3. Run `pacto-bot-admin validate-config` to verify the file.\n");
     out.push_str("4. Start `pacto-bot-api --config pacto-bot-api.toml`.\n");
     out.push_str("5. Connect a handler over JSON-RPC and register for events.\n");
-    out.push_str("6. Use `pacto-bot-admin status` or `diagnose` to monitor health.\n");
+    out.push_str("6. Use `pacto-bot-admin doctor` or `diagnose` to monitor health, and `trace-events` to inspect recent traffic.\n");
 }
 
 #[cfg(test)]
@@ -256,6 +288,10 @@ mod tests {
             "validate-config",
             "rotate-http-token",
             "diagnose",
+            "doctor",
+            "logs",
+            "send-test-dm",
+            "trace-events",
             "status",
         ] {
             assert!(

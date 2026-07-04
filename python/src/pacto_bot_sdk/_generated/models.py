@@ -20,6 +20,43 @@ AgentSetProfileResult = str
 # Result type alias for `agent.version`.
 AgentVersionResult = dict[str, Any]
 
+class AdminSendTestDmParams(BaseModel):
+    """
+    Model for JSON-RPC method `admin.send_test_dm`.
+
+    Send a test DM as the specified bot (admin-only).
+
+    Example:
+
+        >>> AdminSendTestDmParams(bot_id="...", content="...", recipient="...")
+
+    jsonrpc_method: ``"admin.send_test_dm"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.send_test_dm"
+    # Bot identity that will send the message.
+    bot_id: str
+    # Plaintext message body.
+    content: str
+    # Nostr public key (npub or hex) of the recipient.
+    recipient: str
+
+
+class AdminSendTestDmResult(BaseModel):
+    """
+    Model for JSON-RPC method `admin.send_test_dm`.
+
+    Send a test DM as the specified bot (admin-only).
+
+    Example:
+
+        >>> AdminSendTestDmResult(event_id="...")
+
+    jsonrpc_method: ``"admin.send_test_dm"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.send_test_dm"
+    event_id: str
+
+
 class AgentErrorParams(BaseModel):
     """
     Model for JSON-RPC method `agent.error`.
@@ -375,4 +412,4 @@ class HandlerUnregisterResult(BaseModel):
     unregistered: bool
 
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
+__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
