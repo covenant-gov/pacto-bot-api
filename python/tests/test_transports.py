@@ -240,6 +240,39 @@ async def test_http_transport_write_frame_sends_secret_and_handler_id(mock_http_
 
 
 @pytest.mark.asyncio
+async def test_http_transport_write_frame_includes_handler_id_for_handler_response(
+    mock_http_connection,
+):
+    """handler.response must carry X-Pacto-Handler-Id so the daemon can correlate the reply."""
+    pair = mock_http_connection(_http_lines([b""]))
+    transport = HttpTransport("127.0.0.1", 9800, "super-secret", handler_id="h-1")
+    await transport.connect()
+
+    await transport.write_frame(
+        {"jsonrpc": "2.0", "method": "handler.response", "params": {"result": "ok"}}
+    )
+
+    request = b"".join(pair.request_data).decode("utf-8")
+    assert "X-Pacto-Bot-Secret: super-secret" in request
+    assert "X-Pacto-Handler-Id: h-1" in request
+
+
+@pytest.mark.asyncio
+async def test_http_transport_write_frame_omits_handler_id_for_non_mutating(mock_http_connection):
+    pair = mock_http_connection(_http_lines([b""]))
+    transport = HttpTransport("127.0.0.1", 9800, "super-secret", handler_id="h-1")
+    await transport.connect()
+
+    await transport.write_frame(
+        {"jsonrpc": "2.0", "method": "handler.response", "params": {"result": "ok"}}
+    )
+
+    request = b"".join(pair.request_data).decode("utf-8")
+    assert "X-Pacto-Bot-Secret: super-secret" in request
+    assert "X-Pacto-Handler-Id: h-1" in request
+
+
+@pytest.mark.asyncio
 async def test_http_transport_write_frame_omits_handler_id_for_non_mutating(mock_http_connection):
     pair = mock_http_connection(_http_lines([b""]))
     transport = HttpTransport("127.0.0.1", 9800, "super-secret", handler_id="h-1")

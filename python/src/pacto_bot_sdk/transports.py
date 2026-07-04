@@ -183,12 +183,12 @@ class HttpTransport:
 
     Outbound frames are sent as ``POST /`` with ``X-Pacto-Bot-Secret``.
     Mutating methods (``agent.send_dm``, ``agent.set_profile``,
-    ``agent.error``) also include ``X-Pacto-Handler-Id``. Inbound daemon
-    notifications are consumed from ``GET /events?handler_id=<id>`` as a
-    text/event-stream.
+    ``agent.error``) and the handler response notification (``handler.response``)
+    also include ``X-Pacto-Handler-Id``. Inbound daemon notifications are
+    consumed from ``GET /events?handler_id=<id>`` as a text/event-stream.
     """
 
-    MUTATING_METHODS = {"agent.send_dm", "agent.set_profile", "agent.error"}
+    MUTATING_METHODS = {"agent.send_dm", "agent.set_profile", "agent.error", "handler.response"}
 
     def __init__(
         self,
