@@ -482,6 +482,18 @@ fn set_profile_request(id: usize, bot_id: &str) -> JsonRpcMessage {
     )
 }
 
+fn send_dm_request(id: usize, bot_id: &str) -> JsonRpcMessage {
+    JsonRpcMessage::request(
+        serde_json::json!(id),
+        "agent.send_dm",
+        Some(serde_json::json!({
+            "bot_id": bot_id,
+            "recipient": "npub1recipient",
+            "content": "hello",
+        })),
+    )
+}
+
 fn assert_rate_limited(resp: Option<JsonRpcMessage>, label: &str) {
     let code = match resp {
         Some(JsonRpcMessage::Error { ref error, .. }) => error.code,
@@ -1683,6 +1695,126 @@ async fn agent_unregister_handler_authorizes_self_and_admin()
     assert!(cm.handler_registry.get_handler(&handlers[2]).is_none());
     assert!(cm.handler_registry.get_handler(&handlers[1]).is_some());
     drop(cm);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_rate_limit_send_dm_rejects_21st_handler_call_with_32005()
+-> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, cm) = setup_dispatch(
+        vec![bot_config("echo-bot", &keys, &["SendMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let bot_config_for_register = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+    };
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(64);
+    let handler_id = {
+        let mut cm = cm.write().await;
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["SendMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
+    };
+
+    // Burst of 20 agent.send_dm calls from one handler is allowed.
+    for i in 0..DEFAULT_HANDLER_BURST as usize {
+        let resp = dispatch
+            .handle_message(send_dm_request(i, "echo-bot"), Some(&handler_id), None)
+            .await?;
+        assert_not_rate_limited(resp, &format!("burst call {i}"));
+    }
+
+    // The 21st call is rejected with JSON-RPC error code -32005.
+    let resp = dispatch
+        .handle_message(
+            send_dm_request(DEFAULT_HANDLER_BURST as usize, "echo-bot"),
+            Some(&handler_id),
+            None,
+        )
+        .await?;
+    assert_rate_limited(resp, "21st immediate agent.send_dm call");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_rate_limit_send_dm_enforces_bot_aggregate_with_two_handlers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, cm) = setup_dispatch(
+        vec![bot_config("echo-bot", &keys, &["SendMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let bot_config_for_register = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+    };
+
+    let (tx1, _rx1) = tokio::sync::mpsc::channel(64);
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
+    let handler_id1 = {
+        let mut cm = cm.write().await;
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx1),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["SendMessages".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id
+    };
+    let handler_id2 = {
+        let mut cm = cm.write().await;
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx2),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["SendMessages".to_string()],
+                std::slice::from_ref(&bot_config_for_register),
+            )?
+            .handler_id
+    };
+
+    // Two handlers together can burst up to the per-bot aggregate burst of 40.
+    for i in 0..20 {
+        let resp = dispatch
+            .handle_message(send_dm_request(i * 2, "echo-bot"), Some(&handler_id1), None)
+            .await?;
+        assert_not_rate_limited(resp, &format!("handler1 burst call {i}"));
+
+        let resp = dispatch
+            .handle_message(
+                send_dm_request(i * 2 + 1, "echo-bot"),
+                Some(&handler_id2),
+                None,
+            )
+            .await?;
+        assert_not_rate_limited(resp, &format!("handler2 burst call {i}"));
+    }
+
+    // The 41st call is rejected by the bot aggregate bucket.
+    let resp = dispatch
+        .handle_message(send_dm_request(40, "echo-bot"), Some(&handler_id1), None)
+        .await?;
+    assert_rate_limited(resp, "41st immediate call (bot aggregate)");
 
     Ok(())
 }
