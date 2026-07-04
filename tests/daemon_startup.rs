@@ -1,5 +1,6 @@
 /// req(R6, R7, R8, R20, R21, R24, R25)
 use fs2::FileExt;
+use nostr::nips::nip59;
 use nostr::{Timestamp, ToBech32};
 use pacto_bot_api::db::Database;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
@@ -256,6 +257,90 @@ async fn startup_resets_cursor_when_stored_npub_mismatches_config()
     Ok(())
 }
 
+/// NIP-59 allows gift-wrap `created_at` to be tweaked up to 2 days into the
+/// past. After a restart, a DM sent "now" may have a gift-wrap timestamp that
+/// is slightly older than the persisted cursor. The daemon must still receive
+/// it, while not reprocessing older historical events.
+#[tokio::test]
+async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = support::mock_relay::MockRelay::start().await?;
+    let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    bot.relays = vec![relay.url()];
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    let socket_path = dir.path().join("pacto-bot-api.sock");
+    let db_path = dir.path().join("agent.db");
+
+    // Seed a persisted cursor in the past.
+    let cursor_time = Timestamp::now() - 300;
+    let db = Database::open(&db_path)?;
+    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_u64() as i64)?;
+    drop(db);
+
+    let child = spawn_until_ready(&config).await?;
+    let mut handler = common::HandlerClient::register(
+        &socket_path,
+        &["echo-bot"],
+        &["dm_received"],
+        &["ReadMessages"],
+    )
+    .await?;
+
+    let sender_keys = nostr::Keys::generate();
+
+    // A historical event older than the maximum NIP-59 tweak window must not
+    // be redispatched, since the `since` filter is shifted back by at most
+    // that amount to avoid missing freshly sent DMs after a restart. Use a
+    // one-minute cushion so the timestamp is strictly outside the shifted window.
+    let older = common::build_gift_wrap_with_timestamp(
+        &sender_keys,
+        &bot.npub,
+        "older than cursor",
+        cursor_time - nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end - 60,
+    )
+    .await?;
+    relay.inject_event(older).await;
+    assert!(
+        handler
+            .next_notification(std::time::Duration::from_millis(500))
+            .await
+            .is_err(),
+        "older event should not be dispatched"
+    );
+
+    // Simulate a NIP-59 tweak: the gift-wrap timestamp is slightly before the
+    // persisted cursor, but the message was sent after restart.
+    let tweaked = common::build_gift_wrap_with_timestamp(
+        &sender_keys,
+        &bot.npub,
+        "tweaked before cursor",
+        cursor_time - 30,
+    )
+    .await?;
+    relay.inject_event(tweaked).await;
+    let notification = handler
+        .next_notification(std::time::Duration::from_secs(5))
+        .await?;
+    match notification {
+        JsonRpcMessage::Notification { params, .. } => {
+            let content = params
+                .as_ref()
+                .and_then(|p| p.get("content"))
+                .and_then(|v| v.as_str())
+                .ok_or("agent.event notification missing content")?;
+            assert_eq!(content, "tweaked before cursor");
+        }
+        _ => panic!("expected agent.event notification, got {notification:?}"),
+    }
+
+    // Cursor still advances based on the actual event timestamp, not the
+    // tweaked gift-wrap timestamp in this synthetic case.
+    common::shutdown_daemon(child).await?;
+    relay.stop().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -284,12 +369,15 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
 
     let sender_keys = nostr::Keys::generate();
 
-    // An event older than the persisted cursor must not be redispatched.
+    // An event older than the maximum NIP-59 tweak window must not be
+    // redispatched, because the `since` filter is shifted back by that
+    // amount to avoid missing freshly sent DMs after a restart. Use a
+    // one-minute cushion so the timestamp is strictly outside the shifted window.
     let older = common::build_gift_wrap_with_timestamp(
         &sender_keys,
         &bot.npub,
         "older than cursor",
-        cursor_time - 60,
+        cursor_time - nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end - 60,
     )
     .await?;
     relay.inject_event(older).await;
@@ -301,7 +389,9 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
         "older event should not be dispatched"
     );
 
-    // An event at or after the persisted cursor must still be dispatched.
+    // An event within the NIP-59 tweak window of the cursor must still be
+    // dispatched, since the `since` filter accounts for the up-to-2-day
+    // timestamp tweak.
     let newer = common::build_gift_wrap_with_timestamp(
         &sender_keys,
         &bot.npub,
