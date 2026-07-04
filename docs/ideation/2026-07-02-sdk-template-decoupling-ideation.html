@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ideation: Decouple Bot SDK and Templates from pacto-bot-api Release Cycle</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --surface: #181b21;
+      --surface-2: #21262d;
+      --text: #e6e6e6;
+      --text-muted: #9ca3af;
+      --accent: #60a5fa;
+      --accent-2: #a78bfa;
+      --border: #2f353d;
+      --success: #4ade80;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --measure: 70ch;
+      --container: 920px;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --surface: #f8fafc;
+        --surface-2: #f1f5f9;
+        --text: #1e293b;
+        --text-muted: #64748b;
+        --accent: #2563eb;
+        --accent-2: #7c3aed;
+        --border: #e2e8f0;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    .container {
+      max-width: var(--container);
+      margin: 0 auto;
+      padding: 2rem 1.5rem 4rem;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2.5rem;
+    }
+    .doc-type {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.75rem;
+      color: var(--accent);
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      line-height: 1.25;
+      margin: 0 0 0.75rem;
+      font-weight: 700;
+    }
+    .meta {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin: 0;
+    }
+    h2 {
+      font-size: 1.35rem;
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+    }
+    h3 {
+      font-size: 1.15rem;
+      margin: 1.5rem 0 0.75rem;
+    }
+    p, li {
+      max-width: var(--measure);
+    }
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    a:hover { text-decoration: underline; }
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.85em;
+      background: var(--surface-2);
+      padding: 0.1em 0.35em;
+      border-radius: 0.25em;
+    }
+    pre code {
+      display: block;
+      padding: 1rem;
+      overflow-x: auto;
+      background: var(--surface-2);
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+    }
+    .idea-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .idea-card h3 {
+      margin-top: 0;
+      margin-bottom: 0.75rem;
+      font-size: 1.2rem;
+    }
+    .idea-card .idea-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2em 0.6em;
+      border-radius: 9999px;
+      font-weight: 500;
+      font-size: 0.8rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .chip.axis { color: var(--accent); border-color: rgba(96, 165, 250, 0.3); }
+    .chip.conf-high { color: var(--success); border-color: rgba(74, 222, 128, 0.3); }
+    .chip.conf-med { color: var(--warn); border-color: rgba(251, 191, 36, 0.3); }
+    .chip.complex-low { color: var(--success); border-color: rgba(74, 222, 128, 0.3); }
+    .chip.complex-med { color: var(--warn); border-color: rgba(251, 191, 36, 0.3); }
+    .chip.complex-high { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); }
+    .field-label {
+      font-weight: 600;
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin: 1rem 0 0.25rem;
+    }
+    .field-label:first-of-type { margin-top: 0; }
+    .jump-list {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1rem 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .jump-list ol { margin: 0; padding-left: 1.25rem; }
+    .jump-list li { margin-bottom: 0.35rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      font-weight: 600;
+      color: var(--text-muted);
+      background: var(--surface-2);
+    }
+    tr:last-child td { border-bottom: none; }
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      text-align: center;
+      overflow-x: auto;
+    }
+    .diagram svg { max-width: 100%; height: auto; }
+    .composition-signal {
+      margin-top: 3rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <p class="doc-type">Ideation</p>
+      <h1>Decouple Bot SDK and Templates from the <code>pacto-bot-api</code> Release Cycle</h1>
+      <p class="meta">Date: <time datetime="2026-07-02">2026-07-02</time> · Topic: <code>sdk-template-decoupling</code> · Mode: repo-grounded</p>
+    </header>
+
+    <section id="grounding">
+      <h2>Grounding Context</h2>
+      <p><code>pacto-bot-api</code> is a single Rust crate (0.4.1) that contains the daemon, admin CLI (<code>pacto-bot-admin</code>), JSON-RPC contract (<code>schemas/jsonrpc.json</code>), generated Python SDK (<code>python/</code>), and bot project templates (<code>templates/python/</code>). <code>schemas/jsonrpc.json</code> is the canonical source of truth for both Rust generated types (<code>src/*_generated.rs</code>) and the generated Python SDK. <code>cargo xtask codegen</code> regenerates both from the same schema.</p>
+      <p>Templates are embedded in the admin CLI binary at compile time via <code>include_dir!("templates")</code> and extracted at runtime in <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs</a></code>. Every template tweak, SDK fix, or scaffold behavior change therefore requires a full daemon/admin CLI release and rebuild. Version numbers are already inconsistent: daemon 0.4.1, Python SDK 0.1.0, schema <code>info.version</code> 0.1.0. There is no independent SDK publishing pipeline or template update mechanism.</p>
+      <p>External prior art: OpenRPC/Smithy for contract-first versioning; <code>cargo-generate</code>, Cookiecutter, and Copier for language-agnostic templating; MCP's <code>initialize</code>/<code>protocolVersion</code> handshake for JSON-RPC runtime negotiation.</p>
+    </section>
+
+    <section id="axes">
+      <h2>Topic Axes</h2>
+      <ol>
+        <li><strong>Contract boundary &amp; versioning</strong> — how the JSON-RPC contract version is defined, published, and consumed by SDKs and templates.</li>
+        <li><strong>SDK release independence</strong> — how the Python SDK can be released independently from the daemon and published to PyPI.</li>
+        <li><strong>Template delivery mechanism</strong> — where templates live and how they are fetched (embedded, remote/git-ref, <code>cargo-generate</code>, Cookiecutter/Copier).</li>
+        <li><strong>Scaffold invocation &amp; tooling</strong> — how the admin CLI invokes the templating engine and what engine it uses.</li>
+        <li><strong>Project drift &amp; update lifecycle</strong> — how generated projects know when they are stale and how they update.</li>
+      </ol>
+    </section>
+
+    <section id="diagram">
+      <h2>Current vs. Decoupled Lifecycle</h2>
+      <div class="diagram">
+        <svg viewBox="0 0 880 420" width="880" height="420" role="img" aria-label="Before and after architecture diagram">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#9ca3af"/>
+            </marker>
+          </defs>
+          <text x="180" y="30" text-anchor="middle" font-size="16" font-weight="600" fill="#e6e6e6">Today: one release train</text>
+          <rect x="40" y="60" width="280" height="70" rx="8" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="180" y="100" text-anchor="middle" font-size="14" fill="#e6e6e6">pacto-bot-api crate 0.4.1</text>
+          <rect x="40" y="160" width="85" height="50" rx="6" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="82" y="185" text-anchor="middle" font-size="12" fill="#9ca3af">daemon</text>
+          <rect x="137" y="160" width="85" height="50" rx="6" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="180" y="185" text-anchor="middle" font-size="12" fill="#9ca3af">admin CLI</text>
+          <rect x="235" y="160" width="85" height="50" rx="6" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="277" y="185" text-anchor="middle" font-size="12" fill="#9ca3af">templates</text>
+          <line x1="180" y1="130" x2="82" y2="160" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <line x1="180" y1="130" x2="180" y2="160" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <line x1="180" y1="130" x2="277" y2="160" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <rect x="40" y="250" width="280" height="50" rx="6" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="180" y="280" text-anchor="middle" font-size="13" fill="#9ca3af">Python SDK 0.1.0 vendored in templates</text>
+          <line x1="277" y1="210" x2="277" y2="250" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <text x="180" y="340" text-anchor="middle" font-size="13" fill="#f87171">Template change → rebuild entire crate</text>
+
+          <text x="640" y="30" text-anchor="middle" font-size="16" font-weight="600" fill="#e6e6e6">Proposed: independent release trains</text>
+          <rect x="420" y="60" width="200" height="55" rx="8" fill="#21262d" stroke="#60a5fa" stroke-width="2"/>
+          <text x="520" y="92" text-anchor="middle" font-size="14" fill="#e6e6e6">pacto-contract 0.1.0</text>
+          <rect x="660" y="60" width="200" height="55" rx="8" fill="#21262d" stroke="#a78bfa" stroke-width="2"/>
+          <text x="760" y="92" text-anchor="middle" font-size="14" fill="#e6e6e6">pacto-bot-api 0.4.1</text>
+          <line x1="760" y1="115" x2="520" y2="115" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+          <rect x="420" y="150" width="200" height="55" rx="8" fill="#21262d" stroke="#4ade80" stroke-width="2"/>
+          <text x="520" y="175" text-anchor="middle" font-size="13" fill="#e6e6e6">pacto-bot-sdk 0.2.0</text>
+          <text x="520" y="193" text-anchor="middle" font-size="11" fill="#9ca3af">PyPI</text>
+          <line x1="520" y1="115" x2="520" y2="150" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+          <rect x="660" y="150" width="200" height="55" rx="8" fill="#21262d" stroke="#fbbf24" stroke-width="2"/>
+          <text x="760" y="175" text-anchor="middle" font-size="13" fill="#e6e6e6">templates v1.2.0</text>
+          <text x="760" y="193" text-anchor="middle" font-size="11" fill="#9ca3af">git repo / cargo-generate</text>
+          <line x1="760" y1="115" x2="760" y2="150" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+          <rect x="540" y="250" width="200" height="55" rx="8" fill="#21262d" stroke="#2f353d" stroke-width="2"/>
+          <text x="640" y="280" text-anchor="middle" font-size="13" fill="#e6e6e6">scaffolded project + .pacto/scaffold.lock</text>
+          <line x1="520" y1="205" x2="610" y2="250" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <line x1="760" y1="205" x2="670" y2="250" stroke="#9ca3af" stroke-width="1.5" marker-end="url(#arrow)"/>
+          <text x="640" y="340" text-anchor="middle" font-size="13" fill="#4ade80">Each artifact releases on its own cadence</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="combined-vision">
+      <h2>Combined Vision</h2>
+      <p>The survivor ideas are not mutually exclusive. A coherent end-state is to keep <code>pacto-bot-admin</code> as the single starting point for creating a bot, but turn it into a <strong>compatibility-aware bootstrapper</strong> that resolves and pulls down three independently released artifacts:</p>
+      <ol>
+        <li><strong>Versioned contract</strong> — a published <code>schemas/jsonrpc.json</code> artifact (e.g., <code>pacto-contract@0.1.0</code>).</li>
+        <li><strong>Versioned SDK</strong> — a PyPI package matching the contract version (e.g., <code>pacto-bot-sdk@0.2.0</code>).</li>
+        <li><strong>Versioned template</strong> — a git-tagged <code>cargo-generate</code> template for a given language and bot kind (e.g., <code>pacto-template-python-llm@1.2.0</code>).</li>
+      </ol>
+      <p>The admin CLI consults a compatibility matrix to choose a compatible triple, writes the chosen versions into <code>.pacto/scaffold.lock</code>, and provides an <code>update</code> command to refresh the project when any artifact advances. New languages and bot kinds become new template repositories, not changes to the daemon or CLI.</p>
+      <p><strong>Why this matters:</strong> It preserves the single-entry UX of <code>pacto-bot-admin new</code> while giving every artifact its own release cadence. The contract stays the stable boundary; the CLI becomes the glue that resolves compatibility across the moving parts.</p>
+      <p><strong>Axis coverage:</strong> Contract (#2, #7), SDK (#3), Template (#4, #5), Tooling (#5), Drift (#6, #7).</p>
+    </section>
+
+    <section id="ideas">
+      <h2>Ranked Ideas</h2>
+      <nav class="jump-list" aria-label="Idea jump list">
+        <ol>
+          <li><a href="#idea-1">Cross-cutting: standalone contract + cargo-generate template repo + <code>.pacto/scaffold.lock</code></a></li>
+          <li><a href="#idea-2">Promote <code>schemas/jsonrpc.json</code> to a standalone, versioned contract artifact</a></li>
+          <li><a href="#idea-3">Publish Python SDK to PyPI with its own semver and release workflow</a></li>
+          <li><a href="#idea-4">Move templates to a separate versioned repository and fetch by git ref</a></li>
+          <li><a href="#idea-5">Replace the bespoke template engine with <code>cargo-generate</code> invoked as a subprocess</a></li>
+          <li><a href="#idea-6">Write a <code>.pacto/scaffold.lock</code> and add <code>pacto-bot-admin update</code></a></li>
+          <li><a href="#idea-7">Compatibility matrix as a first-class schema consumed by SDKs and templates</a></li>
+        </ol>
+      </nav>
+
+      <article class="idea-card" id="idea-1">
+        <h3>1. Cross-cutting: standalone contract + cargo-generate template repo + <code>.pacto/scaffold.lock</code></h3>
+        <div class="idea-meta">
+          <span class="chip axis">Template delivery + Project drift</span>
+          <span class="chip conf-high">Confidence 85%</span>
+          <span class="chip complex-high">Complexity High</span>
+        </div>
+        <p><strong>Description:</strong> Combine the three most complementary moves: (1) publish <code>schemas/jsonrpc.json</code> as a standalone versioned artifact, (2) move templates to a <code>cargo-generate</code> repository fetched by git ref, and (3) write a <code>.pacto/scaffold.lock</code> with an <code>update</code> command. The daemon ships the contract, the template repo ships scaffolding, and each project records what it was built from so it can be updated.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/xtask/src/codegen.rs"><code>xtask/src/codegen.rs</code></a> couples Rust and Python generation; <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:19-20</code></a> embeds templates via <code>include_dir!</code>; <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:600-620</code></a> discards <code>manifest.toml</code> and writes no project provenance.</p>
+        <p><strong>Rationale:</strong> No single idea alone solves the full lifecycle. Together they replace the embedded, release-coupled model with a contract-first, template-fetched, lock-tracked model where each piece can move independently.</p>
+        <p><strong>Downsides:</strong> Requires coordinating three architectural changes; introduces a network dependency for fresh templates unless an offline fallback is retained.</p>
+      </article>
+
+      <article class="idea-card" id="idea-2">
+        <h3>2. Promote <code>schemas/jsonrpc.json</code> to a standalone, versioned contract artifact</h3>
+        <div class="idea-meta">
+          <span class="chip axis">Contract boundary &amp; versioning</span>
+          <span class="chip conf-high">Confidence 90%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> Split the contract into its own repository or artifact (e.g., <code>pacto-bot-api-spec</code>) with its own semver, and have the daemon, Python SDK, and templates consume that artifact as a dependency. The schema becomes the source of truth; language generators become consumers.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/xtask/src/codegen.rs"><code>xtask/src/codegen.rs:14-26</code></a> runs Rust, Python, and compatibility generation from one <code>schemas/</code> directory; <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/tests/schema_sync.rs"><code>tests/schema_sync.rs:225-266</code></a> asserts parity between the schema and the hand-written <code>Method</code> enum, forcing the daemon and schema to move in lockstep. <code>reasoned:</code> versions already diverge (Cargo 0.4.1 vs. schema 0.1.0 vs. Python SDK 0.1.0), proving there is no single source of truth today.</p>
+        <p><strong>Rationale:</strong> Decoupling the spec from the daemon crate is the prerequisite for every other decoupling step. Once the contract is a published artifact, SDKs and templates can target a pinned contract version without waiting for a Rust daemon release.</p>
+        <p><strong>Downsides:</strong> Adds a new repo/artifact to maintain; requires release automation for the contract itself; changes the current one-command <code>cargo xtask codegen</code> workflow.</p>
+      </article>
+
+      <article class="idea-card" id="idea-3">
+        <h3>3. Publish Python SDK to PyPI with its own semver and release workflow</h3>
+        <div class="idea-meta">
+          <span class="chip axis">SDK release independence</span>
+          <span class="chip conf-high">Confidence 85%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> Treat <code>python/</code> as an independently versioned package. Add a PyPI publishing job to the release workflow, bump the package version on its own schedule, and stop vendoring the SDK into each generated project. Generated bot projects then depend on the published package (<code>pacto-bot-api&gt;=X.Y.Z</code>) instead of a local <code>sdk/</code> wheel built from a snapshot.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/python/pyproject.toml"><code>python/pyproject.toml:7</code></a> pins the SDK at <code>0.1.0</code>; <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:494-500</code></a> copies <code>templates/python/sdk/</code> into every project; the generated-python-client plan explicitly deferred PyPI publication. <code>external:</code> Hatchling (already in use) supports <code>hatch publish</code> and PyPI upload.</p>
+        <p><strong>Rationale:</strong> Once the SDK ships independently, a bug fix in the Python client no longer requires a daemon release or a rebuilt admin CLI. This is the highest-leverage step for SDK velocity.</p>
+        <p><strong>Downsides:</strong> Requires a separate CI job, PyPI credentials, and a versioning policy for the Python package.</p>
+      </article>
+
+      <article class="idea-card" id="idea-4">
+        <h3>4. Move templates to a separate versioned repository and fetch by git ref</h3>
+        <div class="idea-meta">
+          <span class="chip axis">Template delivery mechanism</span>
+          <span class="chip conf-high">Confidence 85%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> Extract <code>templates/</code> into a dedicated <code>pacto-bot-templates</code> repository with its own release tags. <code>pacto-bot-admin</code> resolves templates by git ref (defaulting to a pinned tag or branch) instead of embedding them via <code>include_dir!</code>. The admin CLI still ships with a fallback snapshot for offline use, but normal operation fetches the latest compatible template tree.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:19-20</code></a> uses <code>include_dir!("templates")</code> so every template tweak requires a full admin CLI release; <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/templates/python/manifest.toml"><code>templates/python/manifest.toml</code></a> declares <code>version = "{{version}}"</code> but the renderer ignores it and the manifest is not copied into generated projects. <code>external:</code> <code>cargo-generate</code> and Cookiecutter both support remote git repositories as template sources.</p>
+        <p><strong>Rationale:</strong> Decoupling the template store from the daemon crate means template authors can ship fixes, new languages, and example bots without waiting for a daemon release.</p>
+        <p><strong>Downsides:</strong> Requires network access for fresh templates unless the embedded fallback is kept; adds a git/ref resolution step with error handling.</p>
+      </article>
+
+      <article class="idea-card" id="idea-5">
+        <h3>5. Replace the bespoke template engine with <code>cargo-generate</code> invoked as a subprocess</h3>
+        <div class="idea-meta">
+          <span class="chip axis">Scaffold invocation &amp; tooling</span>
+          <span class="chip conf-high">Confidence 80%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> Replace the custom engine in <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/template.rs"><code>src/scaffold/template.rs</code></a> with a <code>std::process::Command</code> invocation of <code>cargo-generate</code>. Keep the existing <code>ScaffoldRequest</code> context as input, but let <code>cargo-generate</code> handle Liquid parsing, conditionals, loops, hooks, and template include paths.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/template.rs"><code>src/scaffold/template.rs:28-36</code></a> implements a bespoke engine supporting only <code>{{key}}</code>, <code>{% if %}</code>, and <code>{% for %}</code>; repo-wide search finds no <code>cargo-generate</code> usage. <code>external:</code> <code>cargo-generate</code> is the de facto Rust template tool and supports <code>cargo-generate.toml</code>, <code>require_version</code>, and Liquid placeholders.</p>
+        <p><strong>Rationale:</strong> Switching to a standard tool replaces a growing maintenance burden with a community-supported engine. It also directly addresses the user's <code>cargo create</code>-style scaffolding suggestion.</p>
+        <p><strong>Downsides:</strong> Adds a runtime dependency on <code>cargo-generate</code>; may require template authors to learn <code>cargo-generate.toml</code> semantics; subprocess error handling is less deterministic than in-process rendering.</p>
+      </article>
+
+      <article class="idea-card" id="idea-6">
+        <h3>6. Write a <code>.pacto/scaffold.lock</code> and add <code>pacto-bot-admin update</code></h3>
+        <div class="idea-meta">
+          <span class="chip axis">Project drift &amp; update lifecycle</span>
+          <span class="chip conf-med">Confidence 75%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> When scaffolding, write a lock file that records the template version, SDK version, contract version, and admin CLI version that produced the project. Add a <code>pacto-bot-admin update</code> command that reads the lock, fetches the requested template ref, and re-renders files while respecting <code>protected_files</code> and user modifications.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:260</code></a> hard-codes the template version as <code>"0.1.0"</code> and <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/src/scaffold/generate.rs"><code>src/scaffold/generate.rs:600-620</code></a> skips copying <code>manifest.toml</code>, so generated projects have no recorded provenance; no <code>update|upgrade|migrate</code> command exists in <code>src/</code>. <code>external:</code> <code>cargo-generate</code> supports post-generation hooks and lock-like metadata that can drive updates.</p>
+        <p><strong>Rationale:</strong> Once projects are self-describing, updating a fleet of bots becomes a repeatable command rather than a manual diff. The lock file compounds as a source of truth for drift detection, CI replay, and automated upgrade PRs.</p>
+        <p><strong>Downsides:</strong> Requires an overwrite/merge policy for user-edited files; adds state management and backwards-compatibility concerns for existing projects.</p>
+      </article>
+
+      <article class="idea-card" id="idea-7">
+        <h3>7. Compatibility matrix as a first-class schema consumed by SDKs and templates</h3>
+        <div class="idea-meta">
+          <span class="chip axis">Contract boundary &amp; versioning</span>
+          <span class="chip conf-med">Confidence 75%</span>
+          <span class="chip complex-med">Complexity Medium</span>
+        </div>
+        <p><strong>Description:</strong> Add a <code>schemas/compatibility.json</code> (or similar) that maps daemon versions to supported JSON-RPC contract versions and compatible SDK/template ranges. The SDK reads it at import or connection time to warn or fail on mismatch; the template engine uses it to select the latest compatible template and SDK defaults; CI uses it to validate release combinations.</p>
+        <p><strong>Basis:</strong> <code>direct:</code> Version numbers are already inconsistent: daemon <code>0.4.1</code> (<a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/Cargo.toml"><code>Cargo.toml:3</code></a>), schema <code>0.1.0</code> (<a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/schemas/jsonrpc.json"><code>schemas/jsonrpc.json:5-6</code></a>), Python SDK <code>0.1.0</code> (<a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/python/pyproject.toml"><code>python/pyproject.toml:7</code></a>). <a href="https://github.com/covenant-gov/pacto-bot-api/blob/main/schemas/service-compatibility.json"><code>schemas/service-compatibility.json</code></a> already proves the repo can version a separate compatibility surface for backing services. <code>reasoned:</code> without an explicit compatibility model, every release combination is an ad-hoc human judgment.</p>
+        <p><strong>Rationale:</strong> A compatibility matrix makes support and upgrade decisions data-driven and testable. It becomes the authority for the update command, the CI gates, and the SDK handshake.</p>
+        <p><strong>Downsides:</strong> Requires a single owner and update process; if it drifts, it becomes worse than no matrix at all.</p>
+      </article>
+    </section>
+
+    <section id="rejection">
+      <h2>Rejection Summary</h2>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Idea</th><th>Reason rejected</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>1</td><td>Add <code>pacto.initialize</code> handshake</td><td>Sound, but runtime handshake is secondary to first publishing the contract as an artifact; defer until artifact/negotiation model is settled.</td></tr>
+          <tr><td>3</td><td>Generate Rust <code>Method</code> enum and dispatch table from schema</td><td>Sound, valuable internal cleanup but secondary to the contract/SDK/template decoupling story.</td></tr>
+          <tr><td>4</td><td>Content-addressed schema hash as contract version</td><td>Weak — a hash cannot express semver compatibility intent.</td></tr>
+          <tr><td>5</td><td>Per-method capability announcements</td><td>Weak — overkill for a catalog of ~12 methods today.</td></tr>
+          <tr><td>6</td><td>npm peer-dependency semver contract window</td><td>Sound but overlaps with the compatibility matrix idea; matrix is a more general expression of the same concept.</td></tr>
+          <tr><td>9</td><td>Python SDK as separate repo consuming schema artifact</td><td>Sound but overlaps with PyPI SDK publishing; separate repo is an implementation detail that can be decided later.</td></tr>
+          <tr><td>10</td><td>On-demand SDK generation from daemon introspection</td><td>Weak — impractical to require a running daemon at every bot build time.</td></tr>
+          <tr><td>11</td><td>Rust edition + release train channels for SDK</td><td>Sound but adds complexity before basic PyPI versioning is established.</td></tr>
+          <tr><td>13</td><td>Template registry with semantic version ranges</td><td>Weak — introduces operational burden before the simpler git-ref solution is exhausted.</td></tr>
+          <tr><td>14</td><td>Game mod loader / texture pack registry with <code>pack_format</code></td><td>Sound but overlaps with the git-ref template repo idea; git-ref is the simpler first step.</td></tr>
+          <tr><td>15</td><td>Browser extension web store with <code>manifest_version</code></td><td>Sound but overlaps with the git-ref template repo idea.</td></tr>
+          <tr><td>16</td><td>Templates as Docker images</td><td>Weak — adds Docker as a hard dependency for scaffolding.</td></tr>
+          <tr><td>18</td><td>npm init / cargo-generate subprocess delegation</td><td>Sound but overlaps with the core <code>cargo-generate</code> replacement idea.</td></tr>
+          <tr><td>19</td><td>VS Code extension host / plugin provider model</td><td>Sound but more complex than needed before <code>cargo-generate</code> is adopted.</td></tr>
+          <tr><td>20</td><td>No admin CLI; users run <code>cargo generate</code> directly</td><td>Weak — abandons the contract-version gatekeeping the admin CLI can provide.</td></tr>
+          <tr><td>21</td><td>Scaffold as daemon JSON-RPC endpoint</td><td>Weak — requires a running daemon and removes offline capability.</td></tr>
+          <tr><td>23</td><td>Pin daemon image to contract-compatible version</td><td>Sound but overlaps with the compatibility matrix idea; matrix can include image pins.</td></tr>
+          <tr><td>24</td><td>Generated projects as git subtrees of template repo</td><td>Weak — subtree mechanics add friction for bot authors.</td></tr>
+          <tr><td>25</td><td>Alembic/Diesel migration runner for generated projects</td><td>Sound but overlaps with <code>.pacto/scaffold.lock</code> + update; migrations are a future refinement.</td></tr>
+          <tr><td>26</td><td>Immutable generated projects; replace, don't update</td><td>Weak — sidesteps drift rather than solving it.</td></tr>
+          <tr><td>27</td><td>Nightly auto-update of all bot projects</td><td>Weak — premature without a lock file or update command.</td></tr>
+          <tr><td>29</td><td>Cross-cutting: contract handshake + compatibility matrix + pinned image</td><td>Sound but overlaps with the chosen compatibility matrix and deferred handshake ideas.</td></tr>
+          <tr><td>30</td><td>Cross-cutting: PyPI SDK + cargo-generate + no vendored SDK</td><td>Sound but overlaps with the chosen standalone survivors it combines.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer class="composition-signal">
+      Composed 2026-07-02 by ce-ideate from the prompt: "disconnect the bot sdk and templates from bot api release cycle..."
+    </footer>
+  </div>
+</body>
+</html>
