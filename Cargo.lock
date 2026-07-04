@@ -1661,13 +1661,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr"
+version = "0.44.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98cf5d15d70d1f8f4059e5f79923ac15891eb691d2843d01191e0585fb064d70"
+dependencies = [
+ "aes",
+ "base64",
+ "bech32 0.11.1",
+ "bip39",
+ "bitcoin_hashes",
+ "cbc",
+ "chacha20",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "instant",
+ "scrypt",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
 name = "nostr-connect"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3bcd44ea344d1cab3447615681cd3bb90134cafe4d157d3e714c23c31268cd8"
 dependencies = [
  "async-utility",
- "nostr",
+ "nostr 0.43.1",
  "nostr-relay-pool",
  "tokio",
  "tracing",
@@ -1680,7 +1705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1c75a8c2175d2785ba73cfddef21d1e30da5fbbdf158569b6808ba44973a15b"
 dependencies = [
  "lru",
- "nostr",
+ "nostr 0.43.1",
  "tokio",
 ]
 
@@ -1695,7 +1720,7 @@ dependencies = [
  "atomic-destructor",
  "lru",
  "negentropy",
- "nostr",
+ "nostr 0.43.1",
  "nostr-database",
  "tokio",
  "tracing",
@@ -1708,7 +1733,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "599f8963d6a1522a13b1a2b0ea6e168acfc367706606f1d33fa595e91fa22db0"
 dependencies = [
  "async-utility",
- "nostr",
+ "nostr 0.43.1",
  "nostr-database",
  "nostr-relay-pool",
  "tokio",
@@ -1864,7 +1889,7 @@ dependencies = [
  "hyper-util",
  "jsonschema",
  "nix",
- "nostr",
+ "nostr 0.44.4",
  "nostr-connect",
  "nostr-relay-pool",
  "nostr-sdk",

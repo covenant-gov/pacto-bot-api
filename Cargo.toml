@@ -30,7 +30,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 toml = "0.8"
 axum = "0.8"
 nostr-sdk = { version = "0.43", features = ["nip06", "nip44", "nip59"] }
-nostr = { version = "0.43", features = ["nip46", "nip44", "nip59"] }
+nostr = { version = "0.44", features = ["nip46", "nip44", "nip59"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
