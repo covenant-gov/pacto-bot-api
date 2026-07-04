@@ -1733,7 +1733,11 @@ async fn default_rate_limit_send_dm_rejects_21st_handler_call_with_32005()
     // Burst of 20 agent.send_dm calls from one handler is allowed.
     for i in 0..DEFAULT_HANDLER_BURST as usize {
         let resp = dispatch
-            .handle_message(send_dm_request(i, "echo-bot", &handler_id), Some(&handler_id), None)
+            .handle_message(
+                send_dm_request(i, "echo-bot", &handler_id),
+                Some(&handler_id),
+                None,
+            )
             .await?;
         assert_not_rate_limited(resp, &format!("burst call {i}"));
     }
@@ -1827,4 +1831,3 @@ async fn default_rate_limit_send_dm_enforces_bot_aggregate_with_two_handlers()
 
     Ok(())
 }
-

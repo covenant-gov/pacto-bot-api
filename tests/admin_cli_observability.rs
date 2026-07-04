@@ -82,7 +82,8 @@ async fn trace_events_prints_recent_rows() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn diagnose_json_contains_socket_fields_when_daemon_stopped() -> Result<(), Box<dyn std::error::Error>> {
+async fn diagnose_json_contains_socket_fields_when_daemon_stopped()
+-> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let config = common::make_config(&dir, vec![])?;
 
@@ -105,7 +106,10 @@ async fn diagnose_json_contains_socket_fields_when_daemon_stopped() -> Result<()
     assert_eq!(socket["owner_readable"], false);
     assert_eq!(socket["owner_writable"], false);
     assert!(
-        socket["path"].as_str().expect("socket path should be a string").ends_with("pacto-bot-api.sock"),
+        socket["path"]
+            .as_str()
+            .expect("socket path should be a string")
+            .ends_with("pacto-bot-api.sock"),
         "socket path should end with the expected socket filename, got: {socket:?}"
     );
 
@@ -113,7 +117,8 @@ async fn diagnose_json_contains_socket_fields_when_daemon_stopped() -> Result<()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay() -> Result<(), Box<dyn std::error::Error>> {
+async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay()
+-> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
@@ -141,9 +146,7 @@ async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay
         .expect("relay_connectivity should be an array");
     assert!(
         relay_checks.iter().any(|c| {
-            c["bot_id"] == "diagnose-bot"
-                && c["relay"] == relay_url
-                && c["reachable"] == true
+            c["bot_id"] == "diagnose-bot" && c["relay"] == relay_url && c["reachable"] == true
         }),
         "expected reachable relay check for diagnose-bot, got: {relay_checks:?}"
     );
@@ -173,7 +176,8 @@ async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn diagnose_text_includes_socket_connectivity_and_service_sections() -> Result<(), Box<dyn std::error::Error>> {
+async fn diagnose_text_includes_socket_connectivity_and_service_sections()
+-> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
@@ -189,9 +193,18 @@ async fn diagnose_text_includes_socket_connectivity_and_service_sections() -> Re
     let output = cmd.assert().success();
     let stdout = std::str::from_utf8(&output.get_output().stdout)?;
 
-    assert!(stdout.contains("socket:"), "text output should include socket section\n{stdout}");
-    assert!(stdout.contains("path:"), "text output should include socket path\n{stdout}");
-    assert!(stdout.contains("exists:"), "text output should include socket exists\n{stdout}");
+    assert!(
+        stdout.contains("socket:"),
+        "text output should include socket section\n{stdout}"
+    );
+    assert!(
+        stdout.contains("path:"),
+        "text output should include socket path\n{stdout}"
+    );
+    assert!(
+        stdout.contains("exists:"),
+        "text output should include socket exists\n{stdout}"
+    );
     assert!(
         stdout.contains("owner_readable:"),
         "text output should include socket owner_readable\n{stdout}"
