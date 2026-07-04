@@ -142,7 +142,7 @@ impl NostrClient {
     ) -> Result<UnsignedEvent, DaemonError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
+            .map_err(|e| DaemonError::Nostr(format!("system clock before Unix epoch: {e}")))?;
         let ms = (now.as_millis() % 1000).to_string();
 
         let mut rumor_builder = EventBuilder::private_msg_rumor(*recipient, content);
@@ -154,10 +154,7 @@ impl NostrClient {
                 [event_id.to_hex(), String::new(), String::from("reply")],
             )]);
         }
-        rumor_builder = rumor_builder.tag(Tag::custom(
-            TagKind::custom("ms"),
-            [ms],
-        ));
+        rumor_builder = rumor_builder.tag(Tag::custom(TagKind::custom("ms"), [ms]));
         Ok(rumor_builder.build(*sender))
     }
 
@@ -534,11 +531,17 @@ mod tests {
         )
         .unwrap();
 
-        let e_tag = rumor.tags.find(TagKind::e()).expect("rumor should have an e tag");
+        let e_tag = rumor
+            .tags
+            .find(TagKind::e())
+            .expect("rumor should have an e tag");
         assert!(e_tag.is_reply(), "e tag should be marked as reply");
         assert_eq!(e_tag.content().unwrap(), reply_id.to_hex());
 
-        let ms_tag = rumor.tags.find(TagKind::custom("ms")).expect("rumor should have an ms tag");
+        let ms_tag = rumor
+            .tags
+            .find(TagKind::custom("ms"))
+            .expect("rumor should have an ms tag");
         let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
         assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
     }
@@ -556,8 +559,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(rumor.tags.find(TagKind::e()).is_none(), "rumor should not have an e tag");
-        let ms_tag = rumor.tags.find(TagKind::custom("ms")).expect("rumor should have an ms tag");
+        assert!(
+            rumor.tags.find(TagKind::e()).is_none(),
+            "rumor should not have an e tag"
+        );
+        let ms_tag = rumor
+            .tags
+            .find(TagKind::custom("ms"))
+            .expect("rumor should have an ms tag");
         let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
         assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
     }

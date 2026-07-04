@@ -9,7 +9,10 @@ use std::time::Duration;
 
 use nostr::nips::{nip44, nip59};
 use nostr::secp256k1::schnorr::Signature;
-use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag, Timestamp, ToBech32, UnsignedEvent};
+use nostr::{
+    Event, EventBuilder, EventId, JsonUtil, Keys, Kind, NostrSigner, Tag, TagKind, Timestamp,
+    ToBech32, UnsignedEvent,
+};
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::events::EventType;
@@ -71,13 +74,12 @@ async fn send_dm_returns_event_id() {
 
 #[tokio::test]
 async fn outgoing_gift_wrap_has_kind_1059_and_p_tag() {
-    let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
+    let relay = MockRelay::start().await.unwrap();
+    let client = NostrClient::new(vec![relay.url()]).await.unwrap();
     let (sender, _) = test_signer();
     let recipient = Keys::generate();
     let recipient_npub = recipient.public_key().to_bech32().unwrap();
 
-    // Since send_dm only returns the EventId, verify that the call succeeds
-    // and that the resulting id is non-zero (a publishable event was built).
     let event_id = client
         .send_dm(&sender, &recipient_npub, "wrapped", None)
         .await
@@ -86,6 +88,120 @@ async fn outgoing_gift_wrap_has_kind_1059_and_p_tag() {
         event_id.to_hex(),
         "0000000000000000000000000000000000000000000000000000000000000000"
     );
+
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn send_dm_reply_gift_wrap_contains_ms_tag_and_reply_marker() {
+    let relay = MockRelay::start().await.unwrap();
+    let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+    let (sender, _) = test_signer();
+    let recipient = Keys::generate();
+    let recipient_npub = recipient.public_key().to_bech32().unwrap();
+    let reply_id =
+        EventId::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+            .unwrap();
+
+    client
+        .send_dm(
+            &sender,
+            &recipient_npub,
+            "thread reply",
+            Some(&reply_id.to_hex()),
+        )
+        .await
+        .unwrap();
+
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let gift = events
+        .into_iter()
+        .find(|e| e.kind == Kind::GiftWrap)
+        .unwrap();
+
+    let seal_json = recipient
+        .nip44_decrypt(&gift.pubkey, &gift.content)
+        .await
+        .unwrap();
+    let seal = Event::from_json(&seal_json).unwrap();
+
+    let rumor_json = recipient
+        .nip44_decrypt(&seal.pubkey, &seal.content)
+        .await
+        .unwrap();
+    let rumor = UnsignedEvent::from_json(&rumor_json).unwrap();
+
+    assert_eq!(rumor.kind, Kind::PrivateDirectMessage);
+    assert_eq!(rumor.content, "thread reply");
+
+    let e_tag = rumor
+        .tags
+        .find(TagKind::e())
+        .expect("rumor should have an e tag");
+    assert!(e_tag.is_reply(), "e tag should be marked as reply");
+    assert_eq!(e_tag.content().unwrap(), reply_id.to_hex());
+
+    let ms_tag = rumor
+        .tags
+        .find(TagKind::custom("ms"))
+        .expect("rumor should have an ms tag");
+    let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
+    assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
+
+    relay.stop().await;
+}
+
+#[tokio::test]
+async fn send_dm_gift_wrap_contains_ms_tag_without_reply() {
+    let relay = MockRelay::start().await.unwrap();
+    let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+    let (sender, _) = test_signer();
+    let recipient = Keys::generate();
+    let recipient_npub = recipient.public_key().to_bech32().unwrap();
+
+    client
+        .send_dm(&sender, &recipient_npub, "standalone dm", None)
+        .await
+        .unwrap();
+
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let gift = events
+        .into_iter()
+        .find(|e| e.kind == Kind::GiftWrap)
+        .unwrap();
+
+    let seal_json = recipient
+        .nip44_decrypt(&gift.pubkey, &gift.content)
+        .await
+        .unwrap();
+    let seal = Event::from_json(&seal_json).unwrap();
+
+    let rumor_json = recipient
+        .nip44_decrypt(&seal.pubkey, &seal.content)
+        .await
+        .unwrap();
+    let rumor = UnsignedEvent::from_json(&rumor_json).unwrap();
+
+    assert_eq!(rumor.kind, Kind::PrivateDirectMessage);
+    assert!(
+        rumor.tags.find(TagKind::e()).is_none(),
+        "rumor should not have an e tag"
+    );
+
+    let ms_tag = rumor
+        .tags
+        .find(TagKind::custom("ms"))
+        .expect("rumor should have an ms tag");
+    let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
+    assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
+
+    relay.stop().await;
 }
 
 #[tokio::test]
