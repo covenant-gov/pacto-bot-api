@@ -179,7 +179,7 @@ impl HandlerRegistry {
             Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
 
         let id = uuid::Uuid::new_v4().to_string();
-        let reconnect_token = generate_reconnect_token();
+        let reconnect_token = generate_reconnect_token()?;
         let now = Utc::now();
         let transport = connection.transport().to_string();
         let handler = HandlerRef {
@@ -302,9 +302,6 @@ impl HandlerRegistry {
                 .find(|b| b.id == *bot_id)
                 .ok_or_else(|| DaemonError::UnknownBot(bot_id.clone()))?;
             for cap in &capabilities {
-                if cap == "Admin" {
-                    continue;
-                }
                 if !bot.capabilities.contains(cap) {
                     return Err(DaemonError::Config(format!(
                         "capability {cap} not granted to bot {bot_id}"
@@ -322,10 +319,10 @@ impl HandlerRegistry {
     }
 }
 
-fn generate_reconnect_token() -> SecretString {
+fn generate_reconnect_token() -> Result<SecretString, DaemonError> {
     let mut bytes = [0u8; 32];
-    let _ = getrandom::getrandom(&mut bytes);
-    SecretString::new(hex::encode(bytes).into())
+    getrandom::getrandom(&mut bytes)?;
+    Ok(SecretString::new(hex::encode(bytes).into()))
 }
 
 fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
@@ -458,6 +455,25 @@ mod tests {
 
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("SendMessages"));
+    }
+
+    #[test]
+    fn register_rejects_admin_capability_not_granted_to_bot() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+
+        let err = registry
+            .register(
+                dummy_handle(),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["Admin".to_string()],
+                &bots,
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, DaemonError::Config(_)));
+        assert!(err.to_string().contains("Admin"));
     }
 
     #[test]

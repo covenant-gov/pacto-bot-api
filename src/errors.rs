@@ -89,6 +89,9 @@ pub enum DaemonError {
 
     #[error("frame too large")]
     FrameTooLarge,
+
+    #[error("failed to generate reconnect token: {0}")]
+    TokenGeneration(#[from] getrandom::Error),
 }
 
 impl DaemonError {
@@ -107,8 +110,8 @@ impl DaemonError {
             DaemonError::JsonRpc(e) => e.code,
             DaemonError::MethodNotFound => -32601,
             DaemonError::MethodNotSupported(_) => -32009,
-            // Malformed input or bad params are treated as invalid request/params.
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
+            DaemonError::TokenGeneration(_) => -32603,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
             DaemonError::Sqlite(_) => -32603,
         }
