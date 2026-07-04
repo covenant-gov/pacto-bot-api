@@ -3,10 +3,10 @@ use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
 use crate::transport::protocol::{AgentStatusParams, JsonRpcMessage, MetricsResponse};
 use chrono::{DateTime, Utc};
-#[cfg(test)]
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::time::Duration;
+use subtle::ConstantTimeEq;
 use tokio::sync::mpsc::Sender;
 
 /// Capability a handler may request for a bot.
@@ -67,6 +67,7 @@ pub struct HandlerRef {
     pub bot_ids: Vec<String>,
     pub event_types: Vec<EventType>,
     pub capabilities: Vec<Capability>,
+    pub reconnect_token: SecretString,
     pub registered_at: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub transport: String,
@@ -138,6 +139,19 @@ impl HandlerRef {
     }
 }
 
+/// Result of a successful handler registration.
+#[derive(Debug, Clone)]
+pub struct HandlerRegistration {
+    pub handler_id: String,
+    pub reconnect_token: SecretString,
+}
+
+impl HandlerRegistration {
+    pub fn handler_id(&self) -> &str {
+        &self.handler_id
+    }
+}
+
 /// Registry of active handler connections.
 #[derive(Debug, Default)]
 pub struct HandlerRegistry {
@@ -151,7 +165,8 @@ impl HandlerRegistry {
 
     /// Register a handler after validating its requested bots, event types, and capabilities.
     ///
-    /// The server generates a UUIDv4 handler_id; clients must not supply one.
+    /// The server generates a UUIDv4 handler_id and a 256-bit reconnect token.
+    /// Clients must not supply a handler_id.
     pub fn register(
         &mut self,
         connection: ConnectionHandle,
@@ -159,11 +174,12 @@ impl HandlerRegistry {
         event_types: Vec<String>,
         capabilities: Vec<Capability>,
         bot_configs: &[BotConfig],
-    ) -> Result<String, DaemonError> {
+    ) -> Result<HandlerRegistration, DaemonError> {
         let (bot_ids, event_types, capabilities) =
             Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
 
         let id = uuid::Uuid::new_v4().to_string();
+        let reconnect_token = generate_reconnect_token();
         let now = Utc::now();
         let transport = connection.transport().to_string();
         let handler = HandlerRef {
@@ -172,46 +188,52 @@ impl HandlerRegistry {
             bot_ids,
             event_types,
             capabilities,
+            reconnect_token: reconnect_token.clone(),
             registered_at: now,
             last_seen: now,
             transport,
         };
 
         self.handlers.insert(id.clone(), handler);
-        Ok(id)
+        Ok(HandlerRegistration {
+            handler_id: id,
+            reconnect_token,
+        })
     }
 
-    /// Register a new handler or reconnect an existing persisted one.
+    /// Reconnect a previously registered handler using its secret reconnect token.
     ///
-    /// If `handler_id` matches a known registration, the existing row is reused
-    /// (its connection and declared fields are updated). Otherwise a new
-    /// server-generated id is created.
+    /// Rejects the request if the handler is already connected (live takeover
+    /// is not allowed) or if the token does not match.
     pub fn reconnect(
         &mut self,
-        handler_id: Option<String>,
+        handler_id: String,
+        reconnect_token: SecretString,
         connection: ConnectionHandle,
-        bot_ids: Vec<String>,
-        event_types: Vec<String>,
-        capabilities: Vec<Capability>,
-        bot_configs: &[BotConfig],
+        _bot_configs: &[BotConfig],
     ) -> Result<String, DaemonError> {
-        if let Some(id) = &handler_id
-            && let Some(existing) = self.handlers.get_mut(id)
-        {
-            let (bot_ids, event_types, capabilities) =
-                Self::validate_request(bot_ids, event_types, capabilities, bot_configs)?;
-            let transport = connection.transport().to_string();
-            existing.connection = Some(connection);
-            existing.bot_ids = bot_ids;
-            existing.event_types = event_types;
-            existing.capabilities = capabilities;
-            existing.registered_at = Utc::now();
-            existing.last_seen = Utc::now();
-            existing.transport = transport;
-            return Ok(id.clone());
+        let existing = self
+            .handlers
+            .get_mut(&handler_id)
+            .ok_or(DaemonError::HandlerNotRegistered)?;
+
+        if existing.is_connected() {
+            return Err(DaemonError::HandlerAlreadyConnected);
         }
 
-        self.register(connection, bot_ids, event_types, capabilities, bot_configs)
+        let token_bytes = hex::decode(reconnect_token.expose_secret())
+            .map_err(|_| DaemonError::InvalidReconnectToken)?;
+        let stored_bytes = hex::decode(existing.reconnect_token.expose_secret())
+            .map_err(|_| DaemonError::InvalidReconnectToken)?;
+        if !bool::from(token_bytes.ct_eq(&stored_bytes)) {
+            return Err(DaemonError::InvalidReconnectToken);
+        }
+
+        let transport = connection.transport().to_string();
+        existing.connection = Some(connection);
+        existing.last_seen = Utc::now();
+        existing.transport = transport;
+        Ok(handler_id)
     }
 
     /// Insert a persisted handler registration if it is not already present.
@@ -280,6 +302,9 @@ impl HandlerRegistry {
                 .find(|b| b.id == *bot_id)
                 .ok_or_else(|| DaemonError::UnknownBot(bot_id.clone()))?;
             for cap in &capabilities {
+                if cap == "Admin" {
+                    continue;
+                }
                 if !bot.capabilities.contains(cap) {
                     return Err(DaemonError::Config(format!(
                         "capability {cap} not granted to bot {bot_id}"
@@ -295,6 +320,12 @@ impl HandlerRegistry {
 
         Ok((bot_ids, parsed_event_types, capabilities))
     }
+}
+
+fn generate_reconnect_token() -> SecretString {
+    let mut bytes = [0u8; 32];
+    let _ = getrandom::getrandom(&mut bytes);
+    SecretString::new(hex::encode(bytes).into())
 }
 
 fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
@@ -364,7 +395,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("registration should succeed");
+            .expect("registration should succeed")
+            .handler_id;
 
         assert!(
             uuid::Uuid::parse_str(&handler_id).is_ok(),
@@ -463,7 +495,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("register handler a");
+            .expect("register handler a")
+            .handler_id;
         let id_b = registry
             .register(
                 dummy_handle(),
@@ -472,7 +505,8 @@ mod tests {
                 vec!["ReadMessages".to_string(), "SendMessages".to_string()],
                 &bots,
             )
-            .expect("register handler b");
+            .expect("register handler b")
+            .handler_id;
 
         let matches = registry.find("echo-bot", EventType::DmReceived);
         assert_eq!(matches.len(), 2);
@@ -526,7 +560,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("register handler");
+            .expect("register handler")
+            .handler_id;
 
         assert!(
             registry
@@ -571,7 +606,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("register handler");
+            .expect("register handler")
+            .handler_id;
 
         registry
             .unregister(&handler_id)
@@ -596,7 +632,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("register handler");
+            .expect("register handler")
+            .handler_id;
 
         let handler = registry
             .get_handler(&handler_id)
@@ -631,7 +668,8 @@ mod tests {
                 vec!["ReadMessages".to_string(), "SendMessages".to_string()],
                 &bots,
             )
-            .expect("register handler");
+            .expect("register handler")
+            .handler_id;
 
         let handler = registry
             .get_handler(&handler_id)
@@ -678,7 +716,8 @@ mod tests {
                 vec!["ReadMessages".to_string()],
                 &bots,
             )
-            .expect("register handler");
+            .expect("register handler")
+            .handler_id;
 
         let handler = registry.get_handler_mut(&handler_id).unwrap();
         handler.disconnect();
@@ -731,6 +770,7 @@ mod tests {
                     &[bot_config],
                 )
                 .unwrap()
+                .handler_id
         };
 
         // Disconnect the handler and wait for the reaper to remove it.

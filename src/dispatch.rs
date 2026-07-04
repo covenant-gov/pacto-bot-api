@@ -17,12 +17,12 @@ use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::{
     AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    AgentVersionResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
+    AgentVersionResponse, HandlerReconnectParams, HandlerReconnectResponse,
+    HandlerRegisterResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
     parse_method,
 };
 
-#[cfg(test)]
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 /// Maximum time to wait for handler responses before advancing the cursor.
 pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -482,14 +482,18 @@ impl Dispatch {
         let params = message_params(&msg);
         let result = match method {
             Method::HandlerRegister => self.handle_register(params, connection).await,
+            Method::HandlerReconnect => self.handle_reconnect(params, connection).await,
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
             Method::AgentMetrics => self.handle_metrics().await,
-            Method::AgentListHandlers => self.handle_list_handlers().await,
-            Method::AgentUnregisterHandler => self.handle_admin_unregister_handler(params).await,
+            Method::AgentListHandlers => self.handle_list_handlers(handler_id).await,
+            Method::AgentUnregisterHandler => {
+                self.handle_admin_unregister_handler(handler_id, params)
+                    .await
+            }
             Method::AgentVersion => self.handle_version().await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
@@ -526,10 +530,65 @@ impl Dispatch {
                 .unwrap_or(Value::Array(vec![])),
         )?;
 
-        let preferred_id = params
-            .get("handler_id")
-            .and_then(Value::as_str)
-            .map(String::from);
+        let connection = connection.unwrap_or_else(|| {
+            let (tx, _rx) = mpsc::channel(1);
+            ConnectionHandle::new(tx)
+        });
+
+        let bot_configs = {
+            let cm = self.client_manager.read().await;
+            cm.bots().map(|(_, b)| b.config.clone()).collect::<Vec<_>>()
+        };
+
+        let mut cm = self.client_manager.write().await;
+        let registration = cm.handler_registry.register(
+            connection,
+            bot_ids,
+            event_types,
+            capabilities,
+            &bot_configs,
+        )?;
+        let handler_id = registration.handler_id;
+        let reconnect_token = registration.reconnect_token;
+
+        let registered_events: Vec<String> = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .map(|h| {
+                h.event_types
+                    .iter()
+                    .map(event_type_name)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let handler = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .ok_or_else(|| DaemonError::HandlerNotRegistered)?
+            .clone();
+        drop(cm);
+        self.db.save_handler(&handler).await?;
+
+        self.handlers_registered.fetch_add(1, Ordering::SeqCst);
+        self.diagnostics
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+
+        Ok(Some(serde_json::to_value(HandlerRegisterResponse {
+            handler_id,
+            reconnect_token: reconnect_token.expose_secret().to_string(),
+            registered_events,
+        })?))
+    }
+
+    async fn handle_reconnect(
+        &self,
+        params: Option<&Value>,
+        connection: Option<ConnectionHandle>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params =
+            params.ok_or_else(|| DaemonError::Config("handler.reconnect missing params".into()))?;
+        let reconnect_params: HandlerReconnectParams = serde_json::from_value(params.clone())?;
 
         let connection = connection.unwrap_or_else(|| {
             let (tx, _rx) = mpsc::channel(1);
@@ -541,20 +600,11 @@ impl Dispatch {
             cm.bots().map(|(_, b)| b.config.clone()).collect::<Vec<_>>()
         };
 
-        let existed = {
-            let cm = self.client_manager.read().await;
-            preferred_id
-                .as_ref()
-                .is_some_and(|id| cm.handler_registry.get_handler(id).is_some())
-        };
-
         let mut cm = self.client_manager.write().await;
         let handler_id = cm.handler_registry.reconnect(
-            preferred_id,
+            reconnect_params.handler_id,
+            SecretString::new(reconnect_params.reconnect_token.into()),
             connection,
-            bot_ids,
-            event_types,
-            capabilities,
             &bot_configs,
         )?;
 
@@ -577,16 +627,10 @@ impl Dispatch {
         drop(cm);
         self.db.save_handler(&handler).await?;
 
-        if !existed {
-            self.handlers_registered.fetch_add(1, Ordering::SeqCst);
-            self.diagnostics
-                .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
-        }
-
-        Ok(Some(serde_json::json!({
-            "handler_id": handler_id,
-            "registered_events": registered_events,
-        })))
+        Ok(Some(serde_json::to_value(HandlerReconnectResponse {
+            handler_id,
+            registered_events,
+        })?))
     }
 
     async fn handle_unregister(
@@ -778,7 +822,12 @@ impl Dispatch {
         Ok(Some(serde_json::to_value(response)?))
     }
 
-    async fn handle_list_handlers(&self) -> Result<Option<Value>, DaemonError> {
+    async fn handle_list_handlers(
+        &self,
+        caller_id: Option<&str>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
         let stale_timeout = self.handler_stale_timeout;
         let handlers = {
             let cm = self.client_manager.read().await;
@@ -815,6 +864,7 @@ impl Dispatch {
 
     async fn handle_admin_unregister_handler(
         &self,
+        caller_id: Option<&str>,
         params: Option<&Value>,
     ) -> Result<Option<Value>, DaemonError> {
         let params = params
@@ -826,11 +876,39 @@ impl Dispatch {
                 DaemonError::Config("agent.unregister_handler missing handler_id".into())
             })?;
 
+        self.require_admin_or_self(caller_id, Some(handler_id))
+            .await?;
+
         self.unregister_handler(handler_id).await?;
 
         Ok(Some(serde_json::to_value(
             AgentUnregisterHandlerResponse { unregistered: true },
         )?))
+    }
+
+    /// Ensure the caller is either the target handler itself or has the Admin capability.
+    async fn require_admin_or_self(
+        &self,
+        caller_id: Option<&str>,
+        target_handler_id: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let Some(caller_id) = caller_id else {
+            return Err(DaemonError::HandlerNotRegistered);
+        };
+
+        if target_handler_id == Some(caller_id) {
+            return Ok(());
+        }
+
+        let cm = self.client_manager.read().await;
+        let handler = cm
+            .handler_registry
+            .get_handler(caller_id)
+            .ok_or(DaemonError::HandlerNotRegistered)?;
+        if handler.capabilities.contains(&"Admin".to_string()) {
+            return Ok(());
+        }
+        Err(DaemonError::UnauthorizedBot)
     }
 
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
@@ -1090,6 +1168,7 @@ mod tests {
                     &[bot_config_for_register],
                 )
                 .unwrap()
+                .handler_id
         };
 
         let req = JsonRpcMessage::request(
@@ -1163,6 +1242,7 @@ mod tests {
                     &[bot_config_for_register],
                 )
                 .unwrap()
+                .handler_id
         };
 
         let req = JsonRpcMessage::notification(
@@ -1189,8 +1269,12 @@ mod tests {
     #[tokio::test]
     async fn agent_list_handlers_returns_routing_table() {
         let keys = test_keys();
-        let (dispatch, cm) =
-            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+        let (dispatch, cm) = dispatch_with_bots(vec![bot_config(
+            "echo-bot",
+            &keys,
+            &["ReadMessages", "Admin"],
+        )])
+        .await;
 
         let (tx, rx) = mpsc::channel(1);
         let handler_id = {
@@ -1204,10 +1288,11 @@ mod tests {
                     ConnectionHandle::with_transport(tx, "unix"),
                     vec!["echo-bot".to_string()],
                     vec!["dm_received".to_string()],
-                    vec!["ReadMessages".to_string()],
+                    vec!["ReadMessages".to_string(), "Admin".to_string()],
                     &[bot_config_for_register],
                 )
-                .unwrap();
+                .unwrap()
+                .handler_id;
             {
                 let mut cm = cm.write().await;
                 cm.handler_registry = registry;
@@ -1219,7 +1304,7 @@ mod tests {
         let req =
             JsonRpcMessage::request(1.into(), "agent.list_handlers", Some(serde_json::json!({})));
         let resp = dispatch
-            .handle_message(req, None, None)
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap()
             .unwrap();
@@ -1267,7 +1352,8 @@ mod tests {
                     vec!["ReadMessages".to_string()],
                     &[bot_config_for_register],
                 )
-                .unwrap();
+                .unwrap()
+                .handler_id;
             {
                 let mut cm = cm.write().await;
                 cm.handler_registry = registry;
@@ -1282,7 +1368,7 @@ mod tests {
             Some(serde_json::json!({"handler_id": handler_id})),
         );
         let resp = dispatch
-            .handle_message(req, None, None)
+            .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap()
             .unwrap();

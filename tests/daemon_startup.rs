@@ -350,6 +350,7 @@ async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::er
     )
     .await?;
     let handler_id = handler.handler_id().to_string();
+    let reconnect_token = handler.reconnect_token().to_string();
     drop(handler);
 
     let pid = child.id();
@@ -373,11 +374,12 @@ async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::er
     );
     drop(db);
 
-    // Second daemon run: reconnect with the persisted handler_id.
+    // Second daemon run: reconnect using the secret reconnect token.
     let child = spawn_until_ready(&config).await?;
-    let reconnected = common::HandlerClient::register_with_id(
+    let reconnected = common::HandlerClient::reconnect(
         &socket_path,
-        Some(&handler_id),
+        &handler_id,
+        &reconnect_token,
         &["echo-bot"],
         &["dm_received"],
         &["ReadMessages"],

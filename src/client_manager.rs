@@ -289,7 +289,8 @@ mod tests {
                 vec!["ReadMessages".into()],
                 &[bot_cfg],
             )
-            .unwrap();
+            .unwrap()
+            .handler_id;
 
         assert!(
             manager

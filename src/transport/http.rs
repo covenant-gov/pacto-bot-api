@@ -268,7 +268,9 @@ async fn http_handler(
 
                 let method = method_name.as_deref().and_then(|m| parse_method(m).ok());
 
-                if method == Some(Method::HandlerRegister) {
+                if method == Some(Method::HandlerRegister)
+                    || method == Some(Method::HandlerReconnect)
+                {
                     handle_register(state.clone(), msg, id).await
                 } else {
                     let handler_id = headers
@@ -415,7 +417,11 @@ struct EventsQuery {
 fn is_mutating_method(method: Option<Method>) -> bool {
     matches!(
         method,
-        Some(Method::AgentSendDm) | Some(Method::AgentSetProfile) | Some(Method::AgentError)
+        Some(Method::AgentSendDm)
+            | Some(Method::AgentSetProfile)
+            | Some(Method::AgentError)
+            | Some(Method::AgentListHandlers)
+            | Some(Method::AgentUnregisterHandler)
     )
 }
 

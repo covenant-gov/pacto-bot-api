@@ -2,6 +2,7 @@ use crate::errors::DaemonError;
 use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
+use secrecy::{ExposeSecret, SecretString};
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -39,6 +40,7 @@ impl Database {
                 bot_ids TEXT NOT NULL,
                 event_types TEXT NOT NULL,
                 capabilities TEXT NOT NULL,
+                reconnect_token TEXT NOT NULL,
                 registered_at INTEGER
             );",
         )?;
@@ -117,19 +119,22 @@ impl Database {
         let bot_ids = serde_json::to_string(&handler.bot_ids)?;
         let event_types = serde_json::to_string(&handler.event_types)?;
         let capabilities = serde_json::to_string(&handler.capabilities)?;
+        let reconnect_token = handler.reconnect_token.expose_secret();
         self.conn.execute(
-            "INSERT INTO handlers (handler_id, bot_ids, event_types, capabilities, registered_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO handlers (handler_id, bot_ids, event_types, capabilities, reconnect_token, registered_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(handler_id) DO UPDATE SET
                 bot_ids = excluded.bot_ids,
                 event_types = excluded.event_types,
                 capabilities = excluded.capabilities,
+                reconnect_token = excluded.reconnect_token,
                 registered_at = excluded.registered_at",
             (
                 &handler.id,
                 bot_ids,
                 event_types,
                 capabilities,
+                reconnect_token,
                 registered_at,
             ),
         )?;
@@ -142,7 +147,7 @@ impl Database {
     /// them will fail until they reconnect and re-register.
     pub fn load_handlers(&self) -> Result<Vec<HandlerRef>, DaemonError> {
         let mut stmt = self.conn.prepare(
-            "SELECT handler_id, bot_ids, event_types, capabilities, registered_at FROM handlers",
+            "SELECT handler_id, bot_ids, event_types, capabilities, reconnect_token, registered_at FROM handlers",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -150,12 +155,13 @@ impl Database {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, i64>(4)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, i64>(5)?,
             ))
         })?;
         let mut handlers = Vec::new();
         for row in rows {
-            let (id, bot_ids, event_types, capabilities, registered_at) = row?;
+            let (id, bot_ids, event_types, capabilities, reconnect_token, registered_at) = row?;
             let registered_at = DateTime::from_timestamp(registered_at, 0).unwrap_or_else(Utc::now);
             handlers.push(HandlerRef {
                 id,
@@ -163,6 +169,7 @@ impl Database {
                 bot_ids: serde_json::from_str(&bot_ids)?,
                 event_types: serde_json::from_str(&event_types)?,
                 capabilities: serde_json::from_str(&capabilities)?,
+                reconnect_token: SecretString::new(reconnect_token.into()),
                 registered_at,
                 last_seen: registered_at,
                 transport: "unknown".to_string(),
@@ -302,6 +309,7 @@ mod tests {
             bot_ids: bot_ids.iter().map(|s| s.to_string()).collect(),
             event_types: event_types.to_vec(),
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
+            reconnect_token: SecretString::new("deadbeef".to_string().into()),
             registered_at: now,
             last_seen: now,
             transport: "unknown".to_string(),

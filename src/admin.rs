@@ -25,8 +25,8 @@ use pacto_bot_api::signer::{Signer, SignerBackend};
 use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
-    AgentListHandlersResponse, AgentUnregisterHandlerResponse, JsonRpcMessage, MetricsResponse,
-    parse_message, serialize_message,
+    AgentListHandlersResponse, AgentUnregisterHandlerResponse, HandlerRegisterResponse,
+    JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
 };
 use rusqlite::Connection;
 
@@ -1601,10 +1601,16 @@ async fn cmd_status(
         None
     };
 
-    let live_handlers: Option<AgentListHandlersResponse> = if let Some(socket) = &socket_path {
+    let live_handlers: Option<AgentListHandlersResponse> = if let (Some(socket), Some(bot_id)) = (
+        &socket_path,
+        config
+            .as_ref()
+            .and_then(|c| c.bots.first())
+            .map(|b| b.id.as_str()),
+    ) {
         #[cfg(unix)]
         {
-            call_agent_list_handlers(socket).await.ok()
+            call_agent_list_handlers(socket, bot_id).await.ok()
         }
         #[cfg(not(unix))]
         {
@@ -1790,13 +1796,14 @@ async fn call_agent_metrics(socket_path: &Path) -> Result<MetricsResponse, Daemo
 #[cfg(unix)]
 async fn call_agent_list_handlers(
     socket_path: &Path,
+    bot_id: &str,
 ) -> Result<AgentListHandlersResponse, DaemonError> {
     let request = JsonRpcMessage::request(
-        1.into(),
+        2.into(),
         "agent.list_handlers",
         Some(Value::Object(Default::default())),
     );
-    let value = call_agent_request(socket_path, &request).await?;
+    let value = with_admin_session(socket_path, bot_id, request).await?;
     let response = serde_json::from_value(value)?;
     Ok(response)
 }
@@ -1804,6 +1811,7 @@ async fn call_agent_list_handlers(
 #[cfg(unix)]
 async fn call_agent_unregister_handler(
     socket_path: &Path,
+    bot_id: &str,
     handler_id: &str,
 ) -> Result<AgentUnregisterHandlerResponse, DaemonError> {
     let request = JsonRpcMessage::request(
@@ -1811,24 +1819,108 @@ async fn call_agent_unregister_handler(
         "agent.unregister_handler",
         Some(serde_json::json!({"handler_id": handler_id})),
     );
-    let value = call_agent_request(socket_path, &request).await?;
+    let value = with_admin_session(socket_path, bot_id, request).await?;
     let response = serde_json::from_value(value)?;
     Ok(response)
 }
 
+/// Open a Unix socket connection, register an admin handler, send the provided
+/// request, and clean up the temporary handler. The same connection is used
+/// for all messages so the Unix transport associates the admin identity with
+/// the subsequent admin request.
 #[cfg(unix)]
-async fn call_agent_request(
+async fn with_admin_session(
     socket_path: &Path,
-    request: &JsonRpcMessage,
+    bot_id: &str,
+    request: JsonRpcMessage,
 ) -> Result<Value, DaemonError> {
     let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
         .await
         .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
     let (reader, mut writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+
+    // Register a temporary handler with Admin capability.
+    let register = JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": [bot_id],
+            "event_types": [],
+            "capabilities": ["Admin"],
+        })),
+    );
+    write_request(&mut writer, &register).await?;
+    let response = read_response(&mut reader).await?;
+    let admin_handler_id = match response {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => {
+            let parsed: HandlerRegisterResponse = serde_json::from_value(r)?;
+            parsed.handler_id
+        }
+        JsonRpcMessage::Error { error, .. } => {
+            return Err(DaemonError::Config(format!(
+                "admin handler registration failed: {}",
+                error.message
+            )));
+        }
+        _ => return Err(DaemonError::Config("unexpected daemon response".into())),
+    };
+
+    // Send the actual admin request on the same authenticated connection.
+    write_request(&mut writer, &request).await?;
+    let result = read_response(&mut reader).await?;
+
+    // Best-effort cleanup of the temporary admin handler.
+    let unregister = JsonRpcMessage::request(
+        3.into(),
+        "handler.unregister",
+        Some(Value::Object(Default::default())),
+    );
+    let _ = write_request(&mut writer, &unregister).await;
+    let _ = read_response(&mut reader).await;
+
+    match result {
+        JsonRpcMessage::Response {
+            result: Some(value),
+            ..
+        } => Ok(value),
+        JsonRpcMessage::Response { result: None, .. } => {
+            Err(DaemonError::Config("empty daemon response".into()))
+        }
+        JsonRpcMessage::Error { error, .. } => {
+            // If the call was unauthorized, surface a clearer message.
+            if error.code == -32006 || error.code == -32007 || error.code == -32008 {
+                Err(DaemonError::Config(format!(
+                    "admin handler {} is not authorized for this operation",
+                    admin_handler_id
+                )))
+            } else {
+                Err(DaemonError::Config(format!(
+                    "daemon error: {}",
+                    error.message
+                )))
+            }
+        }
+        _ => Err(DaemonError::Config("unexpected daemon response".into())),
+    }
+}
+
+#[cfg(unix)]
+async fn write_request(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    request: &JsonRpcMessage,
+) -> Result<(), DaemonError> {
     let line = format!("{}\n", serialize_message(request)?);
     writer.write_all(line.as_bytes()).await?;
+    Ok(())
+}
 
-    let mut reader = BufReader::new(reader);
+#[cfg(unix)]
+async fn read_response(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> Result<JsonRpcMessage, DaemonError> {
     let mut buf = Vec::new();
     let n = tokio::time::timeout(Duration::from_secs(2), reader.read_until(b'\n', &mut buf))
         .await
@@ -1841,21 +1933,7 @@ async fn call_agent_request(
     }
     let line = String::from_utf8(buf)
         .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
-
-    match parse_message(&line)? {
-        JsonRpcMessage::Response {
-            result: Some(value),
-            ..
-        } => Ok(value),
-        JsonRpcMessage::Response { result: None, .. } => {
-            Err(DaemonError::Config("empty daemon response".into()))
-        }
-        JsonRpcMessage::Error { error, .. } => Err(DaemonError::Config(format!(
-            "daemon error: {}",
-            error.message
-        ))),
-        _ => Err(DaemonError::Config("unexpected daemon response".into())),
-    }
+    parse_message(&line)
 }
 
 #[cfg(unix)]
@@ -1885,7 +1963,15 @@ async fn cmd_handlers(
     let socket_path = socket_path
         .ok_or_else(|| DaemonError::Config("unable to determine daemon socket path".into()))?;
 
-    let response = call_agent_list_handlers(&socket_path).await?;
+    let bot_id = config
+        .as_ref()
+        .and_then(|c| c.bots.first())
+        .map(|b| b.id.clone())
+        .ok_or_else(|| {
+            DaemonError::Config("no bots configured; cannot create admin session".into())
+        })?;
+
+    let response = call_agent_list_handlers(&socket_path, &bot_id).await?;
 
     match sub {
         HandlersCommand::List => {
@@ -1900,7 +1986,7 @@ async fn cmd_handlers(
             println!("{}", serde_json::to_string_pretty(&found)?);
         }
         HandlersCommand::Unregister { handler_id } => {
-            let result = call_agent_unregister_handler(&socket_path, handler_id).await?;
+            let result = call_agent_unregister_handler(&socket_path, &bot_id, handler_id).await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
@@ -2391,6 +2477,7 @@ struct HandlerExport {
     bot_ids: Vec<String>,
     event_types: Vec<String>,
     capabilities: Vec<String>,
+    reconnect_token: String,
     registered_at: String,
 }
 
@@ -2501,6 +2588,7 @@ fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
             bot_ids TEXT NOT NULL,
             event_types TEXT NOT NULL,
             capabilities TEXT NOT NULL,
+            reconnect_token TEXT NOT NULL,
             registered_at INTEGER
         );",
     )?;
@@ -2531,7 +2619,7 @@ fn load_bot_cursor(conn: &Connection, bot_id: &str) -> Result<Option<CursorExpor
 
 fn load_bot_handlers(conn: &Connection, bot_id: &str) -> Result<Vec<HandlerExport>, DaemonError> {
     let mut stmt = conn.prepare(
-        "SELECT handler_id, bot_ids, event_types, capabilities, registered_at FROM handlers",
+        "SELECT handler_id, bot_ids, event_types, capabilities, reconnect_token, registered_at FROM handlers",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -2539,13 +2627,21 @@ fn load_bot_handlers(conn: &Connection, bot_id: &str) -> Result<Vec<HandlerExpor
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, i64>(4)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i64>(5)?,
         ))
     })?;
 
     let mut handlers = Vec::new();
     for row in rows {
-        let (id, bot_ids_json, event_types_json, capabilities_json, registered_at_ts) = row?;
+        let (
+            id,
+            bot_ids_json,
+            event_types_json,
+            capabilities_json,
+            reconnect_token,
+            registered_at_ts,
+        ) = row?;
         let bot_ids: Vec<String> = serde_json::from_str(&bot_ids_json)?;
         if bot_ids.contains(&bot_id.to_string()) {
             let event_types: Vec<String> = serde_json::from_str(&event_types_json)?;
@@ -2558,6 +2654,7 @@ fn load_bot_handlers(conn: &Connection, bot_id: &str) -> Result<Vec<HandlerExpor
                 bot_ids,
                 event_types,
                 capabilities,
+                reconnect_token,
                 registered_at,
             });
         }
@@ -2589,18 +2686,20 @@ fn save_handler_export(conn: &Connection, handler: &HandlerExport) -> Result<(),
     let event_types = serde_json::to_string(&handler.event_types)?;
     let capabilities = serde_json::to_string(&handler.capabilities)?;
     conn.execute(
-        "INSERT INTO handlers (handler_id, bot_ids, event_types, capabilities, registered_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO handlers (handler_id, bot_ids, event_types, capabilities, reconnect_token, registered_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(handler_id) DO UPDATE SET
             bot_ids = excluded.bot_ids,
             event_types = excluded.event_types,
             capabilities = excluded.capabilities,
+            reconnect_token = excluded.reconnect_token,
             registered_at = excluded.registered_at",
         (
             &handler.handler_id,
             bot_ids,
             event_types,
             capabilities,
+            &handler.reconnect_token,
             registered_at,
         ),
     )?;
@@ -3012,6 +3111,7 @@ mod tests {
             bot_ids: vec!["bot-1".to_string()],
             event_types: vec!["dm_received".to_string()],
             capabilities: vec!["ReadMessages".to_string()],
+            reconnect_token: "deadbeef".to_string(),
             registered_at: Utc::now().to_rfc3339(),
         };
         save_handler_export(&conn, &handler)?;

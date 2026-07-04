@@ -209,6 +209,7 @@ pub fn handler_ref(
         bot_ids: bot_ids.iter().map(|s| s.to_string()).collect(),
         event_types: event_types.to_vec(),
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
+        reconnect_token: SecretString::new(format!("reconnect-{id}").into()),
         registered_at: now,
         last_seen: now,
         transport: "unknown".to_string(),
@@ -391,27 +392,11 @@ pub struct HandlerClient {
     notification_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
     pending: Arc<Mutex<HashMap<Value, oneshot::Sender<JsonRpcMessage>>>>,
     handler_id: String,
+    reconnect_token: String,
 }
 
 impl HandlerClient {
-    /// Register a new handler over the Unix socket at `path`.
-    pub async fn register(
-        path: &Path,
-        bot_ids: &[&str],
-        event_types: &[&str],
-        capabilities: &[&str],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Self::register_with_id(path, None, bot_ids, event_types, capabilities).await
-    }
-
-    /// Register or reconnect a handler over the Unix socket at `path`.
-    pub async fn register_with_id(
-        path: &Path,
-        handler_id: Option<&str>,
-        bot_ids: &[&str],
-        event_types: &[&str],
-        capabilities: &[&str],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    async fn connect(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         wait_for_socket(path, Duration::from_secs(10)).await?;
         let stream = UnixStream::connect(path).await?;
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded_channel::<JsonRpcMessage>();
@@ -474,21 +459,28 @@ impl HandlerClient {
             }
         });
 
-        let mut client = Self {
+        Ok(Self {
             outgoing_tx,
             notification_rx,
             pending,
             handler_id: String::new(),
-        };
+            reconnect_token: String::new(),
+        })
+    }
 
-        let mut params = serde_json::json!({
+    /// Register a new handler over the Unix socket at `path`.
+    pub async fn register(
+        path: &Path,
+        bot_ids: &[&str],
+        event_types: &[&str],
+        capabilities: &[&str],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut client = Self::connect(path).await?;
+        let params = serde_json::json!({
             "bot_ids": bot_ids,
             "event_types": event_types,
             "capabilities": capabilities,
         });
-        if let Some(id) = handler_id {
-            params["handler_id"] = Value::String(id.into());
-        }
 
         let resp = client
             .call(JsonRpcMessage::request(
@@ -498,10 +490,21 @@ impl HandlerClient {
             ))
             .await?;
 
-        let handler_id = match resp {
-            JsonRpcMessage::Response { result, .. } => result
-                .and_then(|r| r.get("handler_id")?.as_str().map(String::from))
-                .ok_or("handler.register response missing handler_id")?,
+        let (handler_id, reconnect_token) = match resp {
+            JsonRpcMessage::Response { result, .. } => {
+                let result = result.ok_or("handler.register response missing result")?;
+                let handler_id = result
+                    .get("handler_id")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .ok_or("handler.register response missing handler_id")?;
+                let reconnect_token = result
+                    .get("reconnect_token")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .ok_or("handler.register response missing reconnect_token")?;
+                (handler_id, reconnect_token)
+            }
             JsonRpcMessage::Error { error, .. } => {
                 return Err(format!("handler.register failed: {}", error.message).into());
             }
@@ -509,6 +512,60 @@ impl HandlerClient {
         };
 
         client.handler_id = handler_id;
+        client.reconnect_token = reconnect_token;
+        Ok(client)
+    }
+
+    /// Reconnect a previously registered handler using its secret token.
+    pub async fn reconnect(
+        path: &Path,
+        handler_id: &str,
+        reconnect_token: &str,
+        bot_ids: &[&str],
+        event_types: &[&str],
+        capabilities: &[&str],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut client = Self::connect(path).await?;
+        let params = serde_json::json!({
+            "handler_id": handler_id,
+            "reconnect_token": reconnect_token,
+            "bot_ids": bot_ids,
+            "event_types": event_types,
+            "capabilities": capabilities,
+        });
+
+        let resp = client
+            .call(JsonRpcMessage::request(
+                1.into(),
+                "handler.reconnect",
+                Some(params),
+            ))
+            .await?;
+
+        let returned_handler_id = match resp {
+            JsonRpcMessage::Response { result, .. } => {
+                let result = result.ok_or("handler.reconnect response missing result")?;
+                result
+                    .get("handler_id")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+                    .ok_or("handler.reconnect response missing handler_id")?
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("handler.reconnect failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected handler.reconnect response".into()),
+        };
+
+        if returned_handler_id != handler_id {
+            return Err(format!(
+                "handler.reconnect returned different handler_id: expected {handler_id}, got {returned_handler_id}"
+            )
+            .into());
+        }
+
+        client.handler_id = returned_handler_id;
+        client.reconnect_token = reconnect_token.to_string();
         Ok(client)
     }
 
@@ -548,13 +605,21 @@ impl HandlerClient {
         &self.handler_id
     }
 
-    /// Unregister this handler.
+    /// Return the secret reconnect token returned at registration.
+    pub fn reconnect_token(&self) -> &str {
+        &self.reconnect_token
+    }
+
+    /// Unregister this handler using the authorized agent.unregister_handler RPC.
     pub async fn unregister(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let params = serde_json::json!({
+            "handler_id": self.handler_id,
+        });
         let resp = self
             .call(JsonRpcMessage::request(
                 uuid::Uuid::new_v4().to_string().into(),
-                "handler.unregister",
-                None,
+                "agent.unregister_handler",
+                Some(params),
             ))
             .await?;
         match resp {
@@ -595,7 +660,6 @@ impl HandlerClient {
         Ok(())
     }
 }
-
 /// Build a kind:1059 gift wrap from `sender` to `recipient_npub`.
 pub async fn build_gift_wrap(
     sender: &Keys,

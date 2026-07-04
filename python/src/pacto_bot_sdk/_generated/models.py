@@ -207,7 +207,7 @@ class AgentUnregisterHandlerParams(BaseModel):
     """
     Model for JSON-RPC method `agent.unregister_handler`.
 
-    Forcibly remove a handler from the routing table (admin-only).
+    Forcibly remove a handler from the routing table. The caller must be the target handler itself or have the Admin capability.
 
     Example:
 
@@ -223,7 +223,7 @@ class AgentUnregisterHandlerResult(BaseModel):
     """
     Model for JSON-RPC method `agent.unregister_handler`.
 
-    Forcibly remove a handler from the routing table (admin-only).
+    Forcibly remove a handler from the routing table. The caller must be the target handler itself or have the Admin capability.
 
     Example:
 
@@ -246,6 +246,44 @@ class AgentVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "agent.version"
     pass
 
+class HandlerReconnectParams(BaseModel):
+    """
+    Model for JSON-RPC method `handler.reconnect`.
+
+    Reconnect a previously registered handler using its secret reconnect token.
+
+    Example:
+
+        >>> HandlerReconnectParams(handler_id="...", reconnect_token="...")
+
+    jsonrpc_method: ``"handler.reconnect"``
+    """
+    jsonrpc_method: ClassVar[str] = "handler.reconnect"
+    # Server-generated handler id from the original registration.
+    handler_id: str
+    # Secret reconnect token returned by the original registration.
+    reconnect_token: str
+
+
+class HandlerReconnectResult(BaseModel):
+    """
+    Model for JSON-RPC method `handler.reconnect`.
+
+    Reconnect a previously registered handler using its secret reconnect token.
+
+    Example:
+
+        >>> HandlerReconnectResult(handler_id="...", registered_events=[])
+
+    jsonrpc_method: ``"handler.reconnect"``
+    """
+    jsonrpc_method: ClassVar[str] = "handler.reconnect"
+    # Server-generated UUID for this handler.
+    handler_id: str
+    # Event types the handler is now subscribed to.
+    registered_events: list[str]
+
+
 class HandlerRegisterParams(BaseModel):
     """
     Model for JSON-RPC method `handler.register`.
@@ -265,8 +303,6 @@ class HandlerRegisterParams(BaseModel):
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
-    # Optional previously assigned handler id to reuse after reconnect.
-    handler_id: str | None = None
 
 
 class HandlerRegisterResult(BaseModel):
@@ -277,13 +313,15 @@ class HandlerRegisterResult(BaseModel):
 
     Example:
 
-        >>> HandlerRegisterResult(handler_id="...", registered_events=[])
+        >>> HandlerRegisterResult(handler_id="...", reconnect_token="...", registered_events=[])
 
     jsonrpc_method: ``"handler.register"``
     """
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Server-generated UUID for this handler.
     handler_id: str
+    # Server-generated secret token for reconnecting this handler.
+    reconnect_token: str
     # Event types the handler is now subscribed to.
     registered_events: list[str]
 
@@ -337,4 +375,4 @@ class HandlerUnregisterResult(BaseModel):
     unregistered: bool
 
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
+__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']

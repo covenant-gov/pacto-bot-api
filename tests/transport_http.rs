@@ -158,8 +158,9 @@ async fn http_handler_register_returns_handler_id() -> Result<(), Box<dyn std::e
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
 
-    let handler_id = extract_handler_id(&response)?;
+    let (handler_id, reconnect_token) = extract_handler_id(&response)?;
     assert!(!handler_id.is_empty());
+    assert!(!reconnect_token.is_empty());
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -181,7 +182,7 @@ async fn http_handler_response_is_accepted() -> Result<(), Box<dyn std::error::E
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let handler_id = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
 
     let response_body = serialize_message(&JsonRpcMessage::request(
         9.into(),
@@ -214,12 +215,14 @@ async fn http_handler_unregister_returns_unregistered_flag()
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let handler_id = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
 
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         2.into(),
-        "handler.unregister",
-        None,
+        "agent.unregister_handler",
+        Some(serde_json::json!({
+            "handler_id": handler_id,
+        })),
     ))?;
     let unregister_response =
         raw_http_post(port, Some(&token), Some(&handler_id), &unregister_body).await?;
@@ -345,7 +348,7 @@ async fn http_dm_round_trip_registers_replies_and_publishes_gift_wrap()
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let handler_id = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
 
     // Open the SSE notification stream.
     let mut sse = SseClient::connect(port, &token, &handler_id).await?;
@@ -640,7 +643,7 @@ async fn raw_http_post(
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
-fn extract_handler_id(response: &str) -> Result<String, Box<dyn std::error::Error>> {
+fn extract_handler_id(response: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
     let mut lines = response.lines();
     let status = lines.next().ok_or("empty HTTP response")?;
     if !status.starts_with("HTTP/1.1 200") {
@@ -660,11 +663,19 @@ fn extract_handler_id(response: &str) -> Result<String, Box<dyn std::error::Erro
         JsonRpcMessage::Response {
             result: Some(result),
             ..
-        } => result
-            .get("handler_id")
-            .and_then(Value::as_str)
-            .map(String::from)
-            .ok_or_else(|| "handler.register response missing handler_id".into()),
+        } => {
+            let handler_id = result
+                .get("handler_id")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or("handler.register response missing handler_id")?;
+            let reconnect_token = result
+                .get("reconnect_token")
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or("handler.register response missing reconnect_token")?;
+            Ok((handler_id, reconnect_token))
+        }
         JsonRpcMessage::Error { error, .. } => Err(format!(
             "handler.register returned error {}: {}",
             error.code, error.message
