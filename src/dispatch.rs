@@ -50,6 +50,7 @@ pub const DEFAULT_BOT_BURST: f64 = BOT_BURST;
 enum HandlerAction {
     Ack,
     Reply { content: String },
+    SendDm { content: String },
     Defer,
     Ignore,
 }
@@ -70,6 +71,17 @@ impl HandlerAction {
                         DaemonError::Config("handler.response reply missing content".into())
                     })?;
                 Ok(HandlerAction::Reply {
+                    content: content.to_string(),
+                })
+            }
+            "send_dm" => {
+                let content = value
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        DaemonError::Config("handler.response send_dm missing content".into())
+                    })?;
+                Ok(HandlerAction::SendDm {
                     content: content.to_string(),
                 })
             }
@@ -345,43 +357,79 @@ impl Dispatch {
             let mut action_label = match action {
                 HandlerAction::Ack => "ack",
                 HandlerAction::Reply { .. } => "reply",
+                HandlerAction::SendDm { .. } => "send_dm",
                 HandlerAction::Defer => "defer",
                 HandlerAction::Ignore => "ignore",
             };
             let mut reply_event_id: Option<String> = None;
-            if let HandlerAction::Reply { content } = action {
-                info!(
-                    bot_id = %event.bot_id,
-                    recipient = %event.author,
-                    reply_to = %event.rumor_id,
-                    "sending reply DM"
-                );
-                match self
-                    .handle_send_dm(
-                        &event.bot_id,
-                        &event.author,
-                        content,
-                        Some(&event.rumor_id),
-                        Some(handler_id),
-                    )
-                    .await
-                {
-                    Ok(event_id) => {
-                        reply_event_id = Some(event_id.to_hex());
-                        self.diagnostics.record_reply();
-                    }
-                    Err(e) => {
-                        action_label = "reply_failed";
-                        self.diagnostics.record_reply_send_failed();
-                        tracing::error!(
-                            bot_id = %event.bot_id,
-                            recipient = %event.author,
-                            reply_to = %event.rumor_id,
-                            error = %e,
-                            "failed to send reply DM"
-                        );
+            match action {
+                HandlerAction::Reply { content } => {
+                    info!(
+                        bot_id = %event.bot_id,
+                        recipient = %event.author,
+                        reply_to = %event.rumor_id,
+                        "sending reply DM"
+                    );
+                    match self
+                        .handle_send_dm(
+                            &event.bot_id,
+                            &event.author,
+                            content,
+                            Some(&event.rumor_id),
+                            Some(handler_id),
+                        )
+                        .await
+                    {
+                        Ok(event_id) => {
+                            reply_event_id = Some(event_id.to_hex());
+                            self.diagnostics.record_reply();
+                        }
+                        Err(e) => {
+                            action_label = "reply_failed";
+                            self.diagnostics.record_reply_send_failed();
+                            tracing::error!(
+                                bot_id = %event.bot_id,
+                                recipient = %event.author,
+                                reply_to = %event.rumor_id,
+                                error = %e,
+                                "failed to send reply DM"
+                            );
+                        }
                     }
                 }
+                HandlerAction::SendDm { content } => {
+                    info!(
+                        bot_id = %event.bot_id,
+                        recipient = %event.author,
+                        "sending plain DM"
+                    );
+                    match self
+                        .handle_send_dm(
+                            &event.bot_id,
+                            &event.author,
+                            content,
+                            None,
+                            Some(handler_id),
+                        )
+                        .await
+                    {
+                        Ok(event_id) => {
+                            reply_event_id = Some(event_id.to_hex());
+                            self.diagnostics.record_reply();
+                        }
+                        Err(e) => {
+                            action_label = "send_dm_failed";
+                            self.diagnostics.record_reply_send_failed();
+                            tracing::error!(
+                                bot_id = %event.bot_id,
+                                recipient = %event.author,
+                                error = %e,
+                                "failed to send plain DM"
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
             if let Err(e) = self
                 .db
@@ -1208,8 +1256,19 @@ mod tests {
             }
         );
 
+        let send_dm = serde_json::json!({"action": "send_dm", "content": "hi"});
+        assert_eq!(
+            HandlerAction::from_value(&send_dm).unwrap(),
+            HandlerAction::SendDm {
+                content: "hi".to_string()
+            }
+        );
+
         let missing_content = serde_json::json!({"action": "reply"});
         assert!(HandlerAction::from_value(&missing_content).is_err());
+
+        let missing_send_dm_content = serde_json::json!({"action": "send_dm"});
+        assert!(HandlerAction::from_value(&missing_send_dm_content).is_err());
 
         let unknown = serde_json::json!({"action": "unknown"});
         assert!(HandlerAction::from_value(&unknown).is_err());
