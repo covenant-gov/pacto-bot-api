@@ -415,11 +415,11 @@ impl Dispatch {
                     {
                         Ok(event_id) => {
                             reply_event_id = Some(event_id.to_hex());
-                            self.diagnostics.record_reply();
+                            self.diagnostics.record_send_dm();
                         }
                         Err(e) => {
                             action_label = "send_dm_failed";
-                            self.diagnostics.record_reply_send_failed();
+                            self.diagnostics.record_send_dm_failed();
                             tracing::error!(
                                 bot_id = %event.bot_id,
                                 recipient = %event.author,
