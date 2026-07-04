@@ -90,12 +90,16 @@ pub struct HealthSnapshot {
     pub bunker_sign_failures_total: u64,
     /// Total incoming events rejected due to failed signature verification.
     pub invalid_events_total: u64,
+    /// Total reply DMs that failed to publish.
+    pub reply_send_failed_total: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
     /// Recent redacted error records, oldest first.
     pub errors: Vec<ErrorRecord>,
     /// UTC timestamp when this snapshot was produced.
     pub reported_at: DateTime<Utc>,
+    /// Activity counts in the last 10 minutes.
+    pub recent_counts: RecentCounts,
 }
 
 impl Default for HealthSnapshot {
@@ -112,9 +116,11 @@ impl Default for HealthSnapshot {
             relay_reconnects_total: 0,
             bunker_sign_failures_total: 0,
             invalid_events_total: 0,
+            reply_send_failed_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
             reported_at: now,
+            recent_counts: RecentCounts::default(),
         }
     }
 }
@@ -126,12 +132,95 @@ impl HealthSnapshot {
     }
 }
 
+/// Activity counts observed in a recent time window.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct RecentCounts {
+    /// Number of events received from Nostr relays.
+    pub events_received: u64,
+    /// Number of events dispatched to registered handlers.
+    pub events_dispatched: u64,
+    /// Number of reply DMs attempted.
+    pub replies: u64,
+    /// Number of reply DMs that failed to publish.
+    pub reply_send_failed: u64,
+    /// Length of the window in seconds that these counts cover.
+    #[serde(default)]
+    pub window_seconds: u64,
+}
+
+/// Fixed-size sliding-window counters indexed by minute.
+#[derive(Debug, Clone)]
+struct RecentBuckets {
+    start: Instant,
+    buckets: Vec<u64>,
+    current_minute: usize,
+    capacity: usize,
+}
+
+impl RecentBuckets {
+    fn new(capacity_minutes: usize) -> Self {
+        Self {
+            start: Instant::now(),
+            buckets: vec![0; capacity_minutes],
+            current_minute: 0,
+            capacity: capacity_minutes,
+        }
+    }
+
+    fn record(&mut self) {
+        let minute = self.start.elapsed().as_secs() as usize / 60;
+        if minute >= self.current_minute + self.capacity {
+            // Window has rolled beyond capacity; reset all buckets.
+            self.buckets.fill(0);
+            self.current_minute = minute;
+        } else if minute > self.current_minute {
+            // Zero buckets for the minutes that passed since the last write.
+            for m in (self.current_minute + 1)..=minute {
+                self.buckets[m % self.capacity] = 0;
+            }
+            self.current_minute = minute;
+        }
+        self.buckets[self.current_minute % self.capacity] += 1;
+    }
+
+    fn count_last_n_minutes(&self, n: usize) -> u64 {
+        if n == 0 {
+            return 0;
+        }
+        let current = self.start.elapsed().as_secs() as usize / 60;
+        if current >= self.current_minute + self.capacity {
+            // No writes in the last `capacity` minutes of real time.
+            return 0;
+        }
+        let cidx = self.current_minute % self.capacity;
+        let window_start = current.saturating_sub(n - 1) as i64;
+        let current_i64 = current as i64;
+        self.buckets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &count)| {
+                let offset = (cidx + self.capacity - idx) % self.capacity;
+                let bucket_minute = self.current_minute as i64 - offset as i64;
+                if bucket_minute >= window_start && bucket_minute <= current_i64 {
+                    Some(count)
+                } else {
+                    None
+                }
+            })
+            .sum()
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     snapshot: HealthSnapshot,
     startup_instant: Instant,
     errors: VecDeque<ErrorRecord>,
     metrics_tx: watch::Sender<HealthSnapshot>,
+    received: RecentBuckets,
+    dispatched: RecentBuckets,
+    replies: RecentBuckets,
+    reply_failed: RecentBuckets,
 }
 
 /// Thread-safe diagnostics aggregator.
@@ -156,6 +245,10 @@ impl Diagnostics {
                 startup_instant: Instant::now(),
                 errors: VecDeque::with_capacity(ERROR_BUFFER_CAPACITY),
                 metrics_tx,
+                received: RecentBuckets::new(60),
+                dispatched: RecentBuckets::new(60),
+                replies: RecentBuckets::new(60),
+                reply_failed: RecentBuckets::new(60),
             })),
         }
     }
@@ -167,6 +260,13 @@ impl Diagnostics {
         let now = Utc::now();
         inner.snapshot.reported_at = now;
         inner.snapshot.uptime_seconds = inner.startup_instant.elapsed().as_secs();
+        inner.snapshot.recent_counts = RecentCounts {
+            events_received: inner.received.count_last_n_minutes(10),
+            events_dispatched: inner.dispatched.count_last_n_minutes(10),
+            replies: inner.replies.count_last_n_minutes(10),
+            reply_send_failed: inner.reply_failed.count_last_n_minutes(10),
+            window_seconds: 600,
+        };
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap.clone());
         snap
@@ -184,12 +284,20 @@ impl Diagnostics {
 
     /// Increment the counter for events received from Nostr relays.
     pub fn record_event_received(&self) {
-        self.with_snapshot(|snapshot| snapshot.events_received_total += 1);
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.events_received_total += 1;
+        inner.received.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for events dispatched to registered handlers.
     pub fn record_event_dispatched(&self) {
-        self.with_snapshot(|snapshot| snapshot.events_dispatched_total += 1);
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.events_dispatched_total += 1;
+        inner.dispatched.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for rate-limited events.
@@ -210,6 +318,23 @@ impl Diagnostics {
     /// Increment the counter for events rejected due to failed verification.
     pub fn record_invalid_event(&self) {
         self.with_snapshot(|snapshot| snapshot.invalid_events_total += 1);
+    }
+
+    /// Record that a reply DM was attempted.
+    pub fn record_reply(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.replies.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Increment the counter for reply DMs that failed to publish.
+    pub fn record_reply_send_failed(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.reply_send_failed_total += 1;
+        inner.reply_failed.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Set the number of registered handlers.
@@ -247,7 +372,8 @@ impl Diagnostics {
         let reports_dir = data_dir.join("reports");
         tokio::fs::create_dir_all(&reports_dir).await?;
 
-        let tmp_path = reports_dir.join("latest.json.tmp");
+        let tmp_name = format!("latest.json.tmp.{}", uuid::Uuid::new_v4());
+        let tmp_path = reports_dir.join(tmp_name);
         let final_path = reports_dir.join("latest.json");
 
         let json = serde_json::to_string_pretty(&snapshot)?;
@@ -679,5 +805,60 @@ mod tests {
     fn parse_bunker_relay_rejects_missing_scheme() {
         let err = parse_bunker_relay("http://deadbeef?relay=ws://x").unwrap_err();
         assert!(err.to_string().contains("bunker://"));
+    }
+
+    #[test]
+    fn count_last_n_minutes_returns_zero_after_long_idle() {
+        let capacity = 10;
+        // Simulate a write 5 minutes ago, then an idle gap of 10 minutes.
+        let start = Instant::now() - Duration::from_secs(15 * 60);
+        let mut buckets = RecentBuckets {
+            start,
+            buckets: vec![0; capacity],
+            current_minute: 5,
+            capacity,
+        };
+        buckets.buckets[5 % capacity] = 3;
+        assert_eq!(buckets.count_last_n_minutes(10), 0);
+        // Any shorter window also returns 0.
+        assert_eq!(buckets.count_last_n_minutes(1), 0);
+    }
+
+    #[test]
+    fn count_last_n_minutes_counts_real_window_after_short_idle() {
+        let capacity = 10;
+        // Last write at minute 12, current real minute is 15.
+        let start = Instant::now() - Duration::from_secs(15 * 60 + 30);
+        let mut buckets = RecentBuckets {
+            start,
+            buckets: vec![0; capacity],
+            current_minute: 12,
+            capacity,
+        };
+        buckets.buckets[12 % capacity] = 7; // minute 12
+        buckets.buckets[11 % capacity] = 3; // minute 11
+        buckets.buckets[10 % capacity] = 100; // minute 10, outside the window
+
+        // Window [11, 15] should include minutes 11 and 12 only.
+        assert_eq!(buckets.count_last_n_minutes(5), 10);
+        // Window [15, 15] includes no writes.
+        assert_eq!(buckets.count_last_n_minutes(1), 0);
+        // Window [12, 15] includes minute 12 only.
+        assert_eq!(buckets.count_last_n_minutes(4), 7);
+    }
+
+    #[test]
+    fn count_last_n_minutes_works_for_active_recording() {
+        let capacity = 10;
+        // Set the clock so the current minute is 5.
+        let start = Instant::now() - Duration::from_secs(5 * 60 + 10);
+        let mut buckets = RecentBuckets::new(capacity);
+        buckets.start = start;
+        buckets.record();
+        buckets.record();
+        assert_eq!(buckets.current_minute, 5);
+        assert_eq!(buckets.count_last_n_minutes(1), 2);
+        assert_eq!(buckets.count_last_n_minutes(10), 2);
+        assert_eq!(buckets.count_last_n_minutes(60), 2);
     }
 }

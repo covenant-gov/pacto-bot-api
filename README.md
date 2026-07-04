@@ -175,6 +175,77 @@ Reference material:
 - [`tests/example_http_handler.rs`](tests/example_http_handler.rs) and
   [`tests/example_multi_bot.rs`](tests/example_multi_bot.rs) — Rust example tests.
 
+## Debugging and observability
+
+### Daemon logs
+
+The daemon uses `tracing` and respects the standard `RUST_LOG` environment
+variable. You can also pass `--log-level` on the daemon command line; when the
+flag is set, it takes precedence over `RUST_LOG`.
+
+```bash
+# Show daemon debug logs
+RUST_LOG=debug pacto-bot-api --config pacto-bot-api.toml
+
+# Equivalent with the CLI flag
+pacto-bot-api --config pacto-bot-api.toml --log-level debug
+```
+
+### Bot handler logs
+
+Generated Python bots use the `pacto_bot_sdk` logger. Set `PACTO_LOG_LEVEL` to
+control verbosity:
+
+```bash
+PACTO_LOG_LEVEL=debug python bots/echo-bot/echo_bot.py
+```
+
+Inside a Docker Compose stack, the variable is passed through automatically:
+
+```bash
+PACTO_LOG_LEVEL=debug docker compose up --build
+```
+
+### Health checks and quick fixes
+
+`pacto-bot-admin doctor` checks the most common setup mistakes and prints
+colored PASS/FAIL results with a fix suggestion for each failure:
+
+```bash
+pacto-bot-admin doctor
+```
+
+It validates the config file, data directory, daemon lock, configured bots,
+relay reachability, registered handlers, and HTTP token permissions.
+
+### End-to-end test tooling
+
+Send a test DM from the daemon without involving a client and print the
+resulting event ID:
+
+```bash
+pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello"
+```
+
+The bot must have the `Admin` capability for this command to succeed.
+
+Trace recent incoming events and outgoing replies for a bot:
+
+```bash
+pacto-bot-admin trace-events echo-bot
+pacto-bot-admin trace-events echo-bot --since 30 --limit 50
+```
+
+Tail the daemon log file (if one exists):
+
+```bash
+pacto-bot-admin logs
+pacto-bot-admin logs --follow
+```
+
+`pacto-bot-admin diagnose` includes recent event counts, reply-send failures,
+per-bot cursors, and relay reachability in both text and JSON output.
+
 ## Repository layout
 
 ```text

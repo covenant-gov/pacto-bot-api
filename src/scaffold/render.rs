@@ -207,12 +207,14 @@ fn build_command_handlers(request: &ScaffoldRequest) -> String {
             format!(
                 r#"@bot.command("/{command}")
 async def {command}_handler(event, bot):
-    """TODO: implement /{command}."""
-    return {{
+    bot.log(f"received /{command}: event_id={{event.event_id}}")
+    response = {{
         "event_id": event.event_id,
         "action": "reply",
         "content": "{command} placeholder response",
-    }}"#,
+    }}
+    bot.log(f"handled /{command}: action={{response['action']}}")
+    return response"#,
                 command = command
             )
         })

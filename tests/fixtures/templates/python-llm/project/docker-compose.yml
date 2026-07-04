@@ -25,7 +25,10 @@ services:
       context: .
       dockerfile: ./bots/{{bot_id}}/Dockerfile
     environment:
-      PACTO_TRANSPORT: unix
+      PACTO_LOG_LEVEL: ${PACTO_LOG_LEVEL:-info}
+      PACTO_TRANSPORT: ${PACTO_TRANSPORT:-unix}
+      PACTO_DATA_DIR: ${PACTO_DATA_DIR:-/var/lib/pacto-bot-api}
+      PACTO_SECRET_TOKEN: ${PACTO_SECRET_TOKEN:-}
       PACTO_SOCKET_PATH: /run/pacto/pacto-bot-api.sock
     volumes:
       - pacto-socket:/run/pacto:ro

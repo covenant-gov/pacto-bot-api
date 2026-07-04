@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use fs2::FileExt;
 #[cfg(unix)]
 use nix::errno::Errno;
@@ -25,8 +26,8 @@ use pacto_bot_api::signer::{Signer, SignerBackend};
 use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
-    AgentListHandlersResponse, AgentUnregisterHandlerResponse, HandlerRegisterResponse,
-    JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
+    AdminSendTestDmResponse, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
+    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
 };
 use rusqlite::Connection;
 
@@ -139,6 +140,24 @@ Note: The daemon must be restarted or sent SIGHUP to reload the token.
 const DIAGNOSE_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin diagnose
   pacto-bot-admin diagnose --format json
+"#;
+
+const DOCTOR_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin doctor
+"#;
+
+const LOGS_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin logs
+  pacto-bot-admin logs --follow
+"#;
+
+const SEND_TEST_DM_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello"
+"#;
+
+const TRACE_EVENTS_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin trace-events echo-bot
+  pacto-bot-admin trace-events echo-bot --since 30 --limit 50
 "#;
 
 const STATUS_AFTER_HELP: &str = r#"Examples:
@@ -356,6 +375,42 @@ enum Command {
         /// Output format. Valid values: text, json.
         #[arg(short, long, value_name = "FORMAT", default_value = "text")]
         format: String,
+    },
+    /// Run a quick health check and print PASS/FAIL results.
+    #[command(after_help = DOCTOR_AFTER_HELP)]
+    Doctor,
+    /// Tail the daemon log file.
+    #[command(after_help = LOGS_AFTER_HELP)]
+    Logs {
+        /// Follow the log file as it grows.
+        #[arg(short, long)]
+        follow: bool,
+    },
+    /// Send a test DM as a bot (admin-only).
+    #[command(after_help = SEND_TEST_DM_AFTER_HELP)]
+    SendTestDm {
+        #[arg(value_name = "BOT_ID")]
+        bot_id: String,
+
+        #[arg(value_name = "RECIPIENT")]
+        recipient: String,
+
+        #[arg(value_name = "CONTENT")]
+        content: String,
+    },
+    /// Read recent event trace rows from the daemon database.
+    #[command(after_help = TRACE_EVENTS_AFTER_HELP)]
+    TraceEvents {
+        #[arg(value_name = "BOT_ID")]
+        bot_id: String,
+
+        /// Only include rows newer than this many minutes ago.
+        #[arg(short, long, value_name = "MINUTES", default_value = "10")]
+        since: i64,
+
+        /// Maximum rows to return.
+        #[arg(short, long, value_name = "LIMIT", default_value = "100")]
+        limit: usize,
     },
     /// Show daemon status, connectivity, and registered handlers.
     #[command(after_help = STATUS_AFTER_HELP)]
@@ -601,6 +656,18 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         Command::ValidateConfig => cmd_validate_config(&cli.config, cli.data_dir),
         Command::RotateHttpToken => cmd_rotate_http_token(&cli.config, cli.data_dir),
         Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format).await,
+        Command::Doctor => cmd_doctor(&cli.config, cli.data_dir).await,
+        Command::Logs { follow } => cmd_logs(&cli.config, cli.data_dir, follow).await,
+        Command::SendTestDm {
+            bot_id,
+            recipient,
+            content,
+        } => cmd_send_test_dm(&cli.config, cli.data_dir, &bot_id, &recipient, &content).await,
+        Command::TraceEvents {
+            bot_id,
+            since,
+            limit,
+        } => cmd_trace_events(&cli.config, cli.data_dir, &bot_id, since, limit).await,
         Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
         Command::Handlers(sub) => cmd_handlers(&cli.config, cli.data_dir, &sub).await,
         Command::Docs { format } => cmd_docs(&format),
@@ -1498,7 +1565,7 @@ async fn cmd_diagnose(
 
     let mut relay_connectivity = Vec::new();
     let mut bunker_connectivity = Vec::new();
-    if let Some(ref cfg) = config {
+    if let Some(cfg) = &config {
         for bot in &cfg.bots {
             relay_connectivity.extend(check_relay_connectivity(bot).await);
             if let Some(check) = check_bunker_connectivity(bot).await {
@@ -1507,13 +1574,13 @@ async fn cmd_diagnose(
         }
     }
 
-    let service_versions = if let Some(ref cfg) = config {
+    let service_versions = if let Some(cfg) = &config {
         probe_service_versions(&cfg.bots).await
     } else {
         ServiceVersions::default()
     };
 
-    let db_cursor_count = if let Some(ref dir) = data_dir {
+    let db_cursor_count = if let Some(dir) = &data_dir {
         let db_path = dir.join(AGENT_DB_FILE);
         if db_path.exists() {
             match open_agent_db(&db_path) {
@@ -1535,6 +1602,45 @@ async fn cmd_diagnose(
 
     let daemon_status = live_snapshot.as_ref().map(|s| daemon_status_str(s.status));
 
+    let recent_counts = live_snapshot.as_ref().map(|s| RecentCountsReport {
+        events_received: s.recent_counts.events_received,
+        events_dispatched: s.recent_counts.events_dispatched,
+        replies: s.recent_counts.replies,
+        reply_send_failed: s.recent_counts.reply_send_failed,
+        window_minutes: s.recent_counts.window_seconds / 60,
+    });
+
+    let mut bot_cursors = Vec::new();
+    let mut handler_count = 0i64;
+    if let Some(dir) = &data_dir {
+        let db_path = dir.join(AGENT_DB_FILE);
+        if db_path.exists() {
+            match open_agent_db(&db_path) {
+                Ok(conn) => {
+                    if let Some(cfg) = &config {
+                        for bot in &cfg.bots {
+                            match load_bot_cursor(&conn, &bot.id) {
+                                Ok(Some(cursor)) => bot_cursors.push(BotCursorDiagnosis {
+                                    bot_id: bot.id.clone(),
+                                    cursor: cursor.cursor,
+                                }),
+                                Ok(None) => {}
+                                Err(e) => {
+                                    errors.push(format!("bot {}: cursor load error: {e}", bot.id))
+                                }
+                            }
+                        }
+                    }
+                    match count_handlers(&conn) {
+                        Ok(n) => handler_count = n,
+                        Err(e) => errors.push(format!("handler count error: {e}")),
+                    }
+                }
+                Err(e) => errors.push(format!("failed to open db: {e}")),
+            }
+        }
+    }
+
     let report = DiagnoseReport {
         config_valid,
         lock_held,
@@ -1549,12 +1655,401 @@ async fn cmd_diagnose(
         bunker_connectivity,
         service_versions,
         db_cursor_count,
+        recent_counts,
+        bot_cursors,
+        handler_count,
         errors,
     };
 
     match format {
         "json" => println!("{}", serde_json::to_string_pretty(&report)?),
         _ => print_diagnose_text(&report)?,
+    }
+
+    Ok(())
+}
+
+async fn cmd_doctor(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+) -> Result<(), DaemonError> {
+    let mut checks = Vec::new();
+
+    let config_result = DaemonConfig::load(config_path);
+    let config = match config_result {
+        Ok(c) => {
+            checks.push(doctor_pass("config", "configuration file is valid"));
+            Some(c)
+        }
+        Err(e) => {
+            checks.push(doctor_fail(
+                "config",
+                &format!("failed to parse configuration: {e}"),
+                "fix the TOML syntax and required fields, then re-run doctor",
+            ));
+            None
+        }
+    };
+
+    let data_dir = config
+        .as_ref()
+        .map(|c| resolve_data_dir(c, data_dir_override.clone()))
+        .or_else(|| data_dir_override.as_deref().map(expand_path_buf));
+
+    let mut has_fatal = false;
+    for check in &checks {
+        if !check.pass {
+            has_fatal = true;
+            break;
+        }
+    }
+    if has_fatal {
+        print_doctor_report(&checks);
+        return Err(DaemonError::Config(
+            "doctor found fatal configuration errors".into(),
+        ));
+    }
+
+    let data_dir = match data_dir {
+        Some(dir) => {
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                checks.push(doctor_fail(
+                    "data_dir",
+                    &format!("data directory is not writable: {e}"),
+                    "ensure the parent directory exists and is writable by this user",
+                ));
+            } else if !dir.is_dir() {
+                checks.push(doctor_fail(
+                    "data_dir",
+                    "data_dir path is not a directory",
+                    "set a directory path for --data-dir or data_dir in config",
+                ));
+            } else {
+                checks.push(doctor_pass(
+                    "data_dir",
+                    "data directory exists and is writable",
+                ));
+            }
+            dir
+        }
+        None => {
+            checks.push(doctor_fail(
+                "data_dir",
+                "data directory cannot be determined",
+                "set --data-dir or data_dir in the config file",
+            ));
+            PathBuf::new()
+        }
+    };
+
+    let lock_held = if data_dir.as_os_str().is_empty() {
+        false
+    } else {
+        is_daemon_lock_held(&data_dir)
+    };
+    if lock_held {
+        checks.push(doctor_pass(
+            "daemon_lock",
+            "daemon is running and holds the lock",
+        ));
+    } else {
+        checks.push(doctor_fail(
+            "daemon_lock",
+            "daemon is not running or lock is stale",
+            "start the daemon with `pacto-bot-api`",
+        ));
+    }
+
+    let bots = config.as_ref().map(|c| c.bots.as_slice()).unwrap_or(&[]);
+    if bots.is_empty() {
+        checks.push(doctor_fail(
+            "bots",
+            "no bots configured",
+            "add at least one [[bots]] entry to the config file",
+        ));
+    } else {
+        checks.push(doctor_pass(
+            "bots",
+            &format!("{} bot(s) configured", bots.len()),
+        ));
+    }
+
+    let mut all_relays_reachable = true;
+    for bot in bots {
+        let relay_checks = check_relay_connectivity(bot).await;
+        for check in relay_checks {
+            if !check.reachable {
+                all_relays_reachable = false;
+                checks.push(doctor_fail(
+                    "relay_reachability",
+                    &format!(
+                        "bot {} relay {} is unreachable: {}",
+                        check.bot_id,
+                        check.relay,
+                        check.error.as_deref().unwrap_or("unknown error")
+                    ),
+                    "check the relay URL and network connectivity",
+                ));
+            }
+        }
+    }
+    if all_relays_reachable && !bots.is_empty() {
+        checks.push(doctor_pass(
+            "relay_reachability",
+            "all configured relays are reachable",
+        ));
+    }
+
+    let handler_count = if !data_dir.as_os_str().is_empty() {
+        let db_path = data_dir.join(AGENT_DB_FILE);
+        if db_path.exists() {
+            match open_agent_db(&db_path) {
+                Ok(conn) => count_handlers(&conn).unwrap_or(0),
+                Err(_) => 0,
+            }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    if handler_count > 0 || bots.is_empty() {
+        checks.push(doctor_pass(
+            "handlers",
+            &format!("{handler_count} handler(s) registered"),
+        ));
+    } else {
+        checks.push(doctor_fail(
+            "handlers",
+            "no handlers registered",
+            "start a handler and connect to the daemon socket",
+        ));
+    }
+
+    let token_path = data_dir.join(BOT_SECRET_TOKEN_FILE);
+    if token_path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&token_path)
+                .map(|m| m.permissions().mode() & 0o777)
+                .unwrap_or(0o777);
+            if mode == 0o600 {
+                checks.push(doctor_pass(
+                    "token_permissions",
+                    "HTTP secret token has strict permissions (0o600)",
+                ));
+            } else {
+                checks.push(doctor_fail(
+                    "token_permissions",
+                    &format!("HTTP secret token permissions are 0o{mode:o}"),
+                    "run `chmod 0600` on the token file",
+                ));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            checks.push(doctor_pass(
+                "token_permissions",
+                "HTTP secret token exists (permissions not checked on this platform)",
+            ));
+        }
+    } else {
+        checks.push(doctor_pass(
+            "token_permissions",
+            "no HTTP secret token present (HTTP transport disabled)",
+        ));
+    }
+
+    print_doctor_report(&checks);
+
+    let failures = checks.iter().filter(|c| !c.pass).count();
+    if failures > 0 {
+        Err(DaemonError::Config(format!(
+            "doctor found {failures} failing check(s)"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DoctorCheck {
+    name: &'static str,
+    pass: bool,
+    message: String,
+    suggestion: Option<String>,
+}
+
+fn doctor_pass(name: &'static str, message: &str) -> DoctorCheck {
+    DoctorCheck {
+        name,
+        pass: true,
+        message: message.to_string(),
+        suggestion: None,
+    }
+}
+
+fn doctor_fail(name: &'static str, message: &str, suggestion: &str) -> DoctorCheck {
+    DoctorCheck {
+        name,
+        pass: false,
+        message: message.to_string(),
+        suggestion: Some(suggestion.to_string()),
+    }
+}
+
+fn print_doctor_report(checks: &[DoctorCheck]) {
+    for check in checks {
+        if check.pass {
+            println!("[{}] {}: {}", "PASS".green(), check.name, check.message);
+        } else {
+            println!("[{}] {}: {}", "FAIL".red(), check.name, check.message);
+            if let Some(suggestion) = &check.suggestion {
+                println!("        suggestion: {}", suggestion);
+            }
+        }
+    }
+
+    let total = checks.len();
+    let passed = checks.iter().filter(|c| c.pass).count();
+    let failed = total - passed;
+    println!();
+    if failed == 0 {
+        println!("{}", format!("{passed}/{total} checks passed").green());
+    } else {
+        println!(
+            "{}",
+            format!("{passed}/{total} checks passed, {failed} failed").red()
+        );
+    }
+}
+
+async fn cmd_logs(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    follow: bool,
+) -> Result<(), DaemonError> {
+    let config = DaemonConfig::load(config_path)?;
+    let data_dir = resolve_data_dir(&config, data_dir_override);
+    let log_path = data_dir.join("daemon.log");
+
+    if is_daemon_lock_held(&data_dir) {
+        eprintln!(
+            "warning: the daemon is running; the log file may be incomplete or rotated while tailing"
+        );
+    }
+
+    if !log_path.exists() {
+        eprintln!("warning: log file does not exist: {}", log_path.display());
+        return Ok(());
+    }
+
+    let file = tokio::fs::File::open(&log_path)
+        .await
+        .map_err(DaemonError::Io)?;
+    let reader = tokio::io::BufReader::new(file);
+    let mut lines = reader.lines();
+
+    while let Some(line) = lines.next_line().await.map_err(DaemonError::Io)? {
+        println!("{line}");
+    }
+
+    if follow {
+        loop {
+            match lines.next_line().await.map_err(DaemonError::Io)? {
+                Some(line) => println!("{line}"),
+                None => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_send_test_dm(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    recipient: &str,
+    content: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, recipient, content);
+        return Err(DaemonError::Config(
+            "send-test-dm is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = DaemonConfig::load(config_path)?;
+        let _bot = find_bot(&config.bots, bot_id)?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = data_dir.join("pacto-bot-api.sock");
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "admin.send_test_dm",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "recipient": recipient,
+                "content": content,
+            })),
+        );
+        let value = with_admin_session(&socket_path, bot_id, request).await?;
+        let response: AdminSendTestDmResponse = serde_json::from_value(value)?;
+        println!("{}", response.event_id);
+        Ok(())
+    }
+}
+
+async fn cmd_trace_events(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    since_minutes: i64,
+    limit: usize,
+) -> Result<(), DaemonError> {
+    let config = DaemonConfig::load(config_path)?;
+    let _bot = find_bot(&config.bots, bot_id)?;
+    let data_dir = resolve_data_dir(&config, data_dir_override);
+    let db_path = data_dir.join(AGENT_DB_FILE);
+    if !db_path.exists() {
+        return Err(DaemonError::Config(format!(
+            "daemon database not found at {}",
+            db_path.display()
+        )));
+    }
+
+    let conn = open_agent_db(&db_path)?;
+    let since = Utc::now() - chrono::Duration::minutes(since_minutes);
+    let mut stmt = conn.prepare(
+        "SELECT event_id, author, content_preview, action, reply_event_id, created_at
+         FROM event_trace
+         WHERE bot_id = ?1 AND created_at >= ?2
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map((bot_id, since.timestamp(), limit as i64), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (event_id, author, preview, action, reply_event_id, created_at) = row?;
+        let when = DateTime::from_timestamp(created_at, 0)
+            .unwrap_or_else(Utc::now)
+            .to_rfc3339();
+        let reply = reply_event_id.as_deref().unwrap_or("-");
+        println!("{when} {event_id} {author} {action} reply_event_id={reply} preview={preview}");
     }
 
     Ok(())
@@ -1834,7 +2329,7 @@ async fn with_admin_session(
     bot_id: &str,
     request: JsonRpcMessage,
 ) -> Result<Value, DaemonError> {
-    let stream = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(socket_path))
+    let stream = tokio::time::timeout(Duration::from_secs(15), UnixStream::connect(socket_path))
         .await
         .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
     let (reader, mut writer) = stream.into_split();
@@ -1851,7 +2346,7 @@ async fn with_admin_session(
         })),
     );
     write_request(&mut writer, &register).await?;
-    let response = read_response(&mut reader).await?;
+    let response = read_response(&mut reader, Duration::from_secs(5)).await?;
     let admin_handler_id = match response {
         JsonRpcMessage::Response {
             result: Some(r), ..
@@ -1870,7 +2365,7 @@ async fn with_admin_session(
 
     // Send the actual admin request on the same authenticated connection.
     write_request(&mut writer, &request).await?;
-    let result = read_response(&mut reader).await?;
+    let result = read_response(&mut reader, Duration::from_secs(15)).await?;
 
     // Best-effort cleanup of the temporary admin handler.
     let unregister = JsonRpcMessage::request(
@@ -1879,7 +2374,7 @@ async fn with_admin_session(
         Some(Value::Object(Default::default())),
     );
     let _ = write_request(&mut writer, &unregister).await;
-    let _ = read_response(&mut reader).await;
+    let _ = read_response(&mut reader, Duration::from_secs(2)).await;
 
     match result {
         JsonRpcMessage::Response {
@@ -1920,9 +2415,10 @@ async fn write_request(
 #[cfg(unix)]
 async fn read_response(
     reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    timeout_duration: Duration,
 ) -> Result<JsonRpcMessage, DaemonError> {
     let mut buf = Vec::new();
-    let n = tokio::time::timeout(Duration::from_secs(2), reader.read_until(b'\n', &mut buf))
+    let n = tokio::time::timeout(timeout_duration, reader.read_until(b'\n', &mut buf))
         .await
         .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
     if n == 0 {
@@ -2494,7 +2990,26 @@ struct DiagnoseReport {
     bunker_connectivity: Vec<BunkerCheck>,
     service_versions: ServiceVersions,
     db_cursor_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recent_counts: Option<RecentCountsReport>,
+    bot_cursors: Vec<BotCursorDiagnosis>,
+    handler_count: i64,
     errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BotCursorDiagnosis {
+    bot_id: String,
+    cursor: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RecentCountsReport {
+    events_received: u64,
+    events_dispatched: u64,
+    replies: u64,
+    reply_send_failed: u64,
+    window_minutes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2590,7 +3105,18 @@ fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
             capabilities TEXT NOT NULL,
             reconnect_token TEXT NOT NULL,
             registered_at INTEGER
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS event_trace (
+            bot_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            author TEXT NOT NULL,
+            content_preview TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reply_event_id TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_trace_bot_created
+            ON event_trace (bot_id, created_at DESC);",
     )?;
     Ok(conn)
 }
@@ -2711,6 +3237,11 @@ fn count_cursors(conn: &Connection) -> Result<i64, DaemonError> {
     Ok(count)
 }
 
+fn count_handlers(conn: &Connection) -> Result<i64, DaemonError> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM handlers", [], |row| row.get(0))?;
+    Ok(count)
+}
+
 fn print_validate_report(errors: &[String]) {
     if errors.is_empty() {
         println!("config is valid");
@@ -2828,8 +3359,57 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     }
 
     write(&format!("db_cursor_count: {}", report.db_cursor_count))?;
+    write(&format!("handler_count: {}", report.handler_count))?;
+
+    write("")?;
+    write("bot_cursors:")?;
+    if report.bot_cursors.is_empty() {
+        write("  (none)")?;
+    } else {
+        for cursor in &report.bot_cursors {
+            write(&format!("  - bot_id: {}", cursor.bot_id))?;
+            write(&format!("    cursor: {}", cursor.cursor))?;
+        }
+    }
+    write("")?;
+
+    write("recent_counts:")?;
+    if let Some(counts) = &report.recent_counts {
+        write(&format!("  window_minutes: {}", counts.window_minutes))?;
+        write(&format!("  events_received: {}", counts.events_received))?;
+        write(&format!(
+            "  events_dispatched: {}",
+            counts.events_dispatched
+        ))?;
+        write(&format!("  replies: {}", counts.replies))?;
+        write(&format!(
+            "  reply_send_failed: {}",
+            counts.reply_send_failed
+        ))?;
+    } else {
+        write("  (no live daemon metrics)")?;
+    }
+    write("")?;
+
+    write("relay_reachability:")?;
+    if report.relay_connectivity.is_empty() {
+        write("  (none)")?;
+    } else {
+        for check in &report.relay_connectivity {
+            write(&format!("  - bot_id: {}", check.bot_id))?;
+            write(&format!("    relay: {}", check.relay))?;
+            if check.reachable {
+                write("    status: reachable")?;
+            } else if let Some(error) = &check.error {
+                write(&format!("    status: unreachable ({error})"))?;
+            } else {
+                write("    status: unreachable")?;
+            }
+        }
+    }
+    write("")?;
+
     if !report.errors.is_empty() {
-        write("")?;
         write("errors:")?;
         for err in &report.errors {
             write(&format!("  - {err}"))?;

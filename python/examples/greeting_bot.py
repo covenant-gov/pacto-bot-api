@@ -24,15 +24,19 @@ bot = Bot(bot_id="greeting-bot")
 
 @bot.command("/hello")
 async def hello(event, bot):
-    return {
+    bot.log("handling /hello command", level="debug")
+    response = {
         "event_id": event.event_id,
         "action": "reply",
         "content": "Hello there! Welcome to Pacto.",
     }
+    bot.log("returning /hello response", level="debug")
+    return response
 
 
 @bot.default
 async def unknown(event, bot):
+    bot.log("handling unknown command", level="debug")
     return {"event_id": event.event_id, "action": "ignore"}
 
 

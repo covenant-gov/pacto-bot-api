@@ -23,6 +23,7 @@ def _command_args(event) -> list[str]:
 {% endif %}
 @bot.default
 async def unknown(event, bot):
+    bot.log(f"ignoring unknown command: event_id={event.event_id}")
     return {"event_id": event.event_id, "action": "ignore"}
 
 

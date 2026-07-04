@@ -38,9 +38,15 @@ pub struct MetricsPayloadGenerated {
     /// bunker_sign_failures_total
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bunker_sign_failures_total: Option<u64>,
+    /// events_dispatched_last_10_min
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_dispatched_last_10_min: Option<u64>,
     /// events_dispatched_total
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_dispatched_total: Option<u64>,
+    /// events_received_last_10_min
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_received_last_10_min: Option<u64>,
     /// events_received_total
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_total: Option<u64>,
@@ -56,6 +62,15 @@ pub struct MetricsPayloadGenerated {
     /// relay_reconnects_total
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_reconnects_total: Option<u64>,
+    /// replies_last_10_min
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replies_last_10_min: Option<u64>,
+    /// reply_send_failed_last_10_min
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_send_failed_last_10_min: Option<u64>,
+    /// reply_send_failed_total
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_send_failed_total: Option<u64>,
     /// uptime_seconds
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uptime_seconds: Option<u64>,

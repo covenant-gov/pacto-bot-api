@@ -875,6 +875,33 @@ def test_bot_rejects_unknown_transport_name():
         Bot("x", transport="udp")
 
 
+def test_bot_accepts_custom_transport_without_logger_attribute():
+    """Custom transports that disallow dynamic attributes must not raise."""
+
+    class SlotsTransport:
+        __slots__ = ("connected",)
+        name = "slots"
+
+        def __init__(self) -> None:
+            self.connected = False
+
+        async def connect(self) -> None:
+            self.connected = True
+
+        async def readline(self) -> str:
+            return ""
+
+        async def write_frame(self, frame: dict[str, Any]) -> dict[str, Any] | None:
+            return None
+
+        async def close(self) -> None:
+            pass
+
+    transport = SlotsTransport()
+    bot = Bot("test-bot", transport=transport)
+    assert bot._transport is transport
+
+
 @pytest.mark.asyncio
 async def test_cli_transport_overrides_constructor_string():
     """CLI --transport overrides a constructor string transport."""

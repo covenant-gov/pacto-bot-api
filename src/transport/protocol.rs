@@ -181,6 +181,8 @@ pub enum Method {
     AgentUnregisterHandler,
     #[serde(rename = "agent.version")]
     AgentVersion,
+    #[serde(rename = "admin.send_test_dm")]
+    AdminSendTestDm,
 }
 
 impl Method {
@@ -200,6 +202,7 @@ impl Method {
             Method::AgentListHandlers,
             Method::AgentUnregisterHandler,
             Method::AgentVersion,
+            Method::AdminSendTestDm,
         ]
     }
 }
@@ -222,6 +225,7 @@ impl FromStr for Method {
             "agent.list_handlers" => Ok(Self::AgentListHandlers),
             "agent.unregister_handler" => Ok(Self::AgentUnregisterHandler),
             "agent.version" => Ok(Self::AgentVersion),
+            "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
             _ => Err(DaemonError::MethodNotFound),
         }
     }
@@ -295,6 +299,21 @@ pub struct MetricsResponse {
     /// Total incoming events rejected due to failed signature verification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invalid_events_total: Option<u64>,
+    /// Total reply DMs that failed to publish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_send_failed_total: Option<u64>,
+    /// Events received in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_received_last_10_min: Option<u64>,
+    /// Events dispatched in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_dispatched_last_10_min: Option<u64>,
+    /// Reply DMs attempted in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replies_last_10_min: Option<u64>,
+    /// Reply DMs that failed to publish in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_send_failed_last_10_min: Option<u64>,
     /// Per-bot health summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<Vec<crate::diagnostics::BotHealth>>,
@@ -311,6 +330,11 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             relay_reconnects_total: Some(snapshot.relay_reconnects_total),
             bunker_sign_failures_total: Some(snapshot.bunker_sign_failures_total),
             invalid_events_total: Some(snapshot.invalid_events_total),
+            reply_send_failed_total: Some(snapshot.reply_send_failed_total),
+            events_received_last_10_min: Some(snapshot.recent_counts.events_received),
+            events_dispatched_last_10_min: Some(snapshot.recent_counts.events_dispatched),
+            replies_last_10_min: Some(snapshot.recent_counts.replies),
+            reply_send_failed_last_10_min: Some(snapshot.recent_counts.reply_send_failed),
             bots: Some(snapshot.bots),
         }
     }
@@ -343,6 +367,12 @@ pub struct AgentListHandlersResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentUnregisterHandlerResponse {
     pub unregistered: bool,
+}
+
+/// Typed payload returned by the `admin.send_test_dm` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSendTestDmResponse {
+    pub event_id: String,
 }
 
 /// Typed payload for the `agent.status` JSON-RPC notification.
@@ -394,6 +424,7 @@ mod tests {
             "agent.list_handlers",
             "agent.unregister_handler",
             "agent.version",
+            "admin.send_test_dm",
         ];
 
         for method in methods {

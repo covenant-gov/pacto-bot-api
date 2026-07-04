@@ -68,6 +68,76 @@ non-root `pacto-bot` user against a host daemon socket.
    sudo journalctl -u {{bot_id}} -f
    ```
 
+## View logs
+
+Logs are written to `stderr` by the bot handler.
+
+- When running in Docker Compose, follow the bot container logs:
+  ```bash
+  docker logs -f {{bot_id}}-{{bot_id}}-1
+  ```
+  (The exact container name depends on your project directory; use `docker ps`
+  to find it.)
+- When running as a systemd service, follow the journal:
+  ```bash
+  sudo journalctl -u {{bot_id}} -f
+  ```
+- When running directly from a terminal, output is already on `stderr`.
+
+## Enable debug logging
+
+Set the `PACTO_LOG_LEVEL` environment variable to `debug` before starting the
+bot:
+
+```bash
+PACTO_LOG_LEVEL=debug python {{bot_id_snake}}.py
+```
+
+In Docker Compose, set the variable in your shell so the compose file passes it
+through:
+
+```bash
+PACTO_LOG_LEVEL=debug docker compose up --build
+```
+
+For a systemd service, add it to the service environment:
+
+```bash
+sudo systemctl edit {{bot_id}}
+```
+
+```ini
+[Service]
+Environment=PACTO_LOG_LEVEL=debug
+```
+
+Then reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart {{bot_id}}
+```
+
+## Environment variables
+
+Copy `bots/{{bot_id}}/.env.example` to `bots/{{bot_id}}/.env` and fill in the
+required values. The bot reads these variables at runtime:
+
+| Variable | Required | Default | Where to get it |
+|---|---|---|---|
+| `PACTO_LOG_LEVEL` | No | `info` | One of `debug`, `info`, `warn`, or `error`. |
+| `PACTO_TRANSPORT` | No | `auto` | One of `unix`, `http`, or `auto`. In Docker Compose the bot uses the Unix socket shared with the daemon. |
+| `PACTO_DATA_DIR` | Yes (host) | platform-specific | Path to the Pacto data directory. Used to resolve the default Unix socket when `PACTO_SOCKET_PATH` is not set. |
+| `PACTO_SECRET_TOKEN` | Yes (HTTP only) | none | Shared secret used to authenticate the bot when `PACTO_TRANSPORT` is `http`. Generate a random string of at least 32 characters and export it on both the daemon and the bot. |
+
+When running against the host daemon socket, the only required value is
+`PACTO_DATA_DIR` (or pass `--data-dir`). When using HTTP transport, you must
+also set `PACTO_SECRET_TOKEN` (or pass `--secret`).
+
+External API keys (for example, an LLM provider or price feed) are not managed
+by Pacto. Add them to your `.env` file and read them with `os.environ.get()` in
+the handler code. Never commit real API keys to version control.
+
 ## Run the default compose stack
 
 From the project root:

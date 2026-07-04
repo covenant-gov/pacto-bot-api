@@ -7,7 +7,7 @@ use nostr::EventId;
 use serde_json::Value;
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 use tokio::time::timeout;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::client_manager::ClientManager;
 use crate::db::Db;
@@ -16,10 +16,10 @@ use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::transport::protocol::{
-    AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    AgentVersionResponse, HandlerReconnectParams, HandlerReconnectResponse,
-    HandlerRegisterResponse, HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse,
-    parse_method,
+    AdminSendTestDmResponse, AgentListHandlersEntry, AgentListHandlersResponse,
+    AgentUnregisterHandlerResponse, AgentVersionResponse, HandlerReconnectParams,
+    HandlerReconnectResponse, HandlerRegisterResponse, HandlerUnregisterResponse, JsonRpcMessage,
+    Method, MetricsResponse, parse_method,
 };
 
 use secrecy::{ExposeSecret, SecretString};
@@ -342,8 +342,21 @@ impl Dispatch {
 
         // Process replies.
         for (handler_id, action) in &responses {
-            if let HandlerAction::Reply { content } = action
-                && let Err(e) = self
+            let mut action_label = match action {
+                HandlerAction::Ack => "ack",
+                HandlerAction::Reply { .. } => "reply",
+                HandlerAction::Defer => "defer",
+                HandlerAction::Ignore => "ignore",
+            };
+            let mut reply_event_id: Option<String> = None;
+            if let HandlerAction::Reply { content } = action {
+                info!(
+                    bot_id = %event.bot_id,
+                    recipient = %event.author,
+                    reply_to = %event.rumor_id,
+                    "sending reply DM"
+                );
+                match self
                     .handle_send_dm(
                         &event.bot_id,
                         &event.author,
@@ -352,11 +365,41 @@ impl Dispatch {
                         Some(handler_id),
                     )
                     .await
+                {
+                    Ok(event_id) => {
+                        reply_event_id = Some(event_id.to_hex());
+                        self.diagnostics.record_reply();
+                    }
+                    Err(e) => {
+                        action_label = "reply_failed";
+                        self.diagnostics.record_reply_send_failed();
+                        tracing::error!(
+                            bot_id = %event.bot_id,
+                            recipient = %event.author,
+                            reply_to = %event.rumor_id,
+                            error = %e,
+                            "failed to send reply DM"
+                        );
+                    }
+                }
+            }
+            if let Err(e) = self
+                .db
+                .save_event_trace(
+                    &event.bot_id,
+                    &event.event_id,
+                    &event.author,
+                    &content_preview(&event.content),
+                    action_label,
+                    reply_event_id.as_deref(),
+                )
+                .await
             {
-                self.diagnostics.record_error(
-                    Some("reply_send_failed"),
-                    &format!("reply send failed: {e}"),
-                    None,
+                warn!(
+                    bot_id = %event.bot_id,
+                    event_id = %event.event_id,
+                    error = %e,
+                    "failed to save event trace"
                 );
             }
         }
@@ -495,6 +538,7 @@ impl Dispatch {
                     .await
             }
             Method::AgentVersion => self.handle_version().await,
+            Method::AdminSendTestDm => self.handle_admin_send_test_dm(handler_id, params).await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
 
@@ -811,7 +855,11 @@ impl Dispatch {
                 .sender
                 .send((handler_id.unwrap_or("unknown").to_string(), action));
         } else {
-            warn!(event_id = %event_id, "handler.response for unknown or expired event");
+            warn!(
+                handler_id = handler_id.unwrap_or("unknown"),
+                event_id = %event_id,
+                "handler.response for unknown or expired event; consider increasing the dispatch timeout"
+            );
         }
         Ok(None)
     }
@@ -911,6 +959,49 @@ impl Dispatch {
         Err(DaemonError::UnauthorizedBot)
     }
 
+    async fn handle_admin_send_test_dm(
+        &self,
+        caller_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
+        let params = params
+            .ok_or_else(|| DaemonError::Config("admin.send_test_dm missing params".into()))?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("admin.send_test_dm missing bot_id".into()))?;
+        let recipient = params
+            .get("recipient")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("admin.send_test_dm missing recipient".into()))?;
+        let content = params
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("admin.send_test_dm missing content".into()))?;
+
+        let event_id = self.send_test_dm(bot_id, recipient, content).await?;
+        Ok(Some(serde_json::to_value(AdminSendTestDmResponse {
+            event_id: event_id.to_hex(),
+        })?))
+    }
+
+    async fn send_test_dm(
+        &self,
+        bot_id: &str,
+        recipient: &str,
+        content: &str,
+    ) -> Result<EventId, DaemonError> {
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        cm.nostr_client
+            .send_dm(&bot.signer, recipient, content, None)
+            .await
+    }
+
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
         let response = AgentVersionResponse {
             version: crate::version::VERSION.to_string(),
@@ -1004,6 +1095,16 @@ fn message_params(msg: &JsonRpcMessage) -> Option<&Value> {
 fn event_type_name(event_type: &EventType) -> String {
     match event_type {
         EventType::DmReceived => "dm_received".to_string(),
+    }
+}
+
+/// Truncate event content to a safe preview length for diagnostics.
+fn content_preview(content: &str) -> String {
+    let limit = 120;
+    if content.chars().count() <= limit {
+        content.to_string()
+    } else {
+        format!("{}…", content.chars().take(limit).collect::<String>())
     }
 }
 
