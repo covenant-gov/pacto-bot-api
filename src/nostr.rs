@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use nostr::event::tag::Tag;
+use nostr::event::tag::{Tag, TagKind};
 use nostr::nips::nip44::Version;
 use nostr::nips::{nip44, nip59};
 use nostr::secp256k1::schnorr::Signature;
@@ -132,6 +132,35 @@ impl NostrClient {
         self.client.disconnect().await;
     }
 
+    /// Build a NIP-17 private message rumor with millisecond ordering and
+    /// an optional reply marker.
+    fn build_dm_rumor(
+        sender: &PublicKey,
+        recipient: &PublicKey,
+        content: &str,
+        reply_to: Option<&str>,
+    ) -> Result<UnsignedEvent, DaemonError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let ms = (now.as_millis() % 1000).to_string();
+
+        let mut rumor_builder = EventBuilder::private_msg_rumor(*recipient, content);
+        if let Some(reply_id) = reply_to {
+            let event_id = EventId::parse(reply_id)
+                .map_err(|e| DaemonError::Nostr(format!("invalid reply_to event id: {e}")))?;
+            rumor_builder = rumor_builder.tags([Tag::custom(
+                TagKind::e(),
+                [event_id.to_hex(), String::new(), String::from("reply")],
+            )]);
+        }
+        rumor_builder = rumor_builder.tag(Tag::custom(
+            TagKind::custom("ms"),
+            [ms],
+        ));
+        Ok(rumor_builder.build(*sender))
+    }
+
     /// Send a NIP-17 private direct message as a NIP-59 gift wrap.
     ///
     /// If `reply_to` is provided, an `e` tag referencing the original rumor or
@@ -157,13 +186,7 @@ impl NostrClient {
         let recipient = PublicKey::parse(recipient_npub)
             .map_err(|e| DaemonError::Nostr(format!("invalid recipient npub: {e}")))?;
 
-        let mut rumor_builder = EventBuilder::private_msg_rumor(recipient, content);
-        if let Some(reply_id) = reply_to {
-            let event_id = EventId::parse(reply_id)
-                .map_err(|e| DaemonError::Nostr(format!("invalid reply_to event id: {e}")))?;
-            rumor_builder = rumor_builder.tags([Tag::event(event_id)]);
-        }
-        let rumor = rumor_builder.build(signer.public_key());
+        let rumor = Self::build_dm_rumor(&signer.public_key(), &recipient, content, reply_to)?;
         let rumor_event = sign_unsigned_event(signer, rumor).await?;
 
         let seal_content = signer
@@ -495,6 +518,49 @@ mod tests {
         assert!(!event_id.to_hex().is_empty());
     }
 
+    #[test]
+    fn build_dm_rumor_adds_ms_tag_and_reply_marker() {
+        let (sender, _) = test_signer();
+        let recipient_keys = nostr::Keys::generate();
+        let reply_id =
+            EventId::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+
+        let rumor = NostrClient::build_dm_rumor(
+            &sender.public_key(),
+            &recipient_keys.public_key(),
+            "hello",
+            Some(&reply_id.to_hex()),
+        )
+        .unwrap();
+
+        let e_tag = rumor.tags.find(TagKind::e()).expect("rumor should have an e tag");
+        assert!(e_tag.is_reply(), "e tag should be marked as reply");
+        assert_eq!(e_tag.content().unwrap(), reply_id.to_hex());
+
+        let ms_tag = rumor.tags.find(TagKind::custom("ms")).expect("rumor should have an ms tag");
+        let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
+        assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
+    }
+
+    #[test]
+    fn build_dm_rumor_adds_ms_tag_without_reply() {
+        let (sender, _) = test_signer();
+        let recipient_keys = nostr::Keys::generate();
+
+        let rumor = NostrClient::build_dm_rumor(
+            &sender.public_key(),
+            &recipient_keys.public_key(),
+            "hello",
+            None,
+        )
+        .unwrap();
+
+        assert!(rumor.tags.find(TagKind::e()).is_none(), "rumor should not have an e tag");
+        let ms_tag = rumor.tags.find(TagKind::custom("ms")).expect("rumor should have an ms tag");
+        let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
+        assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
+    }
     #[tokio::test]
     async fn set_profile_builds_metadata_event() {
         let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
