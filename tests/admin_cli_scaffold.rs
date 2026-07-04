@@ -175,6 +175,10 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
     )?;
     assert!(handler.contains("@bot.command(\"/echo\")"));
     assert!(handler.contains("@bot.default"));
+    assert!(
+        handler.contains("bot.log("),
+        "generated handler should log entry/exit"
+    );
 
     let dockerfile =
         fs::read_to_string(project_dir.join("bots").join("echo-bot").join("Dockerfile"))?;
