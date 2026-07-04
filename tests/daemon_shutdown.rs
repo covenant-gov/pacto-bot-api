@@ -1,10 +1,12 @@
 mod common;
+mod support;
 
 /// req(R19, R22, R23, R37)
 use pacto_bot_api::db::Database;
 use std::error::Error;
 use std::process::Child;
 use std::time::Duration;
+use support::mock_relay::MockRelay;
 
 async fn wait_for_child(
     mut child: Child,
@@ -119,6 +121,36 @@ async fn shutdown_preserves_cursor_after_prior_dispatch() -> Result<(), Box<dyn 
         cursor,
         Some((bot.npub, 12_345)),
         "cursor should be preserved after shutdown"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn relay_stop_then_sigterm_triggers_clean_exit() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = MockRelay::start().await?;
+
+    let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    bot.relays = vec![relay.url()];
+    let config = common::make_config(&dir, vec![bot])?;
+
+    let child = common::spawn_daemon_until_ready(&config).await?;
+
+    // Stop the relay to sever the WebSocket connection. A graceful shutdown
+    // request should still complete cleanly, even when the relay is gone.
+    relay.stop().await;
+
+    let pid = child.id();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )?;
+
+    let status = wait_for_child(child, 15).await?;
+    assert!(
+        status.success(),
+        "daemon should exit cleanly after relay stop and SIGTERM"
     );
 
     Ok(())

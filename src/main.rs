@@ -339,9 +339,9 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                     warn!(error = %e, "failed to flush diagnostics report");
                 }
             }
-            Some(event_result) = event_stream.next() => {
+            event_result = event_stream.next() => {
                 match event_result {
-                    Ok(event) => {
+                    Some(Ok(event)) => {
                         // Spawn each event dispatch so one bot's slow signer
                         // or a long handler timeout does not block other bots.
                         let dispatch = dispatch.clone();
@@ -351,7 +351,11 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                             }
                         });
                     }
-                    Err(e) => warn!(error = %e, "nostr event error"),
+                    Some(Err(e)) => warn!(error = %e, "nostr event error"),
+                    None => {
+                        warn!("nostr event stream ended, shutting down");
+                        break;
+                    }
                 }
             }
         }
@@ -382,7 +386,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         let _ = metrics_handle.await;
         let _ = reaper_handle.await;
 
-        nostr_client.disconnect().await;
+        nostr_client.shutdown().await;
 
         // Release the daemon lock before declaring stopped and clean up the
         // lock file so the admin CLI does not see a stale PID.

@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Exit daemon gracefully when the Nostr event stream ends (`None`) instead of looping indefinitely while unresponsive.
+- `NostrClient::shutdown` now stops the underlying relay-pool notification loop so `receive_events` streams terminate cleanly.
+- `MockRelay` closes active WebSocket connections on `stop()`, improving integration-test coverage of relay-loss scenarios.
 
 ## [0.4.1] - 2026-07-01
 

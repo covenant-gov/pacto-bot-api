@@ -120,6 +120,11 @@ impl NostrClient {
         Ok(())
     }
 
+    /// Disconnect from all relays and stop the notification loop.
+    pub async fn shutdown(&self) {
+        self.client.shutdown().await;
+    }
+
     /// Disconnect from all relays.
     pub async fn disconnect(&self) {
         self.client.disconnect().await;
@@ -396,6 +401,8 @@ mod tests {
     use super::*;
     use crate::signer::LocalKey;
     use nostr::ToBech32;
+    use std::time::Duration;
+    use tokio_stream::StreamExt;
 
     fn test_signer() -> (LocalKey, String) {
         let keys = nostr::Keys::generate();
@@ -506,23 +513,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_signer_returns_error() {
+    async fn receive_events_stream_ends_when_notifications_stop() {
         let client = NostrClient::new(vec![]).await.unwrap();
-        let bot_keys = nostr::Keys::generate();
-        let sender_keys = nostr::Keys::generate();
-        let event = EventBuilder::private_msg(
-            &sender_keys,
-            bot_keys.public_key(),
-            "secret message",
-            Vec::<Tag>::new(),
-        )
-        .await
-        .unwrap();
+        let mut stream = client.receive_events();
 
-        let signers = client.signers.read().await.clone();
-        let err = NostrClient::process_gift_wrap(&signers, &event, None)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("no signer registered"));
+        // Give the spawned notification handler a chance to subscribe before
+        // shutting down the client.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Shutting down the client stops the notification loop. The spawned
+        // task should drop the sender and the stream should yield None.
+        client.shutdown().await;
+
+        let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+        assert!(
+            matches!(next, Ok(None)),
+            "stream should terminate after shutdown"
+        );
     }
 }

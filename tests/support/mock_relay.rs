@@ -31,6 +31,7 @@ struct MockRelayInner {
     events: RwLock<Vec<Event>>,
     new_event_tx: broadcast::Sender<Event>,
     shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
+    connection_shutdown_tx: broadcast::Sender<()>,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -42,11 +43,13 @@ impl MockRelay {
 
         let (new_event_tx, _new_event_rx) = broadcast::channel(256);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+        let (connection_shutdown_tx, _connection_shutdown_rx) = broadcast::channel(1);
         let inner = Arc::new(MockRelayInner {
             addr,
             events: RwLock::new(Vec::new()),
             new_event_tx,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            connection_shutdown_tx,
             handle: Mutex::new(None),
         });
 
@@ -126,6 +129,7 @@ impl MockRelay {
         if let Some(tx) = self.inner.shutdown_tx.lock().await.take() {
             let _ = tx.send(()).await;
         }
+        let _ = self.inner.connection_shutdown_tx.send(());
         if let Some(handle) = self.inner.handle.lock().await.take() {
             let _ = handle.await;
         }
@@ -137,6 +141,7 @@ impl MockRelay {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let ws_stream = accept_async(stream).await?;
         let mut new_event_rx = self.inner.new_event_tx.subscribe();
+        let mut connection_shutdown_rx = self.inner.connection_shutdown_tx.subscribe();
         let (mut ws_tx, mut ws_rx) = ws_stream.split();
         let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
 
@@ -144,6 +149,7 @@ impl MockRelay {
 
         loop {
             tokio::select! {
+                _ = connection_shutdown_rx.recv() => break,
                 Some(msg) = ws_rx.next() => {
                     match msg {
                         Ok(WsMessage::Text(text)) => {
