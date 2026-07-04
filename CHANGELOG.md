@@ -43,6 +43,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Move blocking SQLite and filesystem I/O off the async runtime: config load, diagnostics report flush, daemon lock acquisition, HTTP secret token creation, Unix socket setup, and SQLite cursor/handler operations now run on Tokio's blocking thread pool or via async filesystem APIs.
+- Replace the `std::sync::Mutex<Database>` in `Dispatch` with an async `Db` wrapper that runs blocking SQLite work on worker threads, preventing async runtime threads from being blocked by the SQLite mutex.
 - Exit daemon gracefully when the Nostr event stream ends (`None`) instead of looping indefinitely while unresponsive.
 - `NostrClient::shutdown` now stops the underlying relay-pool notification loop so `receive_events` streams terminate cleanly.
 - `MockRelay` closes active WebSocket connections on `stop()`, improving integration-test coverage of relay-loss scenarios.

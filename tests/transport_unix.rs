@@ -2,7 +2,7 @@ use nostr::ToBech32;
 /// req(R1, R3, R28)
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::{Database, Db};
 use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::nostr::NostrClient;
@@ -59,7 +59,7 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
     let nostr_client = NostrClient::new(vec![]).await?;
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
     let dir = tempfile::tempdir()?;
-    let db = Database::open(dir.path().join("agent.db").as_path())?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));
     Ok((dispatch, dir))

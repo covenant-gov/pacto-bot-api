@@ -1,6 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use nostr::EventId;
@@ -10,7 +10,7 @@ use tokio::time::timeout;
 use tracing::{debug, warn};
 
 use crate::client_manager::ClientManager;
-use crate::db::Database;
+use crate::db::Db;
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
@@ -177,7 +177,7 @@ const HANDLER_STALE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug)]
 pub struct Dispatch {
     client_manager: Arc<RwLock<ClientManager>>,
-    db: StdMutex<Database>,
+    db: Db,
     pub diagnostics: Diagnostics,
     rate_limiter: RateLimiter,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
@@ -191,12 +191,12 @@ impl Dispatch {
     /// Create a new dispatch router with default rate limits.
     pub fn new(
         client_manager: Arc<RwLock<ClientManager>>,
-        db: Database,
+        db: Db,
         diagnostics: Diagnostics,
     ) -> Self {
         Self {
             client_manager,
-            db: StdMutex::new(db),
+            db,
             diagnostics,
             rate_limiter: RateLimiter::default(),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
@@ -210,13 +210,13 @@ impl Dispatch {
     /// Create a dispatch router with a custom rate limiter (useful in tests).
     pub fn with_rate_limiter(
         client_manager: Arc<RwLock<ClientManager>>,
-        db: Database,
+        db: Db,
         diagnostics: Diagnostics,
         rate_limiter: RateLimiter,
     ) -> Self {
         Self {
             client_manager,
-            db: StdMutex::new(db),
+            db,
             diagnostics,
             rate_limiter,
             pending: Arc::new(TokioMutex::new(HashMap::new())),
@@ -252,16 +252,12 @@ impl Dispatch {
     /// Used by the transport layer when a connection drops, as well as by
     /// explicit `handler.unregister` requests.
     pub async fn unregister_handler(&self, handler_id: &str) -> Result<(), DaemonError> {
-        let mut cm = self.client_manager.write().await;
-        cm.handler_registry.unregister(handler_id)?;
-
         {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.delete_handler(handler_id)?;
+            let mut cm = self.client_manager.write().await;
+            cm.handler_registry.unregister(handler_id)?;
         }
+
+        self.db.delete_handler(handler_id).await?;
 
         self.handlers_registered.fetch_sub(1, Ordering::SeqCst);
         self.diagnostics
@@ -372,11 +368,7 @@ impl Dispatch {
                 let mut last_cursor = self.last_cursor.lock().await;
                 last_cursor.insert(event.bot_id.clone(), (npub.clone(), cursor));
             }
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.save_cursor(&event.bot_id, &npub, cursor)?;
+            self.db.save_cursor(&event.bot_id, &npub, cursor).await?;
         }
 
         Ok(())
@@ -442,13 +434,15 @@ impl Dispatch {
 
     /// Persist the latest cursor for every bot seen by this dispatch instance.
     pub async fn flush_cursors(&self) -> Result<(), DaemonError> {
-        let last_cursor = self.last_cursor.lock().await;
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-        for (bot_id, (npub, cursor)) in last_cursor.iter() {
-            db.save_cursor(bot_id, npub, *cursor)?;
+        let cursors: Vec<(String, String, i64)> = {
+            let last_cursor = self.last_cursor.lock().await;
+            last_cursor
+                .iter()
+                .map(|(bot_id, (npub, cursor))| (bot_id.clone(), npub.clone(), *cursor))
+                .collect()
+        };
+        for (bot_id, npub, cursor) in cursors {
+            self.db.save_cursor(&bot_id, &npub, cursor).await?;
         }
         Ok(())
     }
@@ -575,17 +569,13 @@ impl Dispatch {
             })
             .unwrap_or_default();
 
-        {
-            let handler = cm
-                .handler_registry
-                .get_handler(&handler_id)
-                .ok_or_else(|| DaemonError::HandlerNotRegistered)?;
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.save_handler(handler)?;
-        }
+        let handler = cm
+            .handler_registry
+            .get_handler(&handler_id)
+            .ok_or_else(|| DaemonError::HandlerNotRegistered)?
+            .clone();
+        drop(cm);
+        self.db.save_handler(&handler).await?;
 
         if !existed {
             self.handlers_registered.fetch_add(1, Ordering::SeqCst);
@@ -891,12 +881,8 @@ impl Dispatch {
     }
 
     /// Load the persisted cursor for a bot.
-    pub fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-        db.load_cursor(bot_id)
+    pub async fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
+        self.db.load_cursor(bot_id).await
     }
 
     /// Access the diagnostics collector.
@@ -906,13 +892,7 @@ impl Dispatch {
 
     /// Restore persisted handler registrations as disconnected entries.
     pub async fn restore_handlers(&self) -> Result<(), DaemonError> {
-        let handlers = {
-            let db = self
-                .db
-                .lock()
-                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
-            db.load_handlers()?
-        };
+        let handlers = self.db.load_handlers().await?;
 
         let count = handlers.len() as u64;
         let mut cm = self.client_manager.write().await;
@@ -953,6 +933,7 @@ fn event_type_name(event_type: &EventType) -> String {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+    use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
     use crate::nostr::NostrClient;
     use crate::transport::protocol::JsonRpcMessage;
@@ -988,7 +969,9 @@ mod tests {
             ClientManager::new(config, nostr_client).await.unwrap(),
         ));
         let dir = tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path()).unwrap();
+        let db = Db::open(dir.path().join("test.db").as_path())
+            .await
+            .unwrap();
         let diagnostics = Diagnostics::new();
         let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
         (dispatch, cm)
@@ -1314,5 +1297,47 @@ mod tests {
 
         let cm = cm.read().await;
         assert!(cm.handler_registry.get_handler(&handler_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn lock_ordering_releases_last_cursor_before_db() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+        let dispatch = Arc::new(dispatch);
+
+        let npub = keys.public_key().to_bech32().unwrap();
+        {
+            let mut last_cursor = dispatch.last_cursor.lock().await;
+            last_cursor.insert("echo-bot".into(), (npub.clone(), 42));
+        }
+
+        let hold = dispatch.last_cursor.clone();
+        let blocker = tokio::spawn(async move {
+            let _guard = hold.lock().await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let flush = tokio::spawn({
+            let dispatch = Arc::clone(&dispatch);
+            async move { dispatch.flush_cursors().await.unwrap() }
+        });
+
+        // Give the blocker time to take the last_cursor lock.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // The runtime should still be responsive while flush_cursors waits
+        // for the lock, because no database work has started yet.
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+
+        blocker.await.unwrap();
+        flush.await.unwrap();
+
+        let cursor = dispatch.load_cursor("echo-bot").await.unwrap();
+        assert_eq!(cursor, Some((npub, 42)));
     }
 }

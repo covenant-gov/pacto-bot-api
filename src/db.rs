@@ -3,6 +3,7 @@ use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
+use std::sync::{Arc, Mutex as StdMutex};
 
 /// SQLite persistence handle for cursors and handler registrations.
 #[derive(Debug)]
@@ -175,6 +176,92 @@ impl Database {
         self.conn
             .execute("DELETE FROM handlers WHERE handler_id = ?1", [handler_id])?;
         Ok(())
+    }
+}
+
+/// Async wrapper around [`Database`] that runs blocking SQLite work on
+/// Tokio's blocking thread pool so the async runtime stays responsive.
+#[derive(Debug, Clone)]
+pub struct Db {
+    inner: Arc<StdMutex<Database>>,
+}
+
+impl Db {
+    /// Open (or create) the SQLite database at `path` on a blocking worker.
+    pub async fn open(path: &Path) -> Result<Self, DaemonError> {
+        let path = path.to_path_buf();
+        let db = tokio::task::spawn_blocking(move || Database::open(&path))
+            .await
+            .map_err(|e| DaemonError::Config(format!("database open task failed: {e}")))??;
+        Ok(Self {
+            inner: Arc::new(StdMutex::new(db)),
+        })
+    }
+
+    /// Run a blocking database closure on a worker thread.
+    async fn run<F, T>(&self, f: F) -> Result<T, DaemonError>
+    where
+        F: FnOnce(&Database) -> Result<T, DaemonError> + Send + 'static,
+        T: Send + 'static,
+    {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            let db = inner
+                .lock()
+                .map_err(|_| DaemonError::Config("database lock poisoned".into()))?;
+            f(&db)
+        })
+        .await
+        .map_err(|e| DaemonError::Config(format!("database task failed: {e}")))?
+    }
+
+    /// Persist or update the cursor for `bot_id`.
+    pub async fn save_cursor(
+        &self,
+        bot_id: &str,
+        npub: &str,
+        cursor: i64,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let npub = npub.to_string();
+        self.run(move |db| db.save_cursor(&bot_id, &npub, cursor))
+            .await
+    }
+
+    /// Load the stored npub and cursor for `bot_id`.
+    pub async fn load_cursor(&self, bot_id: &str) -> Result<Option<(String, i64)>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        self.run(move |db| db.load_cursor(&bot_id)).await
+    }
+
+    /// Return true if the stored npub for `bot_id` matches `npub`.
+    pub async fn validate_npub(&self, bot_id: &str, npub: &str) -> Result<bool, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let npub = npub.to_string();
+        self.run(move |db| db.validate_npub(&bot_id, &npub)).await
+    }
+
+    /// Reset the cursor for `bot_id`, removing any persisted event position.
+    pub async fn reset_cursor(&self, bot_id: &str) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        self.run(move |db| db.reset_cursor(&bot_id)).await
+    }
+
+    /// Persist a handler registration, replacing any existing row.
+    pub async fn save_handler(&self, handler: &HandlerRef) -> Result<(), DaemonError> {
+        let handler = handler.clone();
+        self.run(move |db| db.save_handler(&handler)).await
+    }
+
+    /// Load all persisted handler registrations.
+    pub async fn load_handlers(&self) -> Result<Vec<HandlerRef>, DaemonError> {
+        self.run(|db| db.load_handlers()).await
+    }
+
+    /// Delete a persisted handler registration.
+    pub async fn delete_handler(&self, handler_id: &str) -> Result<(), DaemonError> {
+        let handler_id = handler_id.to_string();
+        self.run(move |db| db.delete_handler(&handler_id)).await
     }
 }
 
@@ -410,5 +497,84 @@ mod tests {
         assert_eq!(loaded[0].bot_ids, vec!["bot-2"]);
         assert_eq!(loaded[0].capabilities, vec!["set_profile"]);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn db_wrapper_async_methods_round_trip() -> Result<(), DaemonError> {
+        let dir = tempfile::tempdir()?;
+        let db = Db::open(&dir.path().join("agent.db")).await?;
+
+        db.save_cursor("bot-1", "npub-1", 42).await?;
+        let (npub, cursor) = db
+            .load_cursor("bot-1")
+            .await?
+            .ok_or_else(|| DaemonError::Config("cursor missing".into()))?;
+        assert_eq!(npub, "npub-1");
+        assert_eq!(cursor, 42);
+        assert!(db.validate_npub("bot-1", "npub-1").await?);
+
+        db.reset_cursor("bot-1").await?;
+        assert!(db.load_cursor("bot-1").await?.is_none());
+
+        let handler = handler_ref(
+            "h-1",
+            &["bot-1"],
+            &[EventType::DmReceived],
+            &["send_messages"],
+        );
+        db.save_handler(&handler).await?;
+        let loaded = db.load_handlers().await?;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "h-1");
+
+        db.delete_handler("h-1").await?;
+        assert!(db.load_handlers().await?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn db_wrapper_concurrent_operations_leave_runtime_responsive() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("agent.db")).await.unwrap();
+
+        let mut interval = tokio::time::interval(Duration::from_millis(5));
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticks_clone = Arc::clone(&ticks);
+        let timer = tokio::spawn(async move {
+            for _ in 0..50 {
+                interval.tick().await;
+                ticks_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let mut ops = Vec::new();
+        for i in 0..20u64 {
+            let db = db.clone();
+            let bot = format!("bot-{i}");
+            let handler = handler_ref(
+                &format!("h-{i}"),
+                &[&bot],
+                &[EventType::DmReceived],
+                &["send_messages"],
+            );
+            ops.push(tokio::spawn(async move {
+                db.save_cursor(&bot, "npub", i as i64).await.unwrap();
+                db.load_cursor(&bot).await.unwrap();
+                db.save_handler(&handler).await.unwrap();
+                db.load_handlers().await.unwrap();
+                db.delete_handler(&format!("h-{i}")).await.unwrap();
+            }));
+        }
+        let _ = futures::future::join_all(ops).await;
+        timer.await.unwrap();
+
+        let tick_count = ticks.load(Ordering::SeqCst);
+        assert!(
+            tick_count >= 45,
+            "runtime was blocked; only {tick_count} timer ticks fired"
+        );
     }
 }

@@ -65,7 +65,7 @@ impl UnixTransport {
             ))
         })?;
 
-        set_socket_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600))?;
+        set_socket_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600)).await?;
 
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_connections));
         let mut shutdown = shutdown;
@@ -105,7 +105,14 @@ impl UnixTransport {
 
 impl Drop for UnixTransport {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.socket_path);
+        let path = self.socket_path.clone();
+        if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+            std::mem::drop(tokio::task::spawn_blocking(move || {
+                let _ = std::fs::remove_file(&path);
+            }));
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
     }
 }
 
@@ -130,13 +137,13 @@ async fn remove_stale_socket(path: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn set_socket_permissions(
+async fn set_socket_permissions(
     path: &Path,
     permissions: std::fs::Permissions,
 ) -> Result<(), DaemonError> {
     #[cfg(unix)]
     {
-        std::fs::set_permissions(path, permissions)?;
+        tokio::fs::set_permissions(path, permissions).await?;
     }
     #[cfg(not(unix))]
     {
@@ -294,4 +301,96 @@ async fn write_message(
     writer.write_all(line.as_bytes()).await?;
     writer.write_all(b"\n").await?;
     writer.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn ensure_socket_directory_creates_owner_only_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("nested").join("socket.sock");
+        ensure_socket_directory(&socket_path).await.unwrap();
+
+        let parent = socket_path.parent().unwrap();
+        assert!(parent.is_dir());
+
+        #[cfg(unix)]
+        {
+            let mode = std::fs::metadata(parent).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_stale_socket_deletes_abandoned_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("socket.sock");
+
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        drop(listener);
+
+        remove_stale_socket(&socket_path).await.unwrap();
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_stale_socket_ignores_missing_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("does-not-exist.sock");
+        remove_stale_socket(&socket_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_stale_socket_rejects_live_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("socket.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+
+        let err = remove_stale_socket(&socket_path).await.unwrap_err();
+        assert!(err.to_string().contains("already in use"));
+    }
+
+    #[tokio::test]
+    async fn socket_helpers_do_not_block_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("a").join("b").join("socket.sock");
+
+        let mut interval = tokio::time::interval(Duration::from_millis(5));
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticks_clone = Arc::clone(&ticks);
+        let timer = tokio::spawn(async move {
+            for _ in 0..50 {
+                interval.tick().await;
+                ticks_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let path = socket_path.clone();
+        let work = tokio::spawn(async move {
+            ensure_socket_directory(&path).await.unwrap();
+            remove_stale_socket(&path).await.unwrap();
+        });
+
+        // The runtime should stay responsive while filesystem work is handled
+        // on Tokio's blocking thread pool.
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+
+        work.await.unwrap();
+        timer.await.unwrap();
+
+        let tick_count = ticks.load(Ordering::SeqCst);
+        assert!(
+            tick_count >= 45,
+            "runtime blocked during unix socket setup; only {tick_count} timer ticks fired"
+        );
+    }
 }

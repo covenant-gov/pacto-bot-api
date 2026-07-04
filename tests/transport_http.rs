@@ -5,7 +5,7 @@ mod support;
 use nostr::ToBech32;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::Db;
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::events::{AgentEvent, EventType};
@@ -579,7 +579,7 @@ async fn start_dispatch_server_with_relay(
     let cm = Arc::new(tokio::sync::RwLock::new(
         ClientManager::new(config, nostr_client).await?,
     ));
-    let db = Database::open(&data_dir.join("test.db"))?;
+    let db = Db::open(&data_dir.join("test.db")).await?;
     let dispatch = Arc::new(Dispatch::new(cm, db, Diagnostics::new()));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;

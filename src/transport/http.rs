@@ -20,6 +20,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::SocketAddr;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -458,34 +459,45 @@ async fn load_or_create_token(data_dir: &Path) -> Result<SecretString, DaemonErr
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::create_dir_all(data_dir).await?;
-            let mut bytes = [0u8; 32];
-            getrandom::getrandom(&mut bytes)
-                .map_err(|e| DaemonError::Io(std::io::Error::other(e)))?;
-            let token = hex::encode(bytes);
 
-            let tmp = data_dir.join("bot_secret_token.tmp");
-            // Create the temp file with owner-only permissions from the start
-            // so the secret never exists in a group/other-readable state.
-            #[cfg(unix)]
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)
-                .map_err(DaemonError::Io)?;
-            #[cfg(not(unix))]
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(&tmp)
-                .map_err(DaemonError::Io)?;
-            let mut file = tokio::fs::File::from_std(file);
-            tokio::io::AsyncWriteExt::write_all(&mut file, token.as_bytes()).await?;
-            tokio::io::AsyncWriteExt::flush(&mut file).await?;
-            drop(file);
-            tokio::fs::rename(&tmp, &path).await?;
+            let path = path.to_path_buf();
+            let data_dir = data_dir.to_path_buf();
+            let token = tokio::task::spawn_blocking(move || -> Result<String, DaemonError> {
+                let mut bytes = [0u8; 32];
+                getrandom::getrandom(&mut bytes)
+                    .map_err(|e| DaemonError::Io(std::io::Error::other(e)))?;
+                let token = hex::encode(bytes);
+
+                let tmp = data_dir.join("bot_secret_token.tmp");
+                // Create the temp file with owner-only permissions from the start
+                // so the secret never exists in a group/other-readable state.
+                #[cfg(unix)]
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&tmp)
+                    .map_err(DaemonError::Io)?;
+                #[cfg(not(unix))]
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(&tmp)
+                    .map_err(DaemonError::Io)?;
+                let mut file = std::io::BufWriter::new(file);
+                file.write_all(token.as_bytes())?;
+                file.flush()?;
+                drop(file);
+                std::fs::rename(&tmp, &path)?;
+                Ok(token)
+            })
+            .await
+            .map_err(|e| DaemonError::Config(format!("token creation task failed: {e}")))?;
+
+            let token = token?;
+            return Ok(SecretString::new(token.into()));
         }
         Err(e) => return Err(DaemonError::Io(e)),
     }
@@ -536,4 +548,63 @@ pub async fn reload_token(token: &HttpToken, data_dir: &Path) -> Result<(), Daem
     let mut guard = token.write().await;
     *guard = new_secret;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn load_or_create_token_does_not_block_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut interval = tokio::time::interval(Duration::from_millis(5));
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let ticks_clone = Arc::clone(&ticks);
+        let timer = tokio::spawn(async move {
+            for _ in 0..50 {
+                interval.tick().await;
+                ticks_clone.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let dir_path = dir.path().to_path_buf();
+        let token = tokio::spawn(async move { load_or_create_token(&dir_path).await.unwrap() });
+
+        // The runtime should remain responsive while the token file is
+        // created on a blocking thread.
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+
+        let token = token.await.unwrap();
+        timer.await.unwrap();
+
+        let tick_count = ticks.load(Ordering::SeqCst);
+        assert!(
+            tick_count >= 45,
+            "runtime blocked during token creation; only {tick_count} timer ticks fired"
+        );
+
+        let path = dir.path().join("bot_secret_token");
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(contents.trim(), token.expose_secret());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = tokio::fs::metadata(&path)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
 }

@@ -1,14 +1,15 @@
 /// req(R14, R15, R16, R17, R18, R26, R27, R30)
 mod support;
 
+use crate::support::mock_relay::MockRelay;
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::support::mock_relay::MockRelay;
 use nostr::{Kind, ToBech32};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::Db;
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::{
     DEFAULT_BOT_BURST, DEFAULT_BOT_RATE, DEFAULT_HANDLER_BURST, DEFAULT_HANDLER_RATE, Dispatch,
@@ -68,7 +69,7 @@ async fn setup_dispatch_with_client(
     };
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
     let dir = tempdir()?;
-    let db = Database::open(dir.path().join("test.db").as_path())?;
+    let db = Db::open(dir.path().join("test.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let mut dispatch = match rate_limiter {
         Some(limiter) => Dispatch::with_rate_limiter(cm.clone(), db, diagnostics, limiter),
@@ -221,7 +222,7 @@ async fn fan_out_delivers_event_and_advances_cursor() -> Result<(), Box<dyn std:
     h2.await
         .map_err(|e| DaemonError::Config(format!("handler 2 task panicked: {e}")))??;
 
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, Some((keys.public_key().to_bech32()?, 42)));
 
     Ok(())
@@ -286,7 +287,7 @@ async fn defer_prevents_cursor_advance() -> Result<(), Box<dyn std::error::Error
     h.await
         .map_err(|e| DaemonError::Config(format!("handler task panicked: {e}")))??;
 
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, None);
 
     Ok(())
@@ -345,7 +346,8 @@ async fn unauthorized_send_dm_returns_32006() -> Result<(), Box<dyn std::error::
 #[tokio::test]
 async fn rate_limit_rejects_excess_calls_with_32005() -> Result<(), Box<dyn std::error::Error>> {
     let keys = test_keys();
-    let nostr_client = NostrClient::new(vec!["wss://localhost:4242".to_string()]).await?;
+    let relay = MockRelay::start().await?;
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let (dispatch, cm) = setup_dispatch_with_client(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
         nostr_client,
@@ -407,7 +409,8 @@ async fn rate_limit_rejects_excess_calls_with_32005() -> Result<(), Box<dyn std:
 async fn rate_limit_increments_rate_limited_total_counter() -> Result<(), Box<dyn std::error::Error>>
 {
     let keys = test_keys();
-    let nostr_client = NostrClient::new(vec!["wss://localhost:4242".to_string()]).await?;
+    let relay = MockRelay::start().await?;
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let (dispatch, cm) = setup_dispatch_with_client(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
         nostr_client,
@@ -770,7 +773,7 @@ async fn slow_handler_does_not_block_fast_handler_and_cursor_advances()
     );
 
     // Cursor advances even though the slow handler never responded.
-    let cursor = dispatch.load_cursor("echo-bot")?;
+    let cursor = dispatch.load_cursor("echo-bot").await?;
     assert_eq!(cursor, Some((keys.public_key().to_bech32()?, 42)));
 
     Ok(())

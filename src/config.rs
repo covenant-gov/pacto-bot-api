@@ -158,6 +158,16 @@ impl DaemonConfig {
         Ok(config)
     }
 
+    /// Load and validate configuration from `path` without blocking the async
+    /// runtime. Used by the daemon; the synchronous [`Self::load`] remains
+    /// available for contexts that are already synchronous.
+    pub async fn load_async(path: impl AsRef<Path> + Send) -> Result<Self, DaemonError> {
+        let path = path.as_ref().to_path_buf();
+        tokio::task::spawn_blocking(move || DaemonConfig::load(path))
+            .await
+            .map_err(|e| DaemonError::Config(format!("config load task failed: {e}")))?
+    }
+
     /// Data directory with expanded paths.
     pub fn data_dir(&self) -> &str {
         &self.daemon.data_dir
@@ -372,6 +382,7 @@ impl BotConfig {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::Duration;
 
     fn write_config(content: &str) -> (tempfile::TempDir, tempfile::NamedTempFile, PathBuf) {
         // Create a restricted temp directory so the parent-directory permission
@@ -724,6 +735,71 @@ signing = { backend = "nsec", nsec = "nsec1a" }
                 .get(var)
                 .cloned()),
             "relays = [\"wss://relay.example.com\"]"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_async_round_trips() -> Result<(), DaemonError> {
+        let (_dir, _file, path) = write_config(
+            r#"
+[daemon]
+data_dir = "/tmp/pacto"
+
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+capabilities = ["ReadMessages", "SendMessages"]
+"#,
+        );
+
+        let config = DaemonConfig::load_async(&path).await?;
+        assert_eq!(config.bots[0].id, "echo-bot");
+        assert_eq!(config.daemon.data_dir, "/tmp/pacto");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_async_does_not_block_runtime() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let mut interval = tokio::time::interval(Duration::from_millis(5));
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticks_clone = std::sync::Arc::clone(&ticks);
+        let timer = tokio::spawn(async move {
+            for _ in 0..50 {
+                interval.tick().await;
+                ticks_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        let path = path.clone();
+        let load = tokio::spawn(async move { DaemonConfig::load_async(&path).await.unwrap() });
+
+        // The runtime should remain responsive while the config is parsed on a
+        // blocking thread.
+        tokio::time::timeout(
+            Duration::from_millis(5),
+            tokio::time::sleep(Duration::from_millis(1)),
+        )
+        .await
+        .unwrap();
+
+        let config = load.await.unwrap();
+        timer.await.unwrap();
+
+        assert_eq!(config.bots[0].id, "echo-bot");
+        let tick_count = ticks.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            tick_count >= 45,
+            "runtime blocked during async config load; only {tick_count} timer ticks fired"
         );
     }
 }

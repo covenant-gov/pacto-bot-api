@@ -309,7 +309,7 @@ mod tests {
     use super::*;
     use crate::client_manager::ClientManager;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-    use crate::db::Database;
+    use crate::db::Db;
     use crate::diagnostics::Diagnostics;
     use crate::dispatch::Dispatch;
     use crate::nostr::NostrClient;
@@ -711,7 +711,9 @@ mod tests {
             ClientManager::new(config, nostr_client).await.unwrap(),
         ));
         let dir = tempdir().unwrap();
-        let db = Database::open(dir.path().join("test.db").as_path()).unwrap();
+        let db = Db::open(dir.path().join("test.db").as_path())
+            .await
+            .unwrap();
         let diagnostics = Diagnostics::new();
         let mut dispatch = Dispatch::new(cm.clone(), db, diagnostics);
         dispatch.set_handler_stale_timeout(Duration::from_millis(10));

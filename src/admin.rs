@@ -2693,7 +2693,7 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     if is_pacto_dev_env() {
         write("service_versions:")?;
         if let Some(relay) = &report.service_versions.relay {
-            write(&format!("  relay:"))?;
+            write("  relay:")?;
             write(&format!("    url: {}", relay.url))?;
             write(&format!("    reachable: {}", relay.reachable))?;
             if let Some(version) = &relay.version {
@@ -2704,7 +2704,7 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
             }
         }
         if let Some(evm) = &report.service_versions.evm_node {
-            write(&format!("  evm_node:"))?;
+            write("  evm_node:")?;
             write(&format!("    url: {}", evm.url))?;
             write(&format!("    reachable: {}", evm.reachable))?;
             if let Some(version) = &evm.version {
@@ -2715,7 +2715,7 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
             }
         }
         if let Some(bunker) = &report.service_versions.bunker_port {
-            write(&format!("  bunker_port:"))?;
+            write("  bunker_port:")?;
             write(&format!("    url: {}", bunker.url))?;
             write(&format!("    reachable: {}", bunker.reachable))?;
             if let Some(version) = &bunker.version {

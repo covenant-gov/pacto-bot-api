@@ -242,17 +242,17 @@ impl Diagnostics {
 
     /// Atomically write the current snapshot to
     /// `<data_dir>/reports/latest.json`.
-    pub fn flush_report(&self, data_dir: &Path) -> Result<(), DaemonError> {
+    pub async fn flush_report(&self, data_dir: &Path) -> Result<(), DaemonError> {
         let snapshot = self.snapshot();
         let reports_dir = data_dir.join("reports");
-        std::fs::create_dir_all(&reports_dir)?;
+        tokio::fs::create_dir_all(&reports_dir).await?;
 
         let tmp_path = reports_dir.join("latest.json.tmp");
         let final_path = reports_dir.join("latest.json");
 
         let json = serde_json::to_string_pretty(&snapshot)?;
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &final_path)?;
+        tokio::fs::write(&tmp_path, json).await?;
+        tokio::fs::rename(&tmp_path, &final_path).await?;
 
         Ok(())
     }
@@ -579,8 +579,8 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn flush_report_round_trips() -> Result<(), DaemonError> {
+    #[tokio::test]
+    async fn flush_report_round_trips() -> Result<(), DaemonError> {
         let tmp = tempfile::tempdir()?;
         let diag = Diagnostics::new();
         diag.set_status(DaemonStatus::Ready);
@@ -595,10 +595,10 @@ mod tests {
             error: None,
         }]);
 
-        diag.flush_report(tmp.path())?;
+        diag.flush_report(tmp.path()).await?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
-        let contents = std::fs::read_to_string(&report_path)?;
+        let contents = tokio::fs::read_to_string(&report_path).await?;
         let parsed: HealthSnapshot = serde_json::from_str(&contents)?;
         assert_eq!(parsed.status, DaemonStatus::Ready);
         assert_eq!(parsed.events_received_total, 1);
@@ -606,21 +606,61 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn flushed_report_contains_no_secrets() -> Result<(), DaemonError> {
+    #[tokio::test]
+    async fn flushed_report_contains_no_secrets() -> Result<(), DaemonError> {
         let tmp = tempfile::tempdir()?;
         let diag = Diagnostics::new();
         diag.record_error(None, "leaked nsec1verysecretandlonghexstring", None);
         diag.record_error(None, "bunker secret=shh! token=do-not-leak", None);
-        diag.flush_report(tmp.path())?;
+        diag.flush_report(tmp.path()).await?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
-        let contents = std::fs::read_to_string(&report_path)?;
+        let contents = tokio::fs::read_to_string(&report_path).await?;
         assert!(!contents.contains("nsec1verysecretandlonghexstring"));
         assert!(!contents.contains("shh!"));
         assert!(!contents.contains("do-not-leak"));
         assert!(contents.contains("[REDACTED]"));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn flush_report_runs_concurrently_with_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let diag = Diagnostics::new();
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(5));
+        let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticks_clone = Arc::clone(&ticks);
+        let timer = tokio::spawn(async move {
+            for _ in 0..50 {
+                interval.tick().await;
+                ticks_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+
+        let mut flushes = Vec::new();
+        for i in 0..20u64 {
+            let diag = diag.clone();
+            let dir = tmp.path().to_path_buf();
+            flushes.push(tokio::spawn(async move {
+                diag.set_handlers_registered(i);
+                diag.flush_report(&dir).await.unwrap();
+            }));
+        }
+        let _ = futures::future::join_all(flushes).await;
+        timer.await.unwrap();
+
+        let tick_count = ticks.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            tick_count >= 45,
+            "runtime was blocked during flush_report; only {tick_count} timer ticks fired"
+        );
+
+        let report_path = tmp.path().join("reports").join("latest.json");
+        let contents = tokio::fs::read_to_string(&report_path).await.unwrap();
+        let parsed: HealthSnapshot = serde_json::from_str(&contents).unwrap();
+        // The last registered count should be one of the values set during the race.
+        assert!(parsed.handlers_registered <= 19);
     }
 
     #[test]
