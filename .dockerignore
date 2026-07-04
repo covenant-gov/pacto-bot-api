@@ -16,8 +16,13 @@
 # Documentation and examples (not needed for the daemon image)
 /docs
 /examples
-/python
 /tests
+
+# Python SDK source/tests are not needed at runtime, but pyproject.toml is
+# embedded at compile time so the scaffold generator can report the bundled SDK
+# version. Exclude everything except that one file.
+/python/*
+!/python/pyproject.toml
 
 # Templates are intentionally included in the build context: they are
 # embedded into the admin CLI at compile time via include_dir!.

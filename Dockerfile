@@ -10,13 +10,14 @@
 #   docker run -v $(pwd)/pacto-bot-api.toml:/etc/pacto/pacto-bot-api.toml:ro \
 #     -v pacto-data:/var/lib/pacto-bot-api pacto-bot-api
 
-FROM rust:1.96 AS builder
+FROM rust:1.96-bookworm AS builder
 
 WORKDIR /usr/src/pacto-bot-api
 
 COPY Cargo.toml Cargo.lock ./
 COPY xtask xtask
 COPY schemas schemas
+COPY python/pyproject.toml python/pyproject.toml
 COPY src src
 
 ARG GIT_COMMIT_SHORT=unknown
