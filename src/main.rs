@@ -48,25 +48,22 @@ struct Cli {
     enable_http: bool,
 
     /// Logging level filter for the daemon.
-    #[arg(short, long, value_name = "LEVEL", default_value = "info")]
-    log_level: String,
+    #[arg(short, long, value_name = "LEVEL")]
+    log_level: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
 
-    let env_filter = if let Some(rust_log) = env::var_os("RUST_LOG").and_then(|s| {
-        if cli.log_level != "info" {
-            // A CLI flag overrides the environment variable.
-            None
-        } else {
-            s.into_string().ok().filter(|v| !v.is_empty())
-        }
-    }) {
+    let env_filter = if let Some(level) = &cli.log_level {
+        tracing_subscriber::EnvFilter::new(level)
+    } else if let Some(rust_log) =
+        env::var_os("RUST_LOG").and_then(|s| s.into_string().ok().filter(|v| !v.is_empty()))
+    {
         tracing_subscriber::EnvFilter::new(rust_log)
     } else {
-        tracing_subscriber::EnvFilter::new(&cli.log_level)
+        tracing_subscriber::EnvFilter::new("info")
     };
 
     tracing_subscriber::fmt().with_env_filter(env_filter).init();

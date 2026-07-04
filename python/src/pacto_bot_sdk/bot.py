@@ -184,7 +184,8 @@ class Bot:
     ) -> Transport:
         logger = logger or Logger(self.bot_id, None)
         if isinstance(transport, Transport):
-            transport.logger = logger
+            if hasattr(transport, "logger"):
+                transport.logger = logger
             return transport
 
         transport_name = (transport or os.environ.get("PACTO_TRANSPORT", "unix")).lower()

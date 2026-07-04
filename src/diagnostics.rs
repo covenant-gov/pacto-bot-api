@@ -184,18 +184,30 @@ impl RecentBuckets {
     }
 
     fn count_last_n_minutes(&self, n: usize) -> u64 {
-        let current = self.start.elapsed().as_secs() as usize / 60;
-        if current >= self.current_minute + self.capacity {
-            // No writes in the last `capacity` minutes.
+        if n == 0 {
             return 0;
         }
-        let count = n.min(self.capacity);
-        let mut total = 0u64;
-        for i in 0..count {
-            let idx = (self.current_minute + self.capacity - i) % self.capacity;
-            total += self.buckets[idx];
+        let current = self.start.elapsed().as_secs() as usize / 60;
+        if current >= self.current_minute + self.capacity {
+            // No writes in the last `capacity` minutes of real time.
+            return 0;
         }
-        total
+        let cidx = self.current_minute % self.capacity;
+        let window_start = current.saturating_sub(n - 1) as i64;
+        let current_i64 = current as i64;
+        self.buckets
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &count)| {
+                let offset = (cidx + self.capacity - idx) % self.capacity;
+                let bucket_minute = self.current_minute as i64 - offset as i64;
+                if bucket_minute >= window_start && bucket_minute <= current_i64 {
+                    Some(count)
+                } else {
+                    None
+                }
+            })
+            .sum()
     }
 }
 
@@ -793,5 +805,60 @@ mod tests {
     fn parse_bunker_relay_rejects_missing_scheme() {
         let err = parse_bunker_relay("http://deadbeef?relay=ws://x").unwrap_err();
         assert!(err.to_string().contains("bunker://"));
+    }
+
+    #[test]
+    fn count_last_n_minutes_returns_zero_after_long_idle() {
+        let capacity = 10;
+        // Simulate a write 5 minutes ago, then an idle gap of 10 minutes.
+        let start = Instant::now() - Duration::from_secs(15 * 60);
+        let mut buckets = RecentBuckets {
+            start,
+            buckets: vec![0; capacity],
+            current_minute: 5,
+            capacity,
+        };
+        buckets.buckets[5 % capacity] = 3;
+        assert_eq!(buckets.count_last_n_minutes(10), 0);
+        // Any shorter window also returns 0.
+        assert_eq!(buckets.count_last_n_minutes(1), 0);
+    }
+
+    #[test]
+    fn count_last_n_minutes_counts_real_window_after_short_idle() {
+        let capacity = 10;
+        // Last write at minute 12, current real minute is 15.
+        let start = Instant::now() - Duration::from_secs(15 * 60 + 30);
+        let mut buckets = RecentBuckets {
+            start,
+            buckets: vec![0; capacity],
+            current_minute: 12,
+            capacity,
+        };
+        buckets.buckets[12 % capacity] = 7; // minute 12
+        buckets.buckets[11 % capacity] = 3; // minute 11
+        buckets.buckets[10 % capacity] = 100; // minute 10, outside the window
+
+        // Window [11, 15] should include minutes 11 and 12 only.
+        assert_eq!(buckets.count_last_n_minutes(5), 10);
+        // Window [15, 15] includes no writes.
+        assert_eq!(buckets.count_last_n_minutes(1), 0);
+        // Window [12, 15] includes minute 12 only.
+        assert_eq!(buckets.count_last_n_minutes(4), 7);
+    }
+
+    #[test]
+    fn count_last_n_minutes_works_for_active_recording() {
+        let capacity = 10;
+        // Set the clock so the current minute is 5.
+        let start = Instant::now() - Duration::from_secs(5 * 60 + 10);
+        let mut buckets = RecentBuckets::new(capacity);
+        buckets.start = start;
+        buckets.record();
+        buckets.record();
+        assert_eq!(buckets.current_minute, 5);
+        assert_eq!(buckets.count_last_n_minutes(1), 2);
+        assert_eq!(buckets.count_last_n_minutes(10), 2);
+        assert_eq!(buckets.count_last_n_minutes(60), 2);
     }
 }

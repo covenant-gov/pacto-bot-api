@@ -46,8 +46,8 @@ impl Database {
             CREATE TABLE IF NOT EXISTS event_trace (
                 bot_id TEXT NOT NULL,
                 event_id TEXT NOT NULL,
-                author TEXT,
-                content_preview TEXT,
+                author TEXT NOT NULL,
+                content_preview TEXT NOT NULL,
                 action TEXT NOT NULL,
                 reply_event_id TEXT,
                 created_at INTEGER NOT NULL

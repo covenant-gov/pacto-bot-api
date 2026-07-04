@@ -2049,7 +2049,7 @@ async fn cmd_trace_events(
             .unwrap_or_else(Utc::now)
             .to_rfc3339();
         let reply = reply_event_id.as_deref().unwrap_or("-");
-        println!("{when} {event_id} {author} {action} reply_to={reply} preview={preview}");
+        println!("{when} {event_id} {author} {action} reply_event_id={reply} preview={preview}");
     }
 
     Ok(())
@@ -3109,8 +3109,8 @@ fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
         CREATE TABLE IF NOT EXISTS event_trace (
             bot_id TEXT NOT NULL,
             event_id TEXT NOT NULL,
-            author TEXT,
-            content_preview TEXT,
+            author TEXT NOT NULL,
+            content_preview TEXT NOT NULL,
             action TEXT NOT NULL,
             reply_event_id TEXT,
             created_at INTEGER NOT NULL
