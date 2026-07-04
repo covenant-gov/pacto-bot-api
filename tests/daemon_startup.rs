@@ -1,5 +1,6 @@
 /// req(R6, R7, R8, R20, R21, R24, R25)
 use fs2::FileExt;
+use nostr::nips::nip59;
 use nostr::{Timestamp, ToBech32};
 use pacto_bot_api::db::Database;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
@@ -288,13 +289,15 @@ async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
 
     let sender_keys = nostr::Keys::generate();
 
-    // A historical event well before the maximum NIP-59 tweak window must not
-    // be redispatched, since the `since` filter is shifted back by 2 days.
+    // A historical event older than the maximum NIP-59 tweak window must not
+    // be redispatched, since the `since` filter is shifted back by at most
+    // that amount to avoid missing freshly sent DMs after a restart. Use a
+    // one-minute cushion so the timestamp is strictly outside the shifted window.
     let older = common::build_gift_wrap_with_timestamp(
         &sender_keys,
         &bot.npub,
         "older than cursor",
-        cursor_time - 172_900,
+        cursor_time - nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end - 60,
     )
     .await?;
     relay.inject_event(older).await;
@@ -366,14 +369,15 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
 
     let sender_keys = nostr::Keys::generate();
 
-    // An event older than the maximum NIP-59 tweak window (2 days) must not
-    // be redispatched, because the `since` filter is shifted back by that
-    // amount to avoid missing freshly sent DMs after a restart.
+    // An event older than the maximum NIP-59 tweak window must not be
+    // redispatched, because the `since` filter is shifted back by that
+    // amount to avoid missing freshly sent DMs after a restart. Use a
+    // one-minute cushion so the timestamp is strictly outside the shifted window.
     let older = common::build_gift_wrap_with_timestamp(
         &sender_keys,
         &bot.npub,
         "older than cursor",
-        cursor_time - 172_900,
+        cursor_time - nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end - 60,
     )
     .await?;
     relay.inject_event(older).await;
