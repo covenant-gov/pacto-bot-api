@@ -482,8 +482,7 @@ fn set_profile_request(id: usize, bot_id: &str) -> JsonRpcMessage {
     )
 }
 
-fn send_dm_request(id: usize, bot_id: &str, handler_id: &str) -> JsonRpcMessage {
-    let _ = handler_id;
+fn send_dm_request(id: usize, bot_id: &str) -> JsonRpcMessage {
     JsonRpcMessage::request(
         serde_json::json!(id),
         "agent.send_dm",
@@ -1733,11 +1732,7 @@ async fn default_rate_limit_send_dm_rejects_21st_handler_call_with_32005()
     // Burst of 20 agent.send_dm calls from one handler is allowed.
     for i in 0..DEFAULT_HANDLER_BURST as usize {
         let resp = dispatch
-            .handle_message(
-                send_dm_request(i, "echo-bot", &handler_id),
-                Some(&handler_id),
-                None,
-            )
+            .handle_message(send_dm_request(i, "echo-bot"), Some(&handler_id), None)
             .await?;
         assert_not_rate_limited(resp, &format!("burst call {i}"));
     }
@@ -1745,7 +1740,7 @@ async fn default_rate_limit_send_dm_rejects_21st_handler_call_with_32005()
     // The 21st call is rejected with JSON-RPC error code -32005.
     let resp = dispatch
         .handle_message(
-            send_dm_request(DEFAULT_HANDLER_BURST as usize, "echo-bot", &handler_id),
+            send_dm_request(DEFAULT_HANDLER_BURST as usize, "echo-bot"),
             Some(&handler_id),
             None,
         )
@@ -1801,17 +1796,13 @@ async fn default_rate_limit_send_dm_enforces_bot_aggregate_with_two_handlers()
     // Two handlers together can burst up to the per-bot aggregate burst of 40.
     for i in 0..20 {
         let resp = dispatch
-            .handle_message(
-                send_dm_request(i * 2, "echo-bot", &handler_id1),
-                Some(&handler_id1),
-                None,
-            )
+            .handle_message(send_dm_request(i * 2, "echo-bot"), Some(&handler_id1), None)
             .await?;
         assert_not_rate_limited(resp, &format!("handler1 burst call {i}"));
 
         let resp = dispatch
             .handle_message(
-                send_dm_request(i * 2 + 1, "echo-bot", &handler_id2),
+                send_dm_request(i * 2 + 1, "echo-bot"),
                 Some(&handler_id2),
                 None,
             )
@@ -1821,11 +1812,7 @@ async fn default_rate_limit_send_dm_enforces_bot_aggregate_with_two_handlers()
 
     // The 41st call is rejected by the bot aggregate bucket.
     let resp = dispatch
-        .handle_message(
-            send_dm_request(40, "echo-bot", &handler_id1),
-            Some(&handler_id1),
-            None,
-        )
+        .handle_message(send_dm_request(40, "echo-bot"), Some(&handler_id1), None)
         .await?;
     assert_rate_limited(resp, "41st immediate call (bot aggregate)");
 
