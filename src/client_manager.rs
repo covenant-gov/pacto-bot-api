@@ -7,6 +7,7 @@ use crate::errors::DaemonError;
 use crate::handlers::HandlerRegistry;
 use crate::nostr::NostrClient;
 use crate::signer::Signer;
+use nostr::nips::nip59;
 use nostr::{PublicKey, Timestamp};
 #[cfg(test)]
 use secrecy::SecretString;
@@ -92,13 +93,21 @@ impl ClientManager {
     /// Subscribe each bot to its gift-wrap filter, using the persisted cursor
     /// as the `since` value so events older than the cursor are skipped.
     ///
+    /// NIP-59 allows gift-wrap `created_at` to be tweaked up to 2 days into the
+    /// past (`RANGE_RANDOM_TIMESTAMP_TWEAK`), so the `since` bound is shifted
+    /// back by that maximum offset. This prevents the daemon from missing DMs
+    /// sent shortly after a restart. The dispatch cursor still advances based on
+    /// the actual event timestamp, so historical events are not reprocessed.
+    ///
     /// Must be called after signers are registered with the underlying
     /// [`NostrClient`] so that incoming events can be decrypted.
     pub async fn subscribe_bots(&mut self, db: &Db) -> Result<(), DaemonError> {
         for (pubkey, bot) in self.bots.iter_mut() {
             let since = match db.load_cursor(bot.bot_id()).await? {
                 Some((stored_npub, cursor)) if stored_npub == bot.npub() => {
-                    Some(Timestamp::from(cursor as u64))
+                    let cursor_ts = Timestamp::from(cursor as u64);
+                    let max_tweak = nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end;
+                    Some(cursor_ts - max_tweak)
                 }
                 Some((stored_npub, _cursor)) => {
                     warn!(
