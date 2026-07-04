@@ -32,18 +32,21 @@ async def _deliver_punchline(bot: Bot, event) -> None:
             content="Because they can't C#!",
         )
     except Exception as exc:  # pragma: no cover - best-effort proactive send
-        bot._log(f"failed to deliver punchline: {exc}")
+        bot.log(f"failed to deliver punchline: {exc}", level="warn")
 
 
 @bot.command("/joke")
 async def joke(event, bot):
     """Tell a deferred joke."""
+    bot.log("handling /joke command", level="debug")
     asyncio.create_task(_deliver_punchline(bot, event))
+    bot.log("returning /joke response", level="debug")
     return {"event_id": event.event_id, "action": "defer"}
 
 
 @bot.default
 async def unknown(event, bot):
+    bot.log("handling unknown command", level="debug")
     return {"event_id": event.event_id, "action": "ignore"}
 
 

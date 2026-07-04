@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 
+from .logger import Logger
+
+
 class TransportDisconnected(Exception):
     """Raised when the transport closes gracefully while the bot is running."""
 
@@ -110,8 +113,9 @@ class Transport(Protocol):
 class UnixTransport:
     """NDJSON-over-Unix-socket transport."""
 
-    def __init__(self, socket_path: str):
+    def __init__(self, socket_path: str, logger: Logger | None = None):
         self.socket_path = socket_path
+        self.logger = logger
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
 
@@ -146,12 +150,17 @@ class UnixTransport:
         line = await self._reader.readline()
         if not line:
             return ""
-        return line.decode("utf-8").strip()
+        line_str = line.decode("utf-8").strip()
+        if self.logger is not None and self.logger.is_enabled("debug"):
+            self.logger.debug(f"read: {line_str}")
+        return line_str
 
     async def write_frame(self, frame: dict[str, Any]) -> dict[str, Any] | None:
         if self._writer is None:
             raise RuntimeError("transport not connected")
         line = json.dumps(frame, separators=(",", ":")) + "\n"
+        if self.logger is not None and self.logger.is_enabled("debug"):
+            self.logger.debug(f"write: {line.strip()}")
         self._writer.write(line.encode("utf-8"))
         await self._writer.drain()
         return None
@@ -187,11 +196,13 @@ class HttpTransport:
         port: int,
         secret: str,
         handler_id: str | None = None,
+        logger: Logger | None = None,
     ):
         self.host = host
         self.port = port
         self.secret = secret
         self.handler_id = handler_id
+        self.logger = logger
         self._sse_reader: asyncio.StreamReader | None = None
         self._sse_writer: asyncio.StreamWriter | None = None
 
@@ -273,7 +284,10 @@ class HttpTransport:
                 data_lines.append(line_str[5:].lstrip())
             # ``event:`` lines and comments are ignored.
 
-        return "".join(data_lines)
+        payload = "".join(data_lines)
+        if self.logger is not None and self.logger.is_enabled("debug") and payload:
+            self.logger.debug(f"read: {payload}")
+        return payload
 
     async def write_frame(self, frame: dict[str, Any]) -> dict[str, Any] | None:
         method = frame.get("method", "")
@@ -289,6 +303,9 @@ class HttpTransport:
         if method in self.MUTATING_METHODS and self.handler_id:
             header_lines.append(f"X-Pacto-Handler-Id: {self.handler_id}")
         request = "\r\n".join(header_lines) + "\r\n\r\n" + body
+
+        if self.logger is not None and self.logger.is_enabled("debug"):
+            self.logger.debug(f"write: {body.strip()}")
 
         reader, writer = await asyncio.open_connection(self.host, self.port)
         try:
@@ -362,11 +379,13 @@ class AutoTransport:
         socket_path: str,
         http_bind: str | None,
         data_dir: str,
+        logger: Logger | None = None,
     ):
         self._socket_path = socket_path
         self._http_bind = http_bind
         self._data_dir = data_dir
-        self._unix = UnixTransport(socket_path)
+        self._logger = logger
+        self._unix = UnixTransport(socket_path, logger=logger)
         self._http: HttpTransport | None = None
         self._active: Transport | None = None
         self._handler_id: str | None = None
@@ -397,7 +416,7 @@ class AutoTransport:
             try:
                 secret = resolve_http_secret(None, self._data_dir)
                 self._http = HttpTransport(
-                    http_bind[0], http_bind[1], secret, handler_id=self._handler_id
+                    http_bind[0], http_bind[1], secret, handler_id=self._handler_id, logger=self._logger
                 )
                 await self._http.connect()
                 self._active = self._http

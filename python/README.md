@@ -187,6 +187,37 @@ Settings resolve in this order: explicit constructor argument → CLI flag → e
 | HTTP bind   | `--http-bind`   | `PACTO_HTTP_BIND`      | `127.0.0.1:9800`                     |
 | Secret      | `--secret`      | `PACTO_SECRET_TOKEN`   | `<data-dir>/bot_secret_token`        |
 
+## Logging
+
+The SDK uses a small internal level-aware logger that writes to `stderr`.
+Messages are emitted with a prefix like `[my-bot] INFO: message` so they are easy
+to follow in Docker or systemd logs.
+
+Control the level with one of (highest precedence first):
+
+1. Constructor argument: `Bot(..., log_level="debug")`
+2. CLI flag: `python my_bot.py --log-level debug`
+3. Environment variable: `PACTO_LOG_LEVEL` (default: `info`)
+
+Valid levels are `debug`, `info`, `warn`, and `error`.
+
+```bash
+PACTO_LOG_LEVEL=debug python my_bot.py
+```
+
+At `INFO` you will see connection success, registration success, command routing,
+handler responses, and connection state changes. At `DEBUG` you will see full
+incoming and outgoing JSON-RPC payloads and raw transport frames.
+
+Handlers can use the same logger:
+
+```python
+@bot.command("/hello")
+async def hello(event, bot):
+    bot.log(f"handling /hello from {event.author[:20]}...")
+    return {"event_id": event.event_id, "action": "reply", "content": "Hello!"}
+```
+
 ## Low-level `PactoClient` API
 
 For advanced bots, use the generated async client directly:

@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import inspect
+import json
 import os
 import signal
 import sys
+import traceback
 from typing import Any, Callable
 
 from ._generated.client import PactoClient, PactoClientError
 from ._generated.models import AgentEventParams, AgentStatusParams
+from .logger import Logger
 from .parser import parse_command
 from .retry_circuit import RetryCircuit
 from .transports import (
@@ -70,12 +73,16 @@ class Bot:
         circuit_failure_threshold: int = 5,
         circuit_cooling_off_seconds: float = 60.0,
         degraded_log_interval: float = 60.0,
+        log_level: str | None = None,
     ) -> None:
         self.bot_id = bot_id
         self.event_types = list(event_types or ["dm_received"])
         self.capabilities = list(capabilities or ["ReadMessages", "SendMessages"])
         self.reply_on_error = reply_on_error
         self.error_message = error_message
+
+        # Logger is created first so every later step can emit diagnostics.
+        self._logger = Logger(bot_id, log_level)
 
         # Retry/circuit-breaker settings: constructor args are stashed so CLI
         # args can override them in run().
@@ -94,7 +101,7 @@ class Bot:
         self._http_bind_arg = http_bind
 
         self._transport = self._make_transport(
-            transport, socket_path, secret, http_bind, self._data_dir
+            transport, socket_path, secret, http_bind, self._data_dir, self._logger
         )
         self._client = PactoClient(self._transport)
 
@@ -173,8 +180,11 @@ class Bot:
         secret: str | None,
         http_bind: str | None,
         data_dir: str,
+        logger: Logger | None = None,
     ) -> Transport:
+        logger = logger or Logger(self.bot_id, None)
         if isinstance(transport, Transport):
+            transport.logger = logger
             return transport
 
         transport_name = (transport or os.environ.get("PACTO_TRANSPORT", "unix")).lower()
@@ -183,15 +193,19 @@ class Bot:
                 _resolve_socket_path(socket_path, data_dir),
                 http_bind,
                 data_dir,
+                logger=logger,
             )
         if transport_name == "unix":
-            return UnixTransport(_resolve_socket_path(socket_path, data_dir))
+            return UnixTransport(
+                _resolve_socket_path(socket_path, data_dir), logger=logger
+            )
         if transport_name == "http":
             host, port = _resolve_http_bind(http_bind)
             return HttpTransport(
                 host,
                 port,
                 resolve_http_secret(secret, data_dir),
+                logger=logger,
             )
         raise ValueError(f"unsupported transport: {transport_name}")
 
@@ -207,11 +221,8 @@ class Bot:
                 pass
 
     def _request_shutdown(self) -> None:
-        self._log("shutdown signal received")
+        self._logger.info("shutdown signal received")
         self._shutdown.set()
-
-    def _log(self, message: str) -> None:
-        print(f"[{self.bot_id}] {message}", file=sys.stderr, flush=True)
 
     # -----------------------------------------------------------------------
     # Decorators
@@ -245,6 +256,13 @@ class Bot:
     def client(self) -> PactoClient:
         """The underlying generated client."""
         return self._client
+
+    def log(self, message: str, level: str = "info") -> None:
+        """Emit a log message at the given level.
+
+        ``level`` must be one of ``debug``, ``info``, ``warn``, or ``error``.
+        """
+        self._logger.log(level, message)
 
     async def send_dm(
         self,
@@ -285,7 +303,7 @@ class Bot:
 
     def _log_degraded_open(self) -> None:
         """Log once when the circuit breaker opens."""
-        self._log(
+        self._logger.warn(
             f"degraded: {self._transport.name} failed "
             f"{self._retry_circuit.failure_count} time(s); "
             f"cooling off for {self._retry_circuit.circuit_cooling_off_seconds}s"
@@ -298,12 +316,12 @@ class Bot:
         if interval == 0:
             return
         if self._degraded_logged_at is None or (now - self._degraded_logged_at) >= interval:
-            self._log("degraded: still waiting for daemon")
+            self._logger.warn("degraded: still waiting for daemon")
             self._degraded_logged_at = now
 
     def _log_degraded_recovered(self) -> None:
         """Log when the circuit closes."""
-        self._log("degraded: recovered")
+        self._logger.info("degraded: recovered")
         self._degraded_logged_at = None
 
     # -----------------------------------------------------------------------
@@ -319,6 +337,8 @@ class Bot:
 
     async def _run(self, argv: list[str] | None = None) -> None:
         args = self._parse_args(argv)
+        if args.log_level is not None:
+            self._logger.set_level(args.log_level)
         self._retry_circuit = self._resolve_retry_settings(args)
         self._degraded_logged_at: float | None = None
 
@@ -338,7 +358,7 @@ class Bot:
                     break
 
             if wait > 0:
-                self._log(f"reconnecting in {wait}s...")
+                self._logger.warn(f"reconnecting in {wait}s...")
                 try:
                     await asyncio.wait_for(self._shutdown.wait(), timeout=wait)
                 except asyncio.TimeoutError:
@@ -351,7 +371,7 @@ class Bot:
             except (OSError, TimeoutError, asyncio.TimeoutError, PactoClientError, TransportDisconnected) as exc:
                 if self._shutdown.is_set():
                     break
-                self._log(f"connection lost: {exc}")
+                self._logger.error(f"connection lost: {exc}")
                 was_open = self._retry_circuit.is_open
                 self._retry_circuit.record_failure()
                 if not was_open and self._retry_circuit.is_open:
@@ -367,7 +387,7 @@ class Bot:
                 # Defensive: an unexpected clean return means the dispatch loop
                 # ended without an explicit shutdown signal, so treat it as a
                 # disconnect.
-                self._log("connection lost: daemon disconnected")
+                self._logger.error("connection lost: daemon disconnected")
                 was_open = self._retry_circuit.is_open
                 self._retry_circuit.record_failure()
                 if not was_open and self._retry_circuit.is_open:
@@ -388,7 +408,7 @@ class Bot:
         http_bind = args.http_bind if args.http_bind is not None else self._http_bind_arg
         data_dir = args.data_dir if args.data_dir is not None else self._data_dir
         self._transport = self._make_transport(
-            transport, socket_path, secret, http_bind, data_dir
+            transport, socket_path, secret, http_bind, data_dir, self._logger
         )
         return PactoClient(self._transport)
 
@@ -407,10 +427,10 @@ class Bot:
         try:
             await self._client.connect()
         except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
-            self._log(f"{exc}")
+            self._logger.error(str(exc))
             raise
 
-        self._log(f"connected via {self._transport.name}")
+        self._logger.info(f"connected via {self._transport.name}")
 
         try:
             if self._handler_id and self._reconnect_token:
@@ -426,11 +446,11 @@ class Bot:
                 )
                 self._reconnect_token = result.reconnect_token
         except (PactoClientError, TimeoutError, asyncio.TimeoutError) as exc:
-            self._log(f"registration failed: {exc}")
+            self._logger.error(f"registration failed: {exc}")
             raise
 
         self._handler_id = result.handler_id
-        self._log(
+        self._logger.info(
             f"registered handler_id={self._handler_id} events={result.registered_events}"
         )
 
@@ -441,7 +461,7 @@ class Bot:
             try:
                 await self._transport.start_sse()
             except (OSError, TimeoutError, asyncio.TimeoutError) as exc:
-                self._log(str(exc))
+                self._logger.error(str(exc))
                 raise
 
         dispatch_task = asyncio.create_task(self._dispatch_loop())
@@ -526,6 +546,11 @@ class Bot:
             default=None,
             help="Minimum seconds between degraded status logs (default: 60.0; 0 disables).",
         )
+        parser.add_argument(
+            "--log-level",
+            default=None,
+            help="Log level (debug, info, warn, error). Defaults to the constructor argument or $PACTO_LOG_LEVEL or info.",
+        )
         return parser.parse_args(argv)
 
     async def _dispatch_loop(self) -> None:
@@ -539,21 +564,28 @@ class Bot:
             pass
 
     async def _handle_event(self, event: AgentEventParams) -> None:
+        self._logger.debug(
+            "incoming agent.event: "
+            + json.dumps(event.model_dump(mode="json", exclude_none=True))
+        )
         parsed = parse_command(event.content)
         command: str | None = None
 
         if parsed is None:
             if self._default_handler is None:
-                self._log(f"ignoring malformed event {event.event_id}")
+                self._logger.info(f"ignoring malformed event {event.event_id}")
                 await self._client.handler_response(
                     action="ignore", event_id=event.event_id
                 )
                 return
-            self._log(f"routing non-command event {event.event_id} to default handler")
+            self._logger.info(
+                f"routing non-command event {event.event_id} to default handler"
+            )
             handler = self._default_handler
         else:
             command = parsed["command"]
             handler = self._commands.get(command) or self._default_handler
+            self._logger.info(f"dispatching command {command} for event {event.event_id}")
 
         if handler is None:
             await self._client.handler_response(
@@ -565,9 +597,10 @@ class Bot:
             result = handler(event, self)
             if inspect.isawaitable(result):
                 result = await result
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:
             label = command if command else "default"
-            self._log(f"handler error for {label}: {exc}")
+            self._logger.debug(traceback.format_exc())
+            self._logger.error(f"handler error for {label}: {exc}")
             if self.reply_on_error:
                 await self._client.handler_response(
                     action="reply",
@@ -584,12 +617,16 @@ class Bot:
             return
 
         if not isinstance(result, dict) or "event_id" not in result or "action" not in result:
-            self._log(f"handler returned invalid response: {result!r}")
+            self._logger.warn(f"handler returned invalid response: {result!r}")
             await self._client.handler_response(
                 action="ignore", event_id=event.event_id
             )
             return
 
+        self._logger.debug("outgoing handler.response: " + json.dumps(result))
+        self._logger.info(
+            f"handler response {event.event_id}: action={result['action']}"
+        )
         await self._client.handler_response(
             action=result["action"],
             event_id=result["event_id"],
@@ -602,7 +639,4 @@ class Bot:
             if inspect.isawaitable(result):
                 await result
         else:
-            self._log(f"daemon status: {status.state}")
-
-
-__all__ = ["Bot"]
+            self._logger.info(f"daemon status: {status.state}")

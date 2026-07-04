@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pacto_bot_sdk import Logger
 from pacto_bot_sdk.transports import (
     AutoTransport,
     HttpTransport,
@@ -458,3 +459,75 @@ async def test_auto_transport_error_when_both_fail(tmp_path):
 
 def test_transport_protocol_is_runtime_checkable():
     assert isinstance(UnixTransport("/tmp/x.sock"), Transport)
+
+
+# ---------------------------------------------------------------------------
+# Debug raw-frame logging
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unix_transport_logs_raw_frames_at_debug(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """UnixTransport logs each raw NDJSON frame at DEBUG when given a logger."""
+    reader = FakeStreamReader(['{"method":"agent.status","params":{"state":"ok"}}\n'])
+    writer = FakeStreamWriter()
+    socket_file = tmp_path / "pacto.sock"
+    socket_file.touch()
+
+    async def fake_open_unix_connection(path: str):
+        assert path == str(socket_file)
+        return reader, writer
+
+    monkeypatch.setattr(asyncio, "open_unix_connection", fake_open_unix_connection)
+
+    logger = Logger("test-bot", "debug")
+    transport = UnixTransport(str(socket_file), logger=logger)
+    await transport.connect()
+
+    await transport.readline()
+    await transport.write_frame({"jsonrpc": "2.0", "method": "handler.response"})
+
+    stderr = capsys.readouterr().err
+    assert "DEBUG: read: {" in stderr
+    assert "agent.status" in stderr
+    assert "DEBUG: write: {" in stderr
+    assert "handler.response" in stderr
+
+
+@pytest.mark.asyncio
+async def test_http_transport_logs_raw_frames_at_debug(
+    mock_http_connection,
+    capsys,
+):
+    """HttpTransport logs JSON-RPC bodies at DEBUG without exposing the secret."""
+    response = json.dumps({"jsonrpc": "2.0", "id": "req-1", "result": "ok"})
+    pair = mock_http_connection(_http_lines([response.encode("utf-8")]))
+    logger = Logger("test-bot", "debug")
+    transport = HttpTransport("127.0.0.1", 9800, "super-secret", logger=logger)
+    await transport.connect()
+
+    await transport.write_frame({"jsonrpc": "2.0", "id": "req-1", "method": "agent.send_dm"})
+
+    stderr = capsys.readouterr().err
+    assert "DEBUG: write: {" in stderr
+    assert "agent.send_dm" in stderr
+    assert "super-secret" not in stderr
+
+    pair2 = mock_http_connection([
+        b"HTTP/1.1 200 OK\r\n",
+        b"\r\n",
+        b'data: {"method":"agent.event","params":{}}\r\n',
+        b"\r\n",
+    ])
+    transport2 = HttpTransport("127.0.0.1", 9800, "super-secret", handler_id="h-1", logger=logger)
+    await transport2.connect()
+    await transport2.start_sse()
+    await transport2.readline()
+
+    stderr = capsys.readouterr().err
+    assert "DEBUG: read: {" in stderr
+    assert "agent.event" in stderr
