@@ -1232,6 +1232,52 @@ mod tests {
     }
 
     #[test]
+    fn default_rate_limiter_allows_handler_burst_of_20() {
+        let limiter = RateLimiter::default();
+        let now = Instant::now();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for _ in 0..DEFAULT_HANDLER_BURST as usize {
+                assert!(
+                    limiter.check("handler-1", "bot-a", now).await,
+                    "call within per-handler burst should succeed"
+                );
+            }
+            assert!(
+                !limiter.check("handler-1", "bot-a", now).await,
+                "21st call from one handler should be rate limited"
+            );
+        });
+    }
+
+    #[test]
+    fn default_rate_limiter_enforces_bot_aggregate_burst_of_40() {
+        let limiter = RateLimiter::default();
+        let now = Instant::now();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            for _ in 0..20 {
+                assert!(
+                    limiter.check("handler-1", "bot-a", now).await,
+                    "handler-1 call within shared bot burst should succeed"
+                );
+                assert!(
+                    limiter.check("handler-2", "bot-a", now).await,
+                    "handler-2 call within shared bot burst should succeed"
+                );
+            }
+            assert!(
+                !limiter.check("handler-1", "bot-a", now).await,
+                "41st call across two handlers on same bot should be rate limited"
+            );
+        });
+    }
+
+    #[test]
     fn handler_action_parsing() {
         let ack = serde_json::json!({"action": "ack"});
         assert_eq!(HandlerAction::from_value(&ack).unwrap(), HandlerAction::Ack);
