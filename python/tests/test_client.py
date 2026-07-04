@@ -49,6 +49,7 @@ async def test_handler_register_sends_frame_and_awaits_result(client, transport)
             "id": request["id"],
             "result": {
                 "handler_id": "h-123",
+                "reconnect_token": "rt-123",
                 "registered_events": ["dm_received"],
             },
         }
@@ -139,7 +140,7 @@ async def test_handler_register_params_model_construction():
 async def test_handler_register_result_model_construction():
     """The generated result model validates and exposes its fields."""
     result = HandlerRegisterResult(
-        handler_id="h-1", registered_events=["dm_received"]
+        handler_id="h-1", reconnect_token="rt-1", registered_events=["dm_received"]
     )
     assert result.handler_id == "h-1"
     assert result.jsonrpc_method == "handler.register"

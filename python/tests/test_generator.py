@@ -36,8 +36,6 @@ class HandlerRegisterParams(BaseModel):
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
-    # Optional previously assigned handler id to reuse after reconnect.
-    handler_id: str | None = None
 
 '''
 
