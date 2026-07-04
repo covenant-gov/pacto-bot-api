@@ -4,7 +4,7 @@ This document covers how to build, test, and contribute to `pacto-bot-api`.
 
 ## Prerequisites
 
-- Rust toolchain 1.85 or later ([rustup](https://rustup.rs/))
+- Rust toolchain 1.96 or later ([rustup](https://rustup.rs/))
 - A POSIX shell for scripts and examples
 - Python 3.10+ if running the reference handler/examples tests
 
