@@ -92,6 +92,10 @@ pub struct HealthSnapshot {
     pub invalid_events_total: u64,
     /// Total reply DMs that failed to publish.
     pub reply_send_failed_total: u64,
+    /// Total plain DMs attempted.
+    pub send_dm_total: u64,
+    /// Total plain DMs that failed to publish.
+    pub send_dm_failed_total: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
     /// Recent redacted error records, oldest first.
@@ -117,6 +121,8 @@ impl Default for HealthSnapshot {
             bunker_sign_failures_total: 0,
             invalid_events_total: 0,
             reply_send_failed_total: 0,
+            send_dm_total: 0,
+            send_dm_failed_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
             reported_at: now,
@@ -143,6 +149,10 @@ pub struct RecentCounts {
     pub replies: u64,
     /// Number of reply DMs that failed to publish.
     pub reply_send_failed: u64,
+    /// Number of plain DMs attempted.
+    pub send_dm: u64,
+    /// Number of plain DMs that failed to publish.
+    pub send_dm_failed: u64,
     /// Length of the window in seconds that these counts cover.
     #[serde(default)]
     pub window_seconds: u64,
@@ -221,6 +231,8 @@ struct Inner {
     dispatched: RecentBuckets,
     replies: RecentBuckets,
     reply_failed: RecentBuckets,
+    send_dm: RecentBuckets,
+    send_dm_failed: RecentBuckets,
 }
 
 /// Thread-safe diagnostics aggregator.
@@ -249,6 +261,8 @@ impl Diagnostics {
                 dispatched: RecentBuckets::new(60),
                 replies: RecentBuckets::new(60),
                 reply_failed: RecentBuckets::new(60),
+                send_dm: RecentBuckets::new(60),
+                send_dm_failed: RecentBuckets::new(60),
             })),
         }
     }
@@ -265,6 +279,8 @@ impl Diagnostics {
             events_dispatched: inner.dispatched.count_last_n_minutes(10),
             replies: inner.replies.count_last_n_minutes(10),
             reply_send_failed: inner.reply_failed.count_last_n_minutes(10),
+            send_dm: inner.send_dm.count_last_n_minutes(10),
+            send_dm_failed: inner.send_dm_failed.count_last_n_minutes(10),
             window_seconds: 600,
         };
         let snap = inner.snapshot.clone();
@@ -333,6 +349,24 @@ impl Diagnostics {
         let mut inner = write_guard(&self.inner);
         inner.snapshot.reply_send_failed_total += 1;
         inner.reply_failed.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Record that a plain DM was attempted.
+    pub fn record_send_dm(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.send_dm_total += 1;
+        inner.send_dm.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Increment the counter for plain DMs that failed to publish.
+    pub fn record_send_dm_failed(&self) {
+        let mut inner = write_guard(&self.inner);
+        inner.snapshot.send_dm_failed_total += 1;
+        inner.send_dm_failed.record();
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap);
     }

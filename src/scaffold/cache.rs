@@ -458,6 +458,6 @@ mod tests {
     #[test]
     fn bundled_sdk_version_parses() {
         let version = bundled_sdk_version().unwrap();
-        assert_eq!(version, semver::Version::new(0, 2, 0));
+        assert_eq!(version, semver::Version::new(0, 2, 2));
     }
 }
