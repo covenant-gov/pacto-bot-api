@@ -2625,83 +2625,118 @@ fn print_validate_report(errors: &[String]) {
 
 fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     let mut out = io::stdout().lock();
-    writeln!(out, "config_valid: {}", report.config_valid).map_err(DaemonError::Io)?;
-    writeln!(out, "lock_held: {}", report.lock_held).map_err(DaemonError::Io)?;
+    let mut write = |s: &str| writeln!(out, "{s}").map_err(DaemonError::Io);
+
+    write(&format!("config_valid: {}", report.config_valid))?;
+    write(&format!("lock_held: {}", report.lock_held))?;
     if let Some(status) = &report.daemon_status {
-        writeln!(out, "daemon_status: {status}").map_err(DaemonError::Io)?;
+        write(&format!("daemon_status: {status}"))?;
     }
-    writeln!(out, "data_dir: {}", report.data_dir).map_err(DaemonError::Io)?;
-    writeln!(out, "socket:").map_err(DaemonError::Io)?;
-    writeln!(
-        out,
-        "  path: {} exists: {} owner_readable: {} owner_writable: {}",
-        report.socket.path,
-        report.socket.exists,
-        report.socket.owner_readable,
+    write(&format!("data_dir: {}", report.data_dir))?;
+    write("")?;
+
+    write("socket:")?;
+    write(&format!("  path: {}", report.socket.path))?;
+    write(&format!("  exists: {}", report.socket.exists))?;
+    write(&format!(
+        "  owner_readable: {}",
+        report.socket.owner_readable
+    ))?;
+    write(&format!(
+        "  owner_writable: {}",
         report.socket.owner_writable
-    )
-    .map_err(DaemonError::Io)?;
+    ))?;
     if let Some(mode) = report.socket.mode {
-        writeln!(out, "  mode: 0o{mode:o}").map_err(DaemonError::Io)?;
+        write(&format!("  mode: 0o{mode:o}"))?;
     }
-    writeln!(out, "bots:").map_err(DaemonError::Io)?;
-    for bot in &report.bots {
-        write!(
-            out,
-            "  - id: {}, npub: {}, signing_backend: {}, relays: {}",
-            bot.id, bot.npub, bot.signing_backend, bot.relay_count
-        )
-        .map_err(DaemonError::Io)?;
-        if let Some(connected) = bot.live_bunker_connected {
-            writeln!(out, ", live_bunker_connected: {connected}").map_err(DaemonError::Io)?;
-        } else {
-            writeln!(out).map_err(DaemonError::Io)?;
+    write("")?;
+
+    write("bots:")?;
+    if report.bots.is_empty() {
+        write("  (none)")?;
+    } else {
+        for bot in &report.bots {
+            write(&format!("  - id: {}", bot.id))?;
+            write(&format!("    npub: {}", bot.npub))?;
+            write(&format!("    signing_backend: {}", bot.signing_backend))?;
+            write(&format!("    relays: {}", bot.relay_count))?;
+            if let Some(connected) = bot.live_bunker_connected {
+                write(&format!("    live_bunker_connected: {connected}"))?;
+            }
         }
     }
-    writeln!(out, "relay_connectivity:").map_err(DaemonError::Io)?;
-    for check in &report.relay_connectivity {
-        writeln!(
-            out,
-            "  - bot_id: {}, relay: {}, reachable: {}",
-            check.bot_id, check.relay, check.reachable
-        )
-        .map_err(DaemonError::Io)?;
+    write("")?;
+
+    write("relay_connectivity:")?;
+    if report.relay_connectivity.is_empty() {
+        write("  (none)")?;
+    } else {
+        for check in &report.relay_connectivity {
+            write(&format!("  - bot_id: {}", check.bot_id))?;
+            write(&format!("    relay: {}", check.relay))?;
+            write(&format!("    reachable: {}", check.reachable))?;
+        }
     }
-    writeln!(out, "bunker_connectivity:").map_err(DaemonError::Io)?;
-    for check in &report.bunker_connectivity {
-        writeln!(
-            out,
-            "  - bot_id: {}, reachable: {}",
-            check.bot_id, check.reachable
-        )
-        .map_err(DaemonError::Io)?;
+    write("")?;
+
+    write("bunker_connectivity:")?;
+    if report.bunker_connectivity.is_empty() {
+        write("  (none)")?;
+    } else {
+        for check in &report.bunker_connectivity {
+            write(&format!("  - bot_id: {}", check.bot_id))?;
+            write(&format!("    reachable: {}", check.reachable))?;
+        }
     }
+    write("")?;
+
     if is_pacto_dev_env() {
-        writeln!(out, "service_versions:").map_err(DaemonError::Io)?;
+        write("service_versions:")?;
         if let Some(relay) = &report.service_versions.relay {
-            writeln!(out, "  relay: {} reachable: {}", relay.url, relay.reachable)
-                .map_err(DaemonError::Io)?;
+            write(&format!("  relay:"))?;
+            write(&format!("    url: {}", relay.url))?;
+            write(&format!("    reachable: {}", relay.reachable))?;
+            if let Some(version) = &relay.version {
+                write(&format!("    version: {version}"))?;
+            }
+            if let Some(error) = &relay.error {
+                write(&format!("    error: {error}"))?;
+            }
         }
         if let Some(evm) = &report.service_versions.evm_node {
-            writeln!(out, "  evm_node: {} reachable: {}", evm.url, evm.reachable)
-                .map_err(DaemonError::Io)?;
+            write(&format!("  evm_node:"))?;
+            write(&format!("    url: {}", evm.url))?;
+            write(&format!("    reachable: {}", evm.reachable))?;
+            if let Some(version) = &evm.version {
+                write(&format!("    version: {version}"))?;
+            }
+            if let Some(error) = &evm.error {
+                write(&format!("    error: {error}"))?;
+            }
         }
         if let Some(bunker) = &report.service_versions.bunker_port {
-            writeln!(
-                out,
-                "  bunker_port: {} reachable: {}",
-                bunker.url, bunker.reachable
-            )
-            .map_err(DaemonError::Io)?;
+            write(&format!("  bunker_port:"))?;
+            write(&format!("    url: {}", bunker.url))?;
+            write(&format!("    reachable: {}", bunker.reachable))?;
+            if let Some(version) = &bunker.version {
+                write(&format!("    version: {version}"))?;
+            }
+            if let Some(error) = &bunker.error {
+                write(&format!("    error: {error}"))?;
+            }
         }
+        write("")?;
     }
-    writeln!(out, "db_cursor_count: {}", report.db_cursor_count).map_err(DaemonError::Io)?;
+
+    write(&format!("db_cursor_count: {}", report.db_cursor_count))?;
     if !report.errors.is_empty() {
-        writeln!(out, "errors:").map_err(DaemonError::Io)?;
+        write("")?;
+        write("errors:")?;
         for err in &report.errors {
-            writeln!(out, "  - {err}").map_err(DaemonError::Io)?;
+            write(&format!("  - {err}"))?;
         }
     }
+
     Ok(())
 }
 
