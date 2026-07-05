@@ -4,6 +4,7 @@ use crate::transport::MessageHandler;
 use crate::transport::protocol::{
     JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message,
 };
+use async_trait::async_trait;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,28 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+/// Trait abstracting Unix listener accept so the loop can be tested with a
+/// fake acceptor that injects errors.
+#[async_trait]
+trait UnixAcceptor: Send + Sync {
+    async fn accept(&self) -> Result<UnixStream, std::io::Error>;
+}
+
+#[async_trait]
+impl UnixAcceptor for UnixListener {
+    async fn accept(&self) -> Result<UnixStream, std::io::Error> {
+        self.accept().await.map(|(stream, _)| stream)
+    }
+}
+
+/// Return true when an accept error indicates the listener is no longer usable.
+fn is_fatal_accept_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotConnected | std::io::ErrorKind::BrokenPipe
+    )
+}
 
 /// Unix domain socket transport for JSON-RPC handlers.
 #[derive(Debug)]
@@ -48,7 +71,7 @@ impl UnixTransport {
 
     /// Bind the socket, accept connections, and forward messages to `handler`.
     ///
-    /// Runs until `shutdown` fires or an accept error occurs.
+    /// Runs until `shutdown` fires or a listener-fatal accept error occurs.
     pub async fn run(
         self,
         handler: MessageHandler,
@@ -67,14 +90,34 @@ impl UnixTransport {
 
         set_socket_permissions(&self.socket_path, std::fs::Permissions::from_mode(0o600)).await?;
 
+        self.run_listener(&listener, handler, disconnect_tx, shutdown)
+            .await
+    }
+
+    /// Accept and serve connections until shutdown or a fatal listener error.
+    async fn run_listener(
+        &self,
+        acceptor: &impl UnixAcceptor,
+        handler: MessageHandler,
+        disconnect_tx: mpsc::Sender<Option<String>>,
+        mut shutdown: oneshot::Receiver<()>,
+    ) -> Result<(), DaemonError> {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(self.max_connections));
-        let mut shutdown = shutdown;
 
         loop {
             tokio::select! {
                 _ = &mut shutdown => break Ok(()),
-                res = listener.accept() => {
-                    let (stream, _) = res?;
+                res = acceptor.accept() => {
+                    let stream = match res {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            if is_fatal_accept_error(&e) {
+                                return Err(DaemonError::Io(e));
+                            }
+                            tracing::warn!(error = %e, "Unix accept error; continuing");
+                            continue;
+                        }
+                    };
                     let permit = match semaphore.clone().try_acquire_owned() {
                         Ok(permit) => permit,
                         Err(_) => {
@@ -392,5 +435,131 @@ mod tests {
             tick_count >= 45,
             "runtime blocked during unix socket setup; only {tick_count} timer ticks fired"
         );
+    }
+
+    #[derive(Debug)]
+    struct FailingAcceptor {
+        listener: UnixListener,
+        errors_remaining: AtomicUsize,
+        error_kind: std::io::ErrorKind,
+        error_sent: tokio::sync::mpsc::Sender<()>,
+        call_count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl UnixAcceptor for FailingAcceptor {
+        async fn accept(&self) -> Result<UnixStream, std::io::Error> {
+            self.call_count.fetch_add(1, Ordering::SeqCst);
+            if self.errors_remaining.fetch_sub(1, Ordering::SeqCst) > 0 {
+                let _ = self.error_sent.try_send(());
+                return Err(std::io::Error::new(
+                    self.error_kind,
+                    "simulated accept error",
+                ));
+            }
+            self.listener.accept().await.map(|(stream, _)| stream)
+        }
+    }
+
+    fn noop_handler() -> MessageHandler {
+        Arc::new(|_msg, _conn, _id| Box::pin(async move { Ok::<_, DaemonError>(None) }))
+    }
+
+    #[test]
+    fn fatal_and_transient_accept_errors_are_distinguished() {
+        assert!(!is_fatal_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "transient",
+        )));
+        assert!(!is_fatal_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "transient",
+        )));
+        assert!(is_fatal_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::NotConnected,
+            "fatal",
+        )));
+        assert!(is_fatal_accept_error(&std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "fatal",
+        )));
+    }
+
+    #[tokio::test]
+    async fn unix_transport_survives_transient_accept_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("socket.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let (error_sent_tx, mut error_sent_rx) = tokio::sync::mpsc::channel(1);
+        let acceptor = FailingAcceptor {
+            listener,
+            errors_remaining: AtomicUsize::new(1),
+            error_kind: std::io::ErrorKind::Interrupted,
+            error_sent: error_sent_tx,
+            call_count: Arc::new(AtomicUsize::new(0)),
+        };
+        let call_count = Arc::clone(&acceptor.call_count);
+
+        let transport = UnixTransport::new(&socket_path);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel(1);
+
+        let run_handle = tokio::spawn(async move {
+            transport
+                .run_listener(&acceptor, noop_handler(), disconnect_tx, shutdown_rx)
+                .await
+        });
+
+        // Wait until the loop has processed the transient accept error.
+        error_sent_rx.recv().await.unwrap();
+        let count_after_error = call_count.load(Ordering::SeqCst);
+        assert!(
+            count_after_error >= 1,
+            "expected at least one accept attempt before transient error"
+        );
+
+        // The loop should still be running and exit cleanly on shutdown.
+        let _ = shutdown_tx.send(());
+        let result = tokio::time::timeout(Duration::from_secs(5), run_handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.is_ok());
+        assert!(
+            call_count.load(Ordering::SeqCst) >= 2,
+            "expected loop to continue after transient error"
+        );
+    }
+
+    #[tokio::test]
+    async fn unix_transport_fatal_accept_error_stops_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket_path = dir.path().join("socket.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let (error_sent_tx, _error_sent_rx) = tokio::sync::mpsc::channel(1);
+        let acceptor = FailingAcceptor {
+            listener,
+            errors_remaining: AtomicUsize::new(1),
+            error_kind: std::io::ErrorKind::NotConnected,
+            error_sent: error_sent_tx,
+            call_count: Arc::new(AtomicUsize::new(0)),
+        };
+        let call_count = Arc::clone(&acceptor.call_count);
+
+        let transport = UnixTransport::new(&socket_path);
+        let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel(1);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            transport.run_listener(&acceptor, noop_handler(), disconnect_tx, shutdown_rx),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_err());
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 }
