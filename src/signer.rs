@@ -307,6 +307,16 @@ impl std::fmt::Debug for BunkerConnection {
     }
 }
 
+/// Build the default relay options used for NIP-46 bunker connections.
+///
+/// Auto-reconnection is enabled so that transient relay drops do not
+/// permanently terminate the bunker's signing session.
+fn default_bunker_relay_opts() -> RelayOptions {
+    RelayOptions::default()
+        .notification_channel_size(4096)
+        .reconnect(true)
+}
+
 impl BunkerConnection {
     /// Parse a bunker URI and verify it declares the expected bot pubkey.
     pub fn connect(
@@ -344,9 +354,7 @@ impl BunkerConnection {
         }
 
         let app_keys = Keys::generate();
-        let opts = RelayOptions::default()
-            .notification_channel_size(4096)
-            .reconnect(false);
+        let opts = default_bunker_relay_opts();
         let timeout_secs: u64 = std::env::var("PACTO_BUNKER_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -595,6 +603,19 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(backend, SignerBackend::BunkerRemote(_)));
+    }
+
+    #[test]
+    fn bunker_relay_options_enable_reconnect() {
+        let opts = default_bunker_relay_opts();
+        // RelayOptions does not expose the reconnect field directly, but its
+        // Debug representation includes it. This guards against accidentally
+        // disabling reconnection for bunker sessions.
+        let debug = format!("{:?}", opts);
+        assert!(
+            debug.contains("reconnect: true"),
+            "bunker relay options should enable reconnect: {debug}"
+        );
     }
 
     #[test]
