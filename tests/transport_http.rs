@@ -305,6 +305,27 @@ async fn http_unregistered_set_profile_rejected() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+/// req(R2)
+#[tokio::test]
+async fn http_unregistered_error_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "agent.error",
+        Some(serde_json::json!({
+            "bot_id": "echo-bot",
+            "message": "should not be accepted",
+        })),
+    ))?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
 #[tokio::test]
 async fn http_invalid_handler_id_send_dm_rejected() -> Result<(), Box<dyn std::error::Error>> {
     let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
@@ -398,6 +419,103 @@ async fn http_dm_round_trip_registers_replies_and_publishes_gift_wrap()
         send_response.starts_with("HTTP/1.1 200"),
         "got: {send_response}"
     );
+
+    // The daemon should have published a kind:1059 gift wrap addressed to the sender.
+    let sender_pubkey = sender_keys.public_key();
+    let events = relay
+        .wait_for_event(
+            |e| {
+                e.kind == nostr::Kind::GiftWrap && e.tags.public_keys().any(|p| p == &sender_pubkey)
+            },
+            Duration::from_secs(5),
+        )
+        .await?;
+    assert!(
+        events.iter().any(|e| e.kind == nostr::Kind::GiftWrap),
+        "reply gift wrap not found on relay"
+    );
+
+    let _ = shutdown_tx.send(());
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R1)
+#[tokio::test]
+async fn http_dm_round_trip_via_handler_response() -> Result<(), Box<dyn std::error::Error>> {
+    let relay = MockRelay::start().await?;
+    let (port, shutdown_tx, dir, dispatch) = start_dispatch_server_with_relay(&relay).await?;
+    let token = read_token(dir.path()).await?;
+
+    // Register an HTTP handler for the echo bot with SendMessages so it can reply.
+    let register_body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages", "SendMessages"],
+        })),
+    ))?;
+    let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+
+    // Open the SSE notification stream.
+    let mut sse = SseClient::connect(port, &token, &handler_id).await?;
+
+    // Generate a sender and push a synthetic DM event to the dispatch layer.
+    let sender_keys = nostr::Keys::generate();
+    let sender_npub = sender_keys.public_key().to_bech32()?;
+    let rumor_id = "0000000000000000000000000000000000000000000000000000000000000002";
+
+    // Spawn dispatch so we can reply while it waits for handler responses.
+    let dispatch_task = tokio::spawn({
+        let dispatch = dispatch.clone();
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-handler-response-123".into(),
+            event_type: EventType::DmReceived,
+            chat_id: None,
+            content: "hello".into(),
+            rumor_id: rumor_id.into(),
+            author: sender_npub.clone(),
+            timestamp: 1,
+        };
+        async move { dispatch.dispatch_event(event).await }
+    });
+
+    // Wait for the daemon to push the agent.event notification over SSE.
+    let notification = sse.next_notification(Duration::from_secs(5)).await?;
+    let event = match notification {
+        JsonRpcMessage::Notification { method, params, .. } if method == "agent.event" => {
+            serde_json::from_value::<AgentEvent>(params.unwrap_or(Value::Null))?
+        }
+        _ => return Err("expected agent.event notification".into()),
+    };
+    assert_eq!(event.bot_id, "echo-bot");
+    assert_eq!(event.content, "hello");
+
+    // Reply via handler.response over HTTP, which exercises the dispatch reply path.
+    let response_body = serialize_message(&JsonRpcMessage::request(
+        2.into(),
+        "handler.response",
+        Some(serde_json::json!({
+            "event_id": "evt-handler-response-123",
+            "action": "reply",
+            "content": "echo: hello",
+        })),
+    ))?;
+    let post_response =
+        raw_http_post(port, Some(&token), Some(&handler_id), &response_body).await?;
+    assert!(
+        post_response.starts_with("HTTP/1.1 200"),
+        "got: {post_response}"
+    );
+
+    // Wait for the dispatch loop to process the reply.
+    let _ = tokio::time::timeout(Duration::from_secs(5), dispatch_task)
+        .await
+        .map_err(|_| "dispatch_event timed out")??;
 
     // The daemon should have published a kind:1059 gift wrap addressed to the sender.
     let sender_pubkey = sender_keys.public_key();

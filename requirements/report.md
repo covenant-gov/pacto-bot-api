@@ -7,14 +7,15 @@
 | Total requirements | 37 |
 | Covered requirements | 37 |
 | Uncovered requirements | 0 |
+| Requirements without covering tests | 0 |
 
 ## Auto-detected Test Tags
 
 The following requirements were tagged directly in test source files:
 
-- **R1** — tests/transport_unix.rs
+- **R1** — tests/transport_http.rs, tests/transport_unix.rs
 - **R2** — tests/transport_http.rs
-- **R3** — tests/transport_http.rs, tests/transport_unix.rs
+- **R3** — tests/sighup_token_reload.rs, tests/transport_http.rs, tests/transport_unix.rs
 - **R4** — tests/integration_test.rs, tests/multi_bot.rs
 - **R5** — tests/integration_test.rs, tests/multi_bot.rs
 - **R6** — tests/admin_cli_bunker.rs, tests/daemon_startup.rs
@@ -43,18 +44,20 @@ The following requirements were tagged directly in test source files:
 - **R29** — tests/admin_cli_migration.rs
 - **R30** — tests/dispatch_integration.rs
 - **R31** — tests/admin_cli_migration.rs, tests/admin_cli_status.rs, tests/diagnostics.rs
+- **R32** — tests/schema_sync.rs
 - **R33** — tests/integration_test.rs, tests/multi_bot.rs
 - **R34** — tests/secret_redaction.rs
 - **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs
+- **R36** — tests/dev_env_probe.rs
 - **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs
 
 ## Coverage by Requirement
 
 | ID | Summary | Tests | Sources | Justification | Status |
 |---|---|---|---|---|---|
-| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs | src/transport/unix.rs | — | ✅ covered |
+| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs<br>tests/transport_http.rs | src/transport/unix.rs | — | ✅ covered |
 | R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs | src/transport/http.rs | — | ✅ covered |
-| R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
+| R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs<br>tests/sighup_token_reload.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
 | R4 | The API supports the full method catalog defined in the architecture doc §7.7.4, adapted for daemon→handler direction (see High-Level Technical Design). | tests/integration_test.rs<br>tests/dispatch_integration.rs<br>tests/multi_bot.rs | src/transport/protocol.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
 | R5 | The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir... | tests/integration_test.rs<br>tests/multi_bot.rs | src/client_manager.rs<br>src/bot_state.rs | — | ✅ covered |
 | R6 | The daemon supports three signing backends per bot identity: (a) **local test key** — nsec hex in config or `PACTO_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** — a bunker on ... | tests/admin_cli_bunker.rs<br>tests/secret_redaction.rs<br>tests/daemon_startup.rs | src/signer.rs<br>src/nip46.rs<br>src/config.rs | — | ✅ covered |

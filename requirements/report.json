@@ -3,6 +3,7 @@
   "total_requirements": 37,
   "covered_requirements": 37,
   "uncovered_requirements": [],
+  "requirements_without_tests": [],
   "path_warnings": [],
   "coverage": [
     {
@@ -10,9 +11,11 @@
       "summary": "The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i...",
       "tests": [
         "tests/transport_unix.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/transport_http.rs"
       ],
       "parsed_tests": [
+        "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [
@@ -42,9 +45,11 @@
       "summary": "The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo...",
       "tests": [
         "tests/transport_unix.rs",
-        "tests/transport_http.rs"
+        "tests/transport_http.rs",
+        "tests/sighup_token_reload.rs"
       ],
       "parsed_tests": [
+        "tests/sighup_token_reload.rs",
         "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
@@ -543,7 +548,9 @@
       "tests": [
         "tests/schema_sync.rs"
       ],
-      "parsed_tests": [],
+      "parsed_tests": [
+        "tests/schema_sync.rs"
+      ],
       "sources": [
         "schemas/",
         "src/config_generated.rs",
@@ -614,7 +621,9 @@
       "tests": [
         "tests/dev_env_probe.rs"
       ],
-      "parsed_tests": [],
+      "parsed_tests": [
+        "tests/dev_env_probe.rs"
+      ],
       "sources": [
         "src/dev_env_probe.rs",
         "src/main.rs",

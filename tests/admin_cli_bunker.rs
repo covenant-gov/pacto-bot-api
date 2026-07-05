@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use assert_cmd::Command;
 use nostr::NostrSigner as NostrSignerTrait;
-use nostr::{Keys, Kind, Timestamp, UnsignedEvent};
+use nostr::{Keys, Kind, Timestamp, ToBech32, UnsignedEvent};
 use pacto_bot_api::signer::{Signer, SignerBackend};
 use serde_json::json;
 use support::mock_bunker::MockBunker;
@@ -263,4 +263,56 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
     tokio::task::spawn_blocking(move || cmd.assert().success()).await?;
 
     Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn local_key_send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn Error>> {
+    let dir = tempfile::tempdir()?;
+    let relay = MockRelay::start().await?;
+    let (mut bot, _nsec) = common::generate_nsec_bot("send-bot")?;
+    bot.relays = vec![relay.url()];
+    bot.capabilities = vec!["ReadMessages".into(), "Admin".into()];
+    let config = common::make_config(&dir, vec![bot])?;
+
+    let _daemon = DaemonGuard(common::spawn_daemon_until_ready(&config).await?);
+
+    let recipient_keys = Keys::generate();
+    let recipient = recipient_keys.public_key().to_bech32()?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("--config")
+        .arg(&config)
+        .arg("send-test-dm")
+        .arg("send-bot")
+        .arg(&recipient)
+        .arg("integration test message");
+    let output = cmd.assert().success();
+    let stdout = String::from_utf8(output.get_output().stdout.clone())?;
+    let event_id = stdout.trim();
+    assert!(
+        !event_id.is_empty() && event_id.len() == 64,
+        "expected a 64-char hex event id, got: {event_id:?}"
+    );
+
+    // Give the relay a moment to receive the published gift wrap.
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+        .await?;
+    assert!(
+        events.iter().any(|e| e.id.to_hex() == event_id),
+        "published gift wrap should appear on the mock relay"
+    );
+
+    Ok(())
+}
+
+/// Spawn a daemon and return a guard that kills it on drop.
+struct DaemonGuard(std::process::Child);
+
+impl Drop for DaemonGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }

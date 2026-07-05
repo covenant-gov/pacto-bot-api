@@ -1,7 +1,7 @@
 mod common;
 mod support;
 
-/// req(R4, R5, R12, R13, R15, R17, R33, SC2)
+/// req(R4, R5, R12, R13, R15, R17, R33)
 ///
 /// Integration test verifying that a single daemon instance can multiplex
 /// multiple bot identities using different signing backends. One bot uses a

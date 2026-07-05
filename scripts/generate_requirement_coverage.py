@@ -2,13 +2,15 @@
 """Generate a requirement-coverage report for the pacto-bot-api daemon.
 
 Parses the implementation plan in docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md,
-reads the manual coverage mapping in requirements/coverage.json, and writes:
+reads the manual coverage mapping in requirements/coverage.json, scans
+`tests/**/*.rs` for `#[req(R...)]` and `// req(R...)` / `/// req(R...)` /
+`//! req(R...)` tags, and writes:
 
 - requirements/report.md   (human-readable markdown report)
 - requirements/report.json (machine-readable JSON report)
 
-Exit code is non-zero when any requirement R1-R37 lacks both a covering test and
-an explicit justification.
+Exit code is non-zero when any requirement R1-R37 lacks both a covering test
+and an explicit justification.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ REPORT_JSON_PATH = REPO_ROOT / "requirements" / "report.json"
 
 REQUIREMENT_RE = re.compile(r"^- (R\d+)\.\s+(.*)$")
 REQ_ATTR_RE = re.compile(r"#\[req\(([^)]*)\)\]")
-REQ_COMMENT_RE = re.compile(r"///*\s*req\(([^)]*)\)")
+REQ_COMMENT_RE = re.compile(r"//[!/]*\s*req\(([^)]*)\)")
 
 
 def parse_requirements(plan_text: str) -> dict[str, str]:
@@ -71,26 +73,39 @@ def _split_req_ids(payload: str) -> list[str]:
     return ids
 
 
-def parse_test_tags(tests_dir: Path) -> dict[str, list[str]]:
-    """Parse req(...) tags from test source files.
+def _extract_req_ids(source: str) -> set[str]:
+    """Return all valid requirement IDs found in a Rust source string."""
+    ids: set[str] = set()
+    for match in REQ_ATTR_RE.finditer(source):
+        ids.update(_split_req_ids(match.group(1)))
+    for match in REQ_COMMENT_RE.finditer(source):
+        ids.update(_split_req_ids(match.group(1)))
+    return ids
 
-    Returns a mapping from requirement ID to the list of test files (relative to
-    the repo root) that tag it.
+
+def parse_test_tags(tests_dir: Path) -> dict[str, list[str]]:
+    """Parse req(...) tags from actual test source files.
+
+    Walks `tests/**/*.rs` recursively, skipping helper/support modules
+    (`tests/support/` and `tests/common/`) whose contents are fixtures and
+    parsing utilities, not tests that validate requirements. Returns a mapping
+    from requirement ID to the list of test files (relative to the repo root)
+    that tag it.
     """
     tags: dict[str, list[str]] = {}
     if not tests_dir.exists():
         return tags
 
-    for path in sorted(tests_dir.glob("*.rs")):
+    skip_prefixes = ("support/", "common/")
+    for path in sorted(tests_dir.rglob("*.rs")):
+        rel = path.relative_to(tests_dir).as_posix()
+        if rel.startswith(skip_prefixes):
+            continue
         text = path.read_text(encoding="utf-8")
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        ids: set[str] = set()
-        for match in REQ_ATTR_RE.finditer(text):
-            ids.update(_split_req_ids(match.group(1)))
-        for match in REQ_COMMENT_RE.finditer(text):
-            ids.update(_split_req_ids(match.group(1)))
+        rel_repo = path.relative_to(REPO_ROOT).as_posix()
+        ids = _extract_req_ids(text)
         for req_id in sorted(ids):
-            tags.setdefault(req_id, []).append(rel)
+            tags.setdefault(req_id, []).append(rel_repo)
 
     return tags
 
@@ -127,6 +142,7 @@ def build_report(
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     uncovered: list[str] = []
+    no_tests: list[str] = []
     warnings: list[str] = []
 
     for req_id in sorted(requirements, key=lambda r: int(r[1:])):
@@ -143,6 +159,8 @@ def build_report(
         covered = has_tests or has_sources or has_justification
         if not covered:
             uncovered.append(req_id)
+        if not has_tests:
+            no_tests.append(req_id)
 
         warnings.extend(verify_paths(req_id, cov["tests"]))
         warnings.extend(verify_paths(req_id, cov["sources"]))
@@ -167,6 +185,7 @@ def build_report(
         "total_requirements": total,
         "covered_requirements": covered_count,
         "uncovered_requirements": uncovered,
+        "requirements_without_tests": no_tests,
         "path_warnings": warnings,
         "coverage": entries,
     }
@@ -190,6 +209,7 @@ def write_markdown(report: dict[str, Any]) -> None:
         f"| Total requirements | {report['total_requirements']} |",
         f"| Covered requirements | {report['covered_requirements']} |",
         f"| Uncovered requirements | {len(report['uncovered_requirements'])} |",
+        f"| Requirements without covering tests | {len(report['requirements_without_tests'])} |",
         "",
     ]
 
@@ -203,6 +223,22 @@ def write_markdown(report: dict[str, Any]) -> None:
             ]
         )
         for req_id in report["uncovered_requirements"]:
+            entry = next(e for e in report["coverage"] if e["id"] == req_id)
+            lines.append(f"- **{req_id}** — {entry['summary']}")
+        lines.append("")
+
+    if report["requirements_without_tests"]:
+        lines.extend(
+            [
+                "## Requirements Without Covering Tests",
+                "",
+                "The following requirements are listed in `requirements/coverage.json` but have "
+                "no covering test files (either from auto-detected tags or from the manual "
+                "mapping). They may still be covered by source files or an explicit justification.",
+                "",
+            ]
+        )
+        for req_id in report["requirements_without_tests"]:
             entry = next(e for e in report["coverage"] if e["id"] == req_id)
             lines.append(f"- **{req_id}** — {entry['summary']}")
         lines.append("")
@@ -290,6 +326,13 @@ def main() -> int:
         print("\nPath warnings:", file=sys.stderr)
         for warning in report["path_warnings"]:
             print(f"  - {warning}", file=sys.stderr)
+
+    if report["requirements_without_tests"]:
+        print(
+            f"\nWarning: {len(report['requirements_without_tests'])} requirement(s) have no "
+            f"covering tests: {', '.join(report['requirements_without_tests'])}",
+            file=sys.stderr,
+        )
 
     if report["uncovered_requirements"]:
         print(
