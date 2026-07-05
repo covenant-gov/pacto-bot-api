@@ -418,6 +418,56 @@ async fn unix_unregistered_peer_cannot_set_profile() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test]
+async fn unix_unregistered_peer_cannot_error() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let dir = test_socket_dir()?;
+        let path = dir.join("unregistered-error.sock");
+        let (dispatch, _db_dir) = setup_dispatch().await?;
+        let dispatch_for_handler = dispatch.clone();
+
+        let handler = message_handler(move |msg, connection, handler_id| {
+            let dispatch = dispatch_for_handler.clone();
+            async move {
+                dispatch
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
+                    .await
+            }
+        });
+
+        let transport = UnixTransport::new(&path).with_limits(4096, Duration::from_secs(2), 10);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            transport
+                .run(handler, dummy_disconnect_sender(), shutdown_rx)
+                .await
+        });
+
+        wait_for_connect(&path).await?;
+
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "agent.error",
+            Some(serde_json::json!({
+                "bot_id": "echo-bot",
+                "message": "should not be accepted",
+            })),
+        );
+        let resp = send_request(&path, &req).await?;
+        match resp {
+            JsonRpcMessage::Error { error, .. } => {
+                assert_eq!(error.code, -32001, "expected HandlerNotRegistered");
+            }
+            _ => panic!("expected error for unregistered peer, got {resp:?}"),
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn unix_status_notification_matches_catalog() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     {
