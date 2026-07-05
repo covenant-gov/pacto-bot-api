@@ -246,7 +246,13 @@ async fn dispatch_consumer(
                 let _ = resp_tx.send(resp);
             }
             TransportEvent::Disconnect(Some(handler_id)) => {
-                dispatch.disconnect_handler(&handler_id).await;
+                if let Err(e) = dispatch.unregister_handler(&handler_id).await {
+                    tracing::warn!(
+                        handler_id = %handler_id,
+                        error = %e,
+                        "failed to unregister handler on disconnect"
+                    );
+                }
             }
             TransportEvent::Disconnect(None) => {}
         }
