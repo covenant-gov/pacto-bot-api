@@ -1,8 +1,8 @@
 repos:
   primary: "."
-  additional:
-    - "/Users/opselite/.beads-planning"
 
 export.auto: false
-
+sync.remote: "https://doltremoteapi.dolthub.com/opselite/pacto-bot-api"
 federation.remote: "https://doltremoteapi.dolthub.com/opselite/pacto-bot-api"
+
+routing.contributor: .
