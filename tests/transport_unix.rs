@@ -63,7 +63,6 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
         ClientManager::new(dir.path(), config, nostr_client).await?,
     ));
     let db = Db::open(dir.path().join("agent.db").as_path()).await?;
-    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));
     Ok((dispatch, dir))

@@ -28,12 +28,10 @@ use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
-/// Return a [`tempfile::TempDir`] created under a project-local directory
-/// (`target/test-temp`) rather than the system temp directory.
-///
-/// The project-local root is created with `0o700` permissions so the daemon's
-/// config-file permission checks pass even when the host's `/tmp` is
-/// group/world-writable.
+/// Return a [`tempfile::TempDir`] created under a user-owned directory
+/// (`~/.pacto-test`) rather than the system temp directory or the project
+/// tree. This avoids group/world-writable `/tmp` parent issues and keeps the
+/// path short enough for Unix domain sockets on macOS.
 pub fn tempdir() -> io::Result<tempfile::TempDir> {
     let root = project_temp_root();
     fs::create_dir_all(&root)?;
@@ -56,10 +54,15 @@ pub fn tempdir() -> io::Result<tempfile::TempDir> {
 }
 
 fn project_temp_root() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+    let home = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    manifest.join("target").join("test-temp")
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| {
+            std::env::var("CARGO_MANIFEST_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+        });
+    home.join(".pacto-test")
 }
 
 pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>> {
