@@ -1,36 +1,41 @@
 static METHOD_PARAMS_SCHEMA: LazyLock<HashMap<String, serde_json::Value>> = LazyLock::new(|| {
-    let json_str = include_str!("../../schemas/jsonrpc.json");
-    let openrpc: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| panic!("failed to parse OpenRPC schema: {e}"))
-        .unwrap();
+    // This schema is embedded at compile time; parse failures are a build/
+    // packaging bug, not a runtime condition, so we intentionally fail fast here.
+    #[allow(clippy::expect_used, clippy::panic)]
+    let parse_schema = || -> HashMap<String, serde_json::Value> {
+        let json_str = include_str!("../../schemas/jsonrpc.json");
+        let openrpc: serde_json::Value =
+            serde_json::from_str(json_str).expect("failed to parse OpenRPC schema");
 
-    let methods = openrpc
-        .get("methods")
-        .and_then(|v| v.as_array())
-        .expect("OpenRPC schema missing methods array");
-    let mut map = HashMap::new();
-
-    for method in methods {
-        let name = method
-            .get("name")
-            .and_then(|v| v.as_str())
-            .expect("method missing name");
-        let params = method
-            .get("params")
+        let methods = openrpc
+            .get("methods")
             .and_then(|v| v.as_array())
-            .and_then(|arr| arr.first());
-        if let Some(param) = params {
-            let schema = param
-                .get("schema")
-                .cloned()
-                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-            map.insert(name.to_string(), schema);
-        } else {
-            map.insert(name.to_string(), serde_json::Value::Array(Vec::new()));
-        }
-    }
+            .expect("OpenRPC schema missing methods array");
+        let mut map = HashMap::new();
 
-    map
+        for method in methods {
+            let name = method
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("method missing name");
+            let params = method
+                .get("params")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first());
+            if let Some(param) = params {
+                let schema = param
+                    .get("schema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                map.insert(name.to_string(), schema);
+            } else {
+                map.insert(name.to_string(), serde_json::Value::Array(Vec::new()));
+            }
+        }
+
+        map
+    };
+    parse_schema()
 });
 
 /// Runtime JSON schema validator for JSON-RPC params.

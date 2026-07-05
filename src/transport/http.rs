@@ -286,22 +286,22 @@ async fn http_handler(
                 let method = method_name.as_deref().and_then(|m| parse_method(m).ok());
 
                 // Runtime OpenRPC schema validation of incoming params.
-                if let Some(name) = msg.method() {
-                    if let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null)) {
-                        let err = JsonRpcMessage::error(
-                            msg.id().cloned().unwrap_or(Value::Null),
-                            JsonRpcError::new(-32602, e.to_string()),
-                        );
-                        let mut body = serialize_message(&err).unwrap_or_default();
-                        if !body.is_empty() {
-                            body.push('\n');
-                        }
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            [(CONTENT_TYPE, "application/json")],
-                            body.into_bytes(),
-                        );
+                if let Some(name) = msg.method()
+                    && let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null))
+                {
+                    let err = JsonRpcMessage::error(
+                        msg.id().cloned().unwrap_or(Value::Null),
+                        JsonRpcError::new(-32602, e.to_string()),
+                    );
+                    let mut body = serialize_message(&err).unwrap_or_default();
+                    if !body.is_empty() {
+                        body.push('\n');
                     }
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        [(CONTENT_TYPE, "application/json")],
+                        body.into_bytes(),
+                    );
                 }
 
                 if method == Some(Method::HandlerRegister)

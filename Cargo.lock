@@ -5229,7 +5229,6 @@ dependencies = [
 ]
 
 [[package]]
-[[package]]
 name = "rlp"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
