@@ -562,8 +562,25 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
 /// secrets in the first place.
 fn redact_secrets(input: &str) -> String {
     let mut out = redact_word_prefix(input, "nsec1");
+    out = redact_hex_secret(&out);
     out = redact_query_param(&out, "secret");
     out = redact_query_param(&out, "token");
+    out = redact_query_param(&out, "api_key");
+    out = redact_query_param(&out, "password");
+    out = redact_query_param(&out, "priv_key");
+    for key in &[
+        "api_secret",
+        "private_key",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "secret_key",
+    ] {
+        out = redact_query_param(&out, key);
+    }
+    out = redact_bearer_token(&out);
+    out = redact_authorization_header(&out);
     redact_mls_paths(&out)
 }
 
@@ -634,6 +651,103 @@ fn redact_query_param(input: &str, key: &str) -> String {
             None => after.len(),
         };
         rest = &after[end..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Redact 64-character hexadecimal sequences (raw secp256k1 private keys).
+fn redact_hex_secret(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(start) = find_hex_run(rest, 64) {
+        result.push_str(&rest[..start]);
+        result.push_str("[REDACTED]");
+        rest = &rest[start + 64..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Find the starting index of a run of `len` ASCII hexadecimal digits.
+fn find_hex_run(input: &str, len: usize) -> Option<usize> {
+    if input.len() < len {
+        return None;
+    }
+    let mut count = 0;
+    let mut start = 0;
+    for (idx, c) in input.char_indices() {
+        if c.is_ascii_hexdigit() {
+            if count == 0 {
+                start = idx;
+            }
+            count += 1;
+            if count == len {
+                return Some(start);
+            }
+        } else {
+            count = 0;
+        }
+    }
+    None
+}
+
+/// Find `needle` in `haystack` case-insensitively.
+///
+/// This assumes `needle` is ASCII, so its byte length is preserved under
+/// lowercasing; the returned index is valid in the original `haystack`.
+fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let needle_lower = needle.to_lowercase();
+    let haystack_lower = haystack.to_lowercase();
+    haystack_lower.find(&needle_lower)
+}
+
+/// Redact a `bearer <token>` token, case-insensitively.
+fn redact_bearer_token(input: &str) -> String {
+    let prefix = "bearer ";
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(pos) = find_case_insensitive(rest, prefix) {
+        let original_prefix = &rest[pos..pos + prefix.len()];
+        result.push_str(&rest[..pos]);
+        result.push_str(original_prefix);
+        result.push_str("[REDACTED]");
+
+        let after = &rest[pos + prefix.len()..];
+        let end = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
+        rest = &after[end..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Redact an `authorization: <value>` header, case-insensitively.
+fn redact_authorization_header(input: &str) -> String {
+    let prefix = "authorization:";
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(pos) = find_case_insensitive(rest, prefix) {
+        let original_prefix = &rest[pos..pos + prefix.len()];
+        result.push_str(&rest[..pos]);
+        result.push_str(original_prefix);
+        result.push_str(" [REDACTED]");
+
+        let after = &rest[pos + prefix.len()..];
+        // Skip leading whitespace after the colon.
+        let skip = after.chars().take_while(|&c| c == ' ' || c == '\t').count();
+        let after_ws = &after[skip..];
+        let end = after_ws
+            .find(|c: char| ['\n', '\r'].contains(&c))
+            .unwrap_or(after_ws.len());
+        rest = &after_ws[end..];
     }
     result.push_str(rest);
     result
@@ -859,6 +973,56 @@ mod tests {
     fn redact_secrets_does_not_mutate_secret_free_input() {
         let input = "relay wss://relay.example connected for npub1public";
         assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn redact_secrets_masks_required_patterns() {
+        assert_eq!(redact_secrets("nsec1deadbeef"), "[REDACTED]");
+        assert_eq!(redact_secrets("secret=supersecret"), "secret=[REDACTED]");
+        assert_eq!(redact_secrets("token=tokentoken"), "token=[REDACTED]");
+        assert_eq!(redact_secrets("bearer bearertoken"), "bearer [REDACTED]");
+        assert_eq!(
+            redact_secrets("authorization: authvalue"),
+            "authorization: [REDACTED]"
+        );
+        assert_eq!(redact_secrets("api_key=apikeyvalue"), "api_key=[REDACTED]");
+        assert_eq!(
+            redact_secrets("password=passwordvalue"),
+            "password=[REDACTED]"
+        );
+        assert_eq!(
+            redact_secrets("priv_key=privkeyvalue"),
+            "priv_key=[REDACTED]"
+        );
+    }
+
+    #[test]
+    fn redact_secrets_masks_hex_private_key() {
+        let hex = "a".repeat(64);
+        let input = format!("raw key {hex} trailing");
+        let out = redact_secrets(&input);
+        assert!(!out.contains(&hex));
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_masks_common_secret_identifiers() {
+        let input = "api_secret=foo private_key=bar auth_token=baz access_token=qux refresh_token=quux client_secret=corge secret_key=grault";
+        let out = redact_secrets(input);
+        for secret in &["foo", "bar", "baz", "qux", "quux", "corge", "grault"] {
+            assert!(
+                !out.contains(secret),
+                "secret '{secret}' leaked in redacted output: {out}"
+            );
+        }
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_is_case_insensitive_for_bearer_and_authorization() {
+        let out = redact_secrets("Authorization: Bearer abc123");
+        assert!(!out.contains("abc123"));
+        assert!(out.contains("Authorization: [REDACTED]"));
     }
 
     #[test]
