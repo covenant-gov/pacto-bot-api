@@ -19,6 +19,7 @@ pub mod events;
 pub mod guide;
 pub mod handlers;
 pub mod metrics_generated;
+pub mod mls;
 pub mod nostr;
 pub mod service_compatibility_generated;
 pub mod signer;
