@@ -478,7 +478,21 @@ For production bunkers, use `wss://` URIs and set a real `ENCRYPTION_KEY` in `de
 
 ---
 
-## 12. Security notes for local development
+## 12. Beads issue tracking
+
+This project uses Beads for task tracking. Issues are stored in a Dolt database that is synced to Dolthub, so every developer sees the same task list.
+
+After cloning any Pacto repo, set up Beads:
+
+```bash
+bd bootstrap
+```
+
+See `docs/BEADS_WORKFLOW.md` for the full daily workflow, multi-machine sync test, and troubleshooting.
+
+---
+
+## 13. Security notes for local development
 
 - All local services bind to `localhost` only by default. Do not expose Anvil, the relay, or the bot API HTTP port to the public internet.
 - The `nsec` signing backend logs a warning and is for local testing only. Use a NIP-46 bunker for any shared or production deployment.
@@ -492,6 +506,7 @@ For production bunkers, use `wss://` URIs and set a real `ENCRYPTION_KEY` in `de
 - Bot daemon plan: `docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-plan.md`
 - Bot daemon executive summary: `docs/plans/2026-06-24-001-feat-pacto-bot-api-daemon-executive-summary.md`
 - Pacto architecture: `pacto-bot-architecture-deep-dive.md`
+- Beads workflow: `docs/BEADS_WORKFLOW.md`
 - Upstream Pacto README: https://github.com/covenant-gov/pacto-app/blob/main/README.md
 - Upstream build guide: https://github.com/covenant-gov/pacto-app/blob/main/docs/build/ubuntuGuide.md
 - Upstream macOS guide: https://github.com/covenant-gov/pacto-app/blob/main/docs/build/macGuide.md

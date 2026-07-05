@@ -253,7 +253,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker
 
-This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands, and see `docs/BEADS_WORKFLOW.md` for the developer onboarding guide, daily workflow, and troubleshooting.
 
 ### Quick Reference
 
