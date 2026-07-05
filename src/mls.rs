@@ -9,7 +9,7 @@
 //! cloned into the blocking closure, the mutex is locked, the synchronous engine
 //! call runs, the lock is dropped, and the result is returned to the async caller.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use mdk_core::prelude::*;
@@ -25,6 +25,10 @@ pub enum MlsError {
     /// Filesystem permission error when securing the MLS database.
     #[error("MLS filesystem error")]
     Io(#[from] std::io::Error),
+
+    /// Raw `rusqlite` error when enabling WAL or inspecting the MLS database.
+    #[error("MLS sqlite error")]
+    Rusqlite(#[from] rusqlite::Error),
 
     /// Generic engine failure; the message must not contain key material.
     #[error("MLS engine error")]
@@ -54,11 +58,14 @@ pub enum MlsError {
 /// tasks while remaining `Send` and `Sync`.
 pub struct MlsEngineHandle {
     engine: Arc<Mutex<MDK<MdkSqliteStorage>>>,
+    db_path: PathBuf,
 }
 
 impl std::fmt::Debug for MlsEngineHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MlsEngineHandle").finish_non_exhaustive()
+        f.debug_struct("MlsEngineHandle")
+            .field("db_path", &self.db_path)
+            .finish_non_exhaustive()
     }
 }
 
@@ -66,6 +73,7 @@ impl Clone for MlsEngineHandle {
     fn clone(&self) -> Self {
         Self {
             engine: Arc::clone(&self.engine),
+            db_path: self.db_path.clone(),
         }
     }
 }
@@ -81,16 +89,43 @@ const _: () = {
 impl MlsEngineHandle {
     /// Create a persistent MLS engine backed by `vector-mls.db` at `db_path`.
     ///
-    /// The parent directory is created by `MdkSqliteStorage::new`. After the
-    /// database file is created, this constructor enforces `0o600` permissions
-    /// on it.
+    /// The parent directory is created before the database is opened. WAL mode
+    /// is enabled before `MdkSqliteStorage` opens its own connections so that
+    /// the `-wal` and `-shm` sidecars are created and can be permissioned at
+    /// initialization time.
     pub fn new_persistent<P: AsRef<Path>>(db_path: P) -> Result<Self, MlsError> {
-        let storage = MdkSqliteStorage::new(db_path.as_ref())?;
-        set_db_permissions(db_path.as_ref())?;
+        let db_path = db_path.as_ref().to_path_buf();
+
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Enable WAL mode first. We hold a temporary connection open while
+        // `MdkSqliteStorage` initializes so the WAL file is not checkpointed
+        // and removed before the engine's own connections adopt WAL mode.
+        let wal_conn = rusqlite::Connection::open(&db_path)?;
+        wal_conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;",
+        )?;
+        wal_conn.execute(
+            "CREATE TABLE IF NOT EXISTS _pacto_mls_wal_trigger (x INTEGER)",
+            [],
+        )?;
+
+        let storage = MdkSqliteStorage::new(&db_path)?;
+        set_db_permissions(&db_path)?;
+
         let engine = MDK::new(storage);
-        Ok(Self {
+        let handle = Self {
             engine: Arc::new(Mutex::new(engine)),
-        })
+            db_path,
+        };
+
+        // The engine's own connections keep WAL active; the temporary connection
+        // can now be safely dropped.
+        drop(wal_conn);
+        Ok(handle)
     }
 
     /// Clone the inner engine Arc for use inside a `spawn_blocking` closure.
@@ -100,19 +135,31 @@ impl MlsEngineHandle {
     pub(crate) fn engine(&self) -> Arc<Mutex<MDK<MdkSqliteStorage>>> {
         Arc::clone(&self.engine)
     }
+
+    /// Return the path to the underlying `vector-mls.db` file.
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
 }
 
-/// Enforce `0o600` on the main SQLite database file.
+/// Enforce `0o600` on the SQLite database and its WAL/SHM sidecars if present.
 ///
 /// SQLite creates files using the process umask, so an explicit `set_permissions`
-/// call is required even when the parent directory is `0o700`. WAL/SHM sidecars
-/// are handled in `U2` after the first write triggers WAL creation.
+/// call is required even when the parent directory is `0o700`.
 #[cfg(unix)]
 pub(crate) fn set_db_permissions<P: AsRef<Path>>(db_path: P) -> Result<(), MlsError> {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    fs::set_permissions(db_path.as_ref(), fs::Permissions::from_mode(0o600))?;
+    let db_path = db_path.as_ref();
+    fs::set_permissions(db_path, fs::Permissions::from_mode(0o600))?;
+
+    for ext in ["-wal", "-shm"] {
+        let sidecar = db_path.with_extension(format!("db{}", ext));
+        if sidecar.exists() {
+            fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600))?;
+        }
+    }
     Ok(())
 }
 
@@ -126,12 +173,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_persistent_creates_0600_db() {
+    fn new_persistent_creates_0600_db_and_sidecars() {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("vector-mls.db");
 
         let handle = MlsEngineHandle::new_persistent(&db_path).expect("new_persistent");
         assert!(db_path.exists());
+        assert!(db_path.with_extension("db-wal").exists());
+        assert!(db_path.with_extension("db-shm").exists());
         assert!(Arc::strong_count(&handle.engine) >= 1);
 
         let meta = std::fs::metadata(&db_path).expect("metadata");
@@ -139,6 +188,25 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+
+            let wal = db_path.with_extension("db-wal");
+            let shm = db_path.with_extension("db-shm");
+            assert_eq!(
+                std::fs::metadata(&wal)
+                    .expect("wal metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(&shm)
+                    .expect("shm metadata")
+                    .permissions()
+                    .mode()
+                & 0o777,
+                0o600
+            );
         }
     }
 

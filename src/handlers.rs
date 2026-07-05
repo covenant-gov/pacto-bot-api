@@ -762,10 +762,12 @@ mod tests {
             bots,
         };
         let nostr_client = NostrClient::new(vec![]).await.unwrap();
-        let cm = Arc::new(RwLock::new(
-            ClientManager::new(config, nostr_client).await.unwrap(),
-        ));
         let dir = tempdir().unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(dir.path(), config, nostr_client)
+                .await
+                .unwrap(),
+        ));
         let db = Db::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();

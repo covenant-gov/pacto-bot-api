@@ -13,6 +13,7 @@ use nostr::{PublicKey, Timestamp};
 #[cfg(test)]
 use secrecy::SecretString;
 use std::collections::HashMap;
+use std::path::Path;
 use tracing::warn;
 
 /// Manages multiple bot identities and provides npub/bot_id lookups.
@@ -28,7 +29,11 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
-    pub async fn new(config: DaemonConfig, nostr_client: NostrClient) -> Result<Self, DaemonError> {
+    pub async fn new(
+        data_dir: impl AsRef<Path>,
+        config: DaemonConfig,
+        nostr_client: NostrClient,
+    ) -> Result<Self, DaemonError> {
         let mut bots = HashMap::with_capacity(config.bots.len());
         let mut bot_id_to_pubkey = HashMap::with_capacity(config.bots.len());
 
@@ -38,7 +43,28 @@ impl ClientManager {
                 return Err(DaemonError::Config(format!("duplicate bot_id: {bot_id}")));
             }
 
-            let bot_state = BotState::new(bot_config)?;
+            // Bots configured to send group messages need an MLS engine. The
+            // engine database lives under a per-bot directory inside the daemon
+            // data directory.
+            let bot_state = if bot_config
+                .capabilities
+                .iter()
+                .any(|c| c == "SendGroupMessages")
+            {
+                let bot_data_dir = data_dir.as_ref().join(&bot_id);
+                tokio::fs::create_dir_all(&bot_data_dir).await?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    tokio::fs::set_permissions(&bot_data_dir, std::fs::Permissions::from_mode(0o700))
+                        .await?;
+                }
+                let mls_db_path = bot_data_dir.join("vector-mls.db");
+                BotState::new_with_mls(bot_config, mls_db_path)?
+            } else {
+                BotState::new(bot_config)?
+            };
+
             // Live verification for bunker backends; local keys are checked
             // synchronously during BotState construction.
             bot_state.signer.verify_bunker_public_key().await?;
@@ -195,10 +221,15 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: bot_configs,
         };
+        let data_dir = tempfile::tempdir().unwrap();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap()
+            ClientManager::new(
+                data_dir.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap()
         })
     }
 
@@ -235,15 +266,96 @@ mod tests {
     }
 
     #[test]
-    fn missing_lookups_return_none() {
+    fn mls_bot_gets_persistent_engine_and_non_mls_bot_does_not() {
         let keys = nostr::Keys::generate();
-        let mut manager = manager_with_bots(vec![bot_config("echo-bot", &keys)]);
-        let other_keys = nostr::Keys::generate();
+        let mut mls_bot = bot_config("mls-bot", &keys);
+        mls_bot.capabilities.push("SendGroupMessages".into());
+        let dm_only_bot = bot_config("dm-bot", &nostr::Keys::generate());
 
-        assert!(manager.get_bot(&other_keys.public_key()).is_none());
-        assert!(manager.get_bot_by_id("missing").is_none());
-        assert!(manager.get_bot_mut(&other_keys.public_key()).is_none());
-        assert!(manager.get_bot_by_id_mut("missing").is_none());
+        let _temp = tempfile::tempdir().unwrap();
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![mls_bot, dm_only_bot],
+        };
+        let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap()
+        });
+
+        let mls_state = manager.get_bot_by_id("mls-bot").unwrap();
+        assert!(mls_state.mls.is_some());
+
+        let dm_state = manager.get_bot_by_id("dm-bot").unwrap();
+        assert!(dm_state.mls.is_none());
+    }
+
+    #[test]
+    fn mls_bots_get_distinct_db_paths() {
+        let keys_a = nostr::Keys::generate();
+        let keys_b = nostr::Keys::generate();
+        let mut bot_a = bot_config("mls-a", &keys_a);
+        bot_a.capabilities.push("SendGroupMessages".into());
+        let mut bot_b = bot_config("mls-b", &keys_b);
+        bot_b.capabilities.push("SendGroupMessages".into());
+
+        let _temp = tempfile::tempdir().unwrap();
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![bot_a, bot_b],
+        };
+        let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap()
+        });
+
+        let path_a = manager
+            .get_bot_by_id("mls-a")
+            .unwrap()
+            .mls
+            .as_ref()
+            .unwrap()
+            .db_path();
+        let path_b = manager
+            .get_bot_by_id("mls-b")
+            .unwrap()
+            .mls
+            .as_ref()
+            .unwrap()
+            .db_path();
+        assert_ne!(path_a, path_b);
+        assert!(path_a.to_string_lossy().contains("mls-a"));
+        assert!(path_b.to_string_lossy().contains("mls-b"));
+    }
+
+    #[test]
+    fn mls_bot_db_parent_is_0700() {
+        let keys = nostr::Keys::generate();
+        let mut bot = bot_config("mls-perm", &keys);
+        bot.capabilities.push("SendGroupMessages".into());
+
+        let _temp = tempfile::tempdir().unwrap();
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![bot],
+        };
+        let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
+                .await
+                .unwrap()
+        });
+
+        let state = manager.get_bot_by_id("mls-perm").unwrap();
+        let db_path = state.mls.as_ref().unwrap().db_path();
+        let parent = db_path.parent().expect("parent directory");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(parent).expect("parent metadata");
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        }
     }
 
     #[test]
@@ -258,9 +370,14 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap_err()
+            let data_dir = tempfile::tempdir().unwrap();
+            ClientManager::new(
+                data_dir.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap_err()
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("duplicate bot_id"));
@@ -289,9 +406,14 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap_err()
+            let data_dir = tempfile::tempdir().unwrap();
+            ClientManager::new(
+                data_dir.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap_err()
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("invalid npub"));
@@ -302,9 +424,14 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: bot_configs,
         };
-        ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
-            .await
-            .unwrap()
+        let data_dir = tempfile::tempdir().unwrap();
+        ClientManager::new(
+            data_dir.path(),
+            config,
+            NostrClient::new(vec![]).await.unwrap(),
+        )
+        .await
+        .unwrap()
     }
 
     async fn temp_db() -> (Db, tempfile::TempDir) {

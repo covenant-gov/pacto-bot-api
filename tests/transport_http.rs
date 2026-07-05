@@ -765,7 +765,7 @@ async fn start_dispatch_server_with_relay(
 
     let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let cm = Arc::new(tokio::sync::RwLock::new(
-        ClientManager::new(config, nostr_client).await?,
+        ClientManager::new(&data_dir, config, nostr_client).await?,
     ));
     let db = Db::open(&data_dir.join("test.db")).await?;
     let dispatch = Arc::new(Dispatch::new(cm, db, Diagnostics::new()));
