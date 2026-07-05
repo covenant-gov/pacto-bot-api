@@ -244,6 +244,26 @@ fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError
     Ok(())
 }
 
+/// Redact query-parameter values from a `bunker://` URI.
+///
+/// Keeps the scheme and host/path portion visible for debugging while
+/// replacing every `key=value` query parameter with `key=[REDACTED]` so that
+/// secret tokens are not leaked in error messages.
+pub fn redact_bunker_uri(uri: &str) -> String {
+    let Some((base, query)) = uri.split_once('?') else {
+        return uri.to_string();
+    };
+    let redacted = query
+        .split('&')
+        .map(|param| match param.split_once('=') {
+            Some((key, _)) => format!("{key}=[REDACTED]"),
+            None => param.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{base}?{redacted}")
+}
+
 /// Validate that `bot_id` is a safe, single directory name.
 ///
 /// Rejects empty values, names that are too long, whitespace, path
@@ -306,7 +326,8 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
                 if uri.contains("ws://") && !uri.contains("wss://") {
                     return Err(DaemonError::Config(format!(
                         "bot {}: bunker_remote backend must use wss://, got {}",
-                        bot.id, uri
+                        bot.id,
+                        redact_bunker_uri(uri)
                     )));
                 }
             }
@@ -587,7 +608,75 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
         );
 
         let err = DaemonConfig::load(&path).unwrap_err();
-        assert!(err.to_string().contains("must use wss://"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must use wss://"),
+            "expected wss requirement: {msg}"
+        );
+        assert!(
+            !msg.contains("ws://relay.nsec.app"),
+            "raw bunker relay URL leaked in error: {msg}"
+        );
+        assert!(
+            msg.contains("relay=[REDACTED]"),
+            "query parameter value should be redacted: {msg}"
+        );
+    }
+
+    #[test]
+    fn bunker_remote_error_redacts_secret_query_params() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "bad-bot"
+npub = "npub1a"
+signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay.nsec.app&secret=topsecret" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must use wss://"),
+            "expected wss requirement: {msg}"
+        );
+        assert!(!msg.contains("topsecret"), "secret leaked in error: {msg}");
+        assert!(
+            !msg.contains("ws://relay.nsec.app"),
+            "raw relay URL leaked: {msg}"
+        );
+        assert!(
+            msg.contains("secret=[REDACTED]"),
+            "secret not redacted: {msg}"
+        );
+    }
+
+    #[test]
+    fn redact_bunker_uri_preserves_path_and_masks_query_values() {
+        let uri = "bunker://pubkey@127.0.0.1:4848?relay=wss://relay.example&secret=shh&token=abc";
+        let out = redact_bunker_uri(uri);
+        assert!(
+            out.contains("bunker://pubkey@127.0.0.1:4848"),
+            "host/path missing: {out}"
+        );
+        assert!(
+            out.contains("relay=[REDACTED]"),
+            "relay not redacted: {out}"
+        );
+        assert!(
+            out.contains("secret=[REDACTED]"),
+            "secret not redacted: {out}"
+        );
+        assert!(
+            out.contains("token=[REDACTED]"),
+            "token not redacted: {out}"
+        );
+        assert!(
+            !out.contains("wss://relay.example"),
+            "raw relay URL leaked: {out}"
+        );
+        assert!(!out.contains("shh"), "secret leaked: {out}");
+        assert!(!out.contains("abc"), "token leaked: {out}");
     }
 
     #[test]
