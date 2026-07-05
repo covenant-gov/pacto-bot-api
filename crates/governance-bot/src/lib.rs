@@ -5,5 +5,8 @@
 //! a stable [`SnapshotData`](crate::evm::snapshot::SnapshotData) aggregate that
 //! the snapshot formatter (U9) can consume.
 
+pub mod bot;
+pub mod config;
+pub mod daemon_client;
 pub mod evm;
 pub mod snapshot;
