@@ -17,6 +17,13 @@ use std::path::Path;
 use tracing::warn;
 
 /// Manages multiple bot identities and provides npub/bot_id lookups.
+///
+/// # Lock ordering
+///
+/// When both the `ClientManager` lock and the [`Database`](crate::db::Database)
+/// lock are required, the `ClientManager` lock must be acquired first. This
+/// ordering is global: no code path may hold the database lock while waiting to
+/// acquire the `ClientManager` lock.
 #[derive(Debug)]
 pub struct ClientManager {
     /// Bots keyed by their parsed Nostr public key.

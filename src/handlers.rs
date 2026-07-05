@@ -744,6 +744,163 @@ mod tests {
         assert!(!handler.is_stale(Duration::from_secs(60)));
     }
 
+    #[test]
+    fn reconnect_with_valid_token_after_disconnect() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let registration = registry
+            .register(
+                ConnectionHandle::with_transport(tx, "unix"),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &bots,
+            )
+            .expect("register should succeed");
+        let handler_id = registration.handler_id;
+        let token = registration.reconnect_token;
+        let registered_at = registry.get_handler(&handler_id).unwrap().registered_at;
+
+        registry.get_handler_mut(&handler_id).unwrap().disconnect();
+        assert!(!registry.get_handler(&handler_id).unwrap().is_connected());
+
+        let (new_tx, new_rx) = tokio::sync::mpsc::channel(1);
+        std::mem::forget(rx);
+        std::mem::forget(new_rx);
+        registry
+            .reconnect(
+                handler_id.clone(),
+                token,
+                ConnectionHandle::with_transport(new_tx, "http"),
+                &bots,
+            )
+            .expect("reconnect should succeed");
+
+        let handler = registry.get_handler(&handler_id).unwrap();
+        assert!(handler.is_connected());
+        assert_eq!(handler.transport, "http");
+        assert!(handler.last_seen > registered_at);
+    }
+
+    #[test]
+    fn reconnect_rejects_invalid_token() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let registration = registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &bots,
+            )
+            .expect("register should succeed");
+        let handler_id = registration.handler_id;
+        registry.get_handler_mut(&handler_id).unwrap().disconnect();
+        std::mem::forget(rx);
+
+        let bad_token = SecretString::new("00".repeat(32).into());
+        let err = registry
+            .reconnect(handler_id.clone(), bad_token, dummy_handle(), &bots)
+            .unwrap_err();
+        assert!(matches!(err, DaemonError::InvalidReconnectToken));
+    }
+
+    #[test]
+    fn reconnect_rejects_unknown_handler() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+        let token = SecretString::new("00".repeat(32).into());
+
+        let err = registry
+            .reconnect("not-a-handler".to_string(), token, dummy_handle(), &bots)
+            .unwrap_err();
+        assert!(matches!(err, DaemonError::HandlerNotRegistered));
+    }
+
+    #[test]
+    fn reconnect_rejects_already_connected_handler() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+
+        let registration = registry
+            .register(
+                dummy_handle(),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &bots,
+            )
+            .expect("register should succeed");
+        let handler_id = registration.handler_id;
+        let token = registration.reconnect_token;
+
+        let err = registry
+            .reconnect(handler_id, token, dummy_handle(), &bots)
+            .unwrap_err();
+        assert!(matches!(err, DaemonError::HandlerAlreadyConnected));
+    }
+
+    #[test]
+    fn restore_from_persisted_state() {
+        let mut registry = HandlerRegistry::new();
+        let persisted = HandlerRef {
+            id: "persisted-handler".to_string(),
+            connection: None,
+            bot_ids: vec!["echo-bot".to_string()],
+            event_types: vec![EventType::DmReceived],
+            capabilities: vec!["ReadMessages".to_string()],
+            reconnect_token: SecretString::new("00".repeat(32).into()),
+            registered_at: Utc::now(),
+            last_seen: Utc::now(),
+            transport: "unix".to_string(),
+        };
+        let registered_at = persisted.registered_at;
+
+        registry.restore(persisted);
+
+        let handler = registry
+            .get_handler("persisted-handler")
+            .expect("restored handler should be present");
+        assert!(!handler.is_connected());
+        assert_eq!(handler.transport, "unknown");
+        assert_eq!(handler.last_seen, registered_at);
+        assert_eq!(handler.bot_ids, vec!["echo-bot".to_string()]);
+        assert_eq!(handler.capabilities, vec!["ReadMessages".to_string()]);
+    }
+
+    #[test]
+    fn restore_does_not_overwrite_existing_handler() {
+        let bots = vec![dummy_bot("echo-bot", &["ReadMessages"])];
+        let mut registry = HandlerRegistry::new();
+
+        let registration = registry
+            .register(
+                dummy_handle(),
+                vec!["echo-bot".to_string()],
+                vec!["dm_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &bots,
+            )
+            .expect("register should succeed");
+        let handler_id = registration.handler_id.clone();
+        let original_transport = registry.get_handler(&handler_id).unwrap().transport.clone();
+
+        let mut persisted = registry.get_handler(&handler_id).unwrap().clone();
+        persisted.connection = None;
+        persisted.transport = "http".to_string();
+        persisted.last_seen = Utc::now() + chrono::Duration::hours(1);
+        registry.restore(persisted);
+
+        let handler = registry.get_handler(&handler_id).unwrap();
+        assert_eq!(handler.transport, original_transport);
+        assert!(handler.is_connected());
+    }
+
     #[tokio::test]
     async fn reaping_removes_stale_handlers() {
         let keys = nostr::Keys::generate();

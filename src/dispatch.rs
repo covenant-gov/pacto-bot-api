@@ -192,6 +192,14 @@ const HANDLER_STALE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RESPONSES_PER_HANDLER: usize = 1;
 
 /// Event dispatch router.
+///
+/// # Lock ordering
+///
+/// `client_manager` is locked before `db`. Any method that needs both locks
+/// must acquire the `ClientManager` lock first, then perform the database
+/// operation while still holding that guard. Code paths that only need the
+/// database (e.g. flushing cursors) release the `ClientManager` guard before
+/// calling the database.
 #[derive(Debug)]
 pub struct Dispatch {
     client_manager: Arc<RwLock<ClientManager>>,
@@ -1276,13 +1284,17 @@ impl Dispatch {
 
     /// Restore persisted handler registrations as disconnected entries.
     pub async fn restore_handlers(&self) -> Result<(), DaemonError> {
-        let handlers = self.db.load_handlers().await?;
-
-        let count = handlers.len() as u64;
+        // Maintain the global lock order: ClientManager -> Database. Clone the
+        // Db handle first, then acquire the ClientManager lock before the
+        // database call so both locks are taken in the same order everywhere.
+        let db = self.db.clone();
         let mut cm = self.client_manager.write().await;
+        let handlers = db.load_handlers().await?;
+        let count = handlers.len() as u64;
         for handler in handlers {
             cm.handler_registry.restore(handler);
         }
+        drop(cm);
         self.handlers_registered.store(count, Ordering::SeqCst);
         self.diagnostics.set_handlers_registered(count);
         Ok(())
@@ -1330,7 +1342,7 @@ mod tests {
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
-    use crate::nostr::NostrClient;
+    use crate::nostr::{NostrClient, NostrSubscribe};
     use crate::transport::protocol::JsonRpcMessage;
     use nostr::ToBech32;
     use tempfile::tempdir;
@@ -2094,5 +2106,51 @@ mod tests {
 
         let cursor = dispatch.load_cursor("echo-bot").await.unwrap();
         assert_eq!(cursor, Some((npub, 42)));
+    }
+
+    #[tokio::test]
+    async fn client_manager_database_lock_order_prevents_deadlock() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("lock-order-bot", &keys, &[])]).await;
+        let db = dispatch.db.clone();
+
+        struct NoOpNostrClient;
+
+        #[async_trait::async_trait]
+        impl NostrSubscribe for NoOpNostrClient {
+            async fn subscribe_bot_with_since(
+                &self,
+                _npub: &nostr::PublicKey,
+                _since: Option<nostr::Timestamp>,
+            ) -> Result<nostr::SubscriptionId, DaemonError> {
+                Ok(nostr::SubscriptionId::new("sub-deadlock-test"))
+            }
+        }
+
+        // One task holds the ClientManager lock and then reads cursors from the
+        // database. This used to be able to deadlock against restore_handlers,
+        // which previously loaded the database before taking the ClientManager
+        // lock. The small sleep ensures restore_handlers reaches its first lock
+        // acquisition while we still hold the ClientManager write lock.
+        let subscribe = tokio::spawn(async move {
+            let mut cm = cm.write().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cm.subscribe_bots_with_client(&db, &NoOpNostrClient)
+                .await
+                .unwrap();
+        });
+
+        let restore = tokio::spawn(async move {
+            dispatch.restore_handlers().await.unwrap();
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (sub_res, rest_res) = tokio::join!(subscribe, restore);
+            sub_res.unwrap();
+            rest_res.unwrap();
+        })
+        .await
+        .expect("deadlock between ClientManager and Database locks");
     }
 }
