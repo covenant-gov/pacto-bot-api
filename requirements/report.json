@@ -12,10 +12,12 @@
       "tests": [
         "tests/transport_unix.rs",
         "tests/integration_test.rs",
-        "tests/support/req_attr.rs"
+        "tests/support/req_attr.rs",
+        "tests/transport_http.rs"
       ],
       "parsed_tests": [
         "tests/support/req_attr.rs",
+        "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [

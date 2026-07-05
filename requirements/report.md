@@ -13,7 +13,7 @@
 
 The following requirements were tagged directly in test source files:
 
-- **R1** — tests/support/req_attr.rs, tests/transport_unix.rs
+- **R1** — tests/support/req_attr.rs, tests/transport_http.rs, tests/transport_unix.rs
 - **R2** — tests/support/req_attr.rs, tests/transport_http.rs
 - **R3** — tests/sighup_token_reload.rs, tests/support/req_attr.rs, tests/transport_http.rs, tests/transport_unix.rs
 - **R4** — tests/integration_test.rs, tests/multi_bot.rs
@@ -55,7 +55,7 @@ The following requirements were tagged directly in test source files:
 
 | ID | Summary | Tests | Sources | Justification | Status |
 |---|---|---|---|---|---|
-| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs<br>tests/support/req_attr.rs | src/transport/unix.rs | — | ✅ covered |
+| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs<br>tests/support/req_attr.rs<br>tests/transport_http.rs | src/transport/unix.rs | — | ✅ covered |
 | R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs<br>tests/support/req_attr.rs | src/transport/http.rs | — | ✅ covered |
 | R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs<br>tests/sighup_token_reload.rs<br>tests/support/req_attr.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
 | R4 | The API supports the full method catalog defined in the architecture doc §7.7.4, adapted for daemon→handler direction (see High-Level Technical Design). | tests/integration_test.rs<br>tests/dispatch_integration.rs<br>tests/multi_bot.rs | src/transport/protocol.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
