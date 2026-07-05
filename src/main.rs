@@ -13,7 +13,6 @@ use pacto_bot_api::transport::http;
 use std::collections::HashSet;
 use std::env;
 use std::fs::{File, OpenOptions, Permissions};
-use std::future::Future;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -86,47 +85,57 @@ impl ShutdownCoordinator {
     /// Start listening for SIGINT/SIGTERM (Unix) or Ctrl-C (non-Unix).
     #[cfg(unix)]
     fn start() -> Result<Self, String> {
-        let sigint = signal(SignalKind::interrupt())
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_tx, force_rx) = oneshot::channel();
+
+        let mut sigint = signal(SignalKind::interrupt())
             .map_err(|e| format!("failed to install SIGINT handler: {e}"))?;
-        let sigterm = signal(SignalKind::terminate())
-            .map_err(|e| format!("failed to install SIGTERM handler: {e}"))?;
-        let sigint2 = signal(SignalKind::interrupt())
-            .map_err(|e| format!("failed to install SIGINT handler: {e}"))?;
-        let sigterm2 = signal(SignalKind::terminate())
+        let mut sigterm = signal(SignalKind::terminate())
             .map_err(|e| format!("failed to install SIGTERM handler: {e}"))?;
 
-        Ok(Self::start_with(
-            async move {
-                let mut sigint = sigint;
-                let mut sigterm = sigterm;
-                tokio::select! {
-                    _ = sigint.recv() => {},
-                    _ = sigterm.recv() => {},
-                }
-            },
-            async move {
-                let mut sigint2 = sigint2;
-                let mut sigterm2 = sigterm2;
-                tokio::select! {
-                    _ = sigint2.recv() => {},
-                    _ = sigterm2.recv() => {},
-                }
-            },
-        ))
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigint.recv() => {},
+                _ = sigterm.recv() => {},
+            }
+            let _ = shutdown_tx.send(());
+
+            tokio::select! {
+                _ = sigint.recv() => {},
+                _ = sigterm.recv() => {},
+            }
+            let _ = force_tx.send(());
+        });
+
+        Ok(Self {
+            shutdown_rx,
+            force_rx,
+        })
     }
 
     #[cfg(not(unix))]
     fn start() -> Result<Self, String> {
-        let ctrl_c1 = tokio::signal::ctrl_c()
-            .map_err(|e| format!("failed to install ctrl-c handler: {e}"))?;
-        let ctrl_c2 = tokio::signal::ctrl_c()
-            .map_err(|e| format!("failed to install ctrl-c handler: {e}"))?;
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_tx, force_rx) = oneshot::channel();
 
-        Ok(Self::start_with(ctrl_c1, ctrl_c2))
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c()
+                .map_err(|e| format!("failed to install ctrl-c handler: {e}"))
+                .await;
+            let _ = shutdown_tx.send(());
+            let _ = tokio::signal::ctrl_c()
+                .map_err(|e| format!("failed to install ctrl-c handler: {e}"))
+                .await;
+            let _ = force_tx.send(());
+        });
+
+        Ok(Self {
+            shutdown_rx,
+            force_rx,
+        })
     }
 
-    /// Start with arbitrary signal futures so tests can inject a signal source
-    /// instead of relying on process-wide signal handlers.
+    #[cfg(test)]
     fn start_with(
         shutdown_signal: impl Future<Output = ()> + Send + 'static,
         force_signal: impl Future<Output = ()> + Send + 'static,
