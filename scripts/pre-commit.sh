@@ -10,6 +10,6 @@ if command -v bd >/dev/null 2>&1; then
   bd hooks run pre-commit "$@" || exit $?
 fi
 
-# Run project validation gate (fmt-check, clippy, tests)
+# Run project validation gate (fmt-check, clippy)
 echo "Running make validate..."
 make validate
