@@ -1343,7 +1343,9 @@ mod tests {
     use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
     use crate::nostr::{NostrClient, NostrSubscribe};
+    use crate::test_support::mock_relay::MockRelay;
     use crate::transport::protocol::JsonRpcMessage;
+    use nostr::Kind;
     use nostr::ToBech32;
     use tempfile::tempdir;
 
@@ -2152,5 +2154,153 @@ mod tests {
         })
         .await
         .expect("deadlock between ClientManager and Database locks");
+    }
+
+    async fn dispatch_with_bots_on_relay(
+        bot_configs: Vec<BotConfig>,
+        relay_url: &str,
+    ) -> (Dispatch, Arc<RwLock<ClientManager>>) {
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: bot_configs,
+        };
+        let nostr_client = NostrClient::new(vec![relay_url.to_owned()]).await.unwrap();
+        let dir = tempdir().unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(dir.path(), config, nostr_client)
+                .await
+                .unwrap(),
+        ));
+        let db = Db::open(dir.path().join("test.db").as_path())
+            .await
+            .unwrap();
+        let diagnostics = Diagnostics::new();
+        let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
+        (dispatch, cm)
+    }
+
+    #[tokio::test]
+    async fn authorized_send_dm_returns_event_id_and_publishes_gift_wrap() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config("dm-bot", &keys, &["SendMessages"])],
+            &relay.url(),
+        )
+        .await;
+
+        let register_req = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["dm-bot"],
+                "event_types": [],
+                "capabilities": ["SendMessages"],
+            })),
+        );
+        let JsonRpcMessage::Response { result, .. } = dispatch
+            .handle_message(register_req, None, None)
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected response");
+        };
+        let register_result: HandlerRegisterResponse =
+            serde_json::from_value(result.unwrap()).unwrap();
+        let handler_id = register_result.handler_id;
+
+        let send_req = JsonRpcMessage::request(
+            2.into(),
+            "agent.send_dm",
+            Some(serde_json::json!({
+                "bot_id": "dm-bot",
+                "recipient": recipient_npub,
+                "content": "hello from test",
+            })),
+        );
+        let JsonRpcMessage::Response { result, .. } = dispatch
+            .handle_message(send_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected response");
+        };
+
+        let event_id_hex = result.unwrap().as_str().unwrap().to_string();
+        let event_id = EventId::parse(&event_id_hex).unwrap();
+
+        let events = relay
+            .wait_for_event(|e| e.id == event_id, Duration::from_secs(2))
+            .await
+            .expect("DM gift wrap should be published to relay");
+        let event = events.into_iter().find(|e| e.id == event_id).unwrap();
+        assert_eq!(event.kind, Kind::GiftWrap);
+        assert_eq!(event_id.to_hex(), event_id_hex);
+    }
+
+    #[tokio::test]
+    async fn authorized_set_profile_returns_event_id_and_publishes_metadata() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config("profile-bot", &keys, &["ManageProfile"])],
+            &relay.url(),
+        )
+        .await;
+
+        let register_req = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["profile-bot"],
+                "event_types": [],
+                "capabilities": ["ManageProfile"],
+            })),
+        );
+        let JsonRpcMessage::Response { result, .. } = dispatch
+            .handle_message(register_req, None, None)
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected response");
+        };
+        let register_result: HandlerRegisterResponse =
+            serde_json::from_value(result.unwrap()).unwrap();
+        let handler_id = register_result.handler_id;
+
+        let set_req = JsonRpcMessage::request(
+            2.into(),
+            "agent.set_profile",
+            Some(serde_json::json!({
+                "bot_id": "profile-bot",
+                "name": "Test Bot",
+                "about": "A test bot",
+                "picture": "https://example.com/pic.png",
+            })),
+        );
+        let JsonRpcMessage::Response { result, .. } = dispatch
+            .handle_message(set_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap()
+        else {
+            panic!("expected response");
+        };
+
+        let event_id_hex = result.unwrap().as_str().unwrap().to_string();
+        let event_id = EventId::parse(&event_id_hex).unwrap();
+
+        let events = relay
+            .wait_for_event(|e| e.id == event_id, Duration::from_secs(2))
+            .await
+            .expect("profile metadata event should be published to relay");
+        let event = events.into_iter().find(|e| e.id == event_id).unwrap();
+        assert_eq!(event.kind, Kind::Metadata);
+        assert_eq!(event_id.to_hex(), event_id_hex);
     }
 }
