@@ -1,8 +1,7 @@
+mod common;
 /// req(R7, R21, R24)
 use assert_cmd::Command;
 use predicates::prelude::*;
-
-mod common;
 
 #[test]
 fn daemon_help_prints_usage() {
@@ -28,7 +27,7 @@ fn admin_help_prints_usage() {
 
 #[tokio::test]
 async fn daemon_config_flag_overrides_default() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = common::tempdir().unwrap();
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot").unwrap();
     let path = common::make_config(&dir, vec![bot]).unwrap();
 

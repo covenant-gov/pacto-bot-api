@@ -27,7 +27,7 @@ async fn wait_for_reply(
 #[tokio::test]
 async fn full_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     let (bot_config, _nsec) = common::generate_nsec_bot("echo-bot")?;
 
@@ -96,7 +96,7 @@ async fn full_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error:
 #[tokio::test]
 async fn bunker_local_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     let (mut bot_config, bunker_keys) = common::generate_bunker_bot_with_keys("echo-bot", true)?;
     let bunker = MockBunker::new(bunker_keys, vec![relay.url()]).await?;
@@ -122,7 +122,7 @@ async fn bunker_local_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std
         .await?;
 
         // Give the bunker and daemon subscriptions time to settle.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let sender = Keys::generate();
         let gift = common::build_gift_wrap(&sender, &bot_config.npub, "/echo bunker").await?;
@@ -181,7 +181,7 @@ async fn bunker_local_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn std
 #[tokio::test]
 async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     let (mut echo_config, _nsec) = common::generate_nsec_bot("echo-bot")?;
     echo_config.relays = vec![relay.url()];
@@ -219,7 +219,7 @@ async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
     relay.inject_event(other_gift).await;
 
     let timeout_result = echo_handler
-        .next_notification(Duration::from_millis(500))
+        .next_notification(Duration::from_millis(100))
         .await;
     assert!(
         timeout_result.is_err(),
@@ -234,7 +234,7 @@ async fn multi_bot_multiplexing() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn handler_fan_out() -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     let (mut bot_config, _nsec) = common::generate_nsec_bot("echo-bot")?;
     bot_config.relays = vec![relay.url()];

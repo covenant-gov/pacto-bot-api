@@ -10,7 +10,7 @@ use std::fs;
 
 #[test]
 fn export_import_roundtrip() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
 
@@ -60,7 +60,7 @@ fn export_import_roundtrip() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn export_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
     let _lock = common::hold_daemon_lock(&dir)?;
@@ -75,7 +75,7 @@ fn export_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn rotate_http_token_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
     let _lock = common::hold_daemon_lock(&dir)?;
@@ -90,7 +90,7 @@ fn rotate_http_token_refuses_when_daemon_lock_held() -> Result<(), Box<dyn Error
 
 #[test]
 fn validate_config_reports_duplicate_bot_id() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config_path = dir.path().join("pacto-bot-api.toml");
     let content = r#"
 [[bots]]
@@ -126,7 +126,7 @@ signing = { backend = "nsec", nsec = "nsec1b" }
 
 #[test]
 fn validate_config_reports_loose_permissions() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config_path = dir.path().join("pacto-bot-api.toml");
     let content = r#"
 [[bots]]
@@ -150,7 +150,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 
 #[test]
 fn rotate_http_token_creates_restricted_token() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -175,7 +175,7 @@ fn rotate_http_token_creates_restricted_token() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn diagnose_reports_config_and_lock_status() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
     let _lock = common::hold_daemon_lock(&dir)?;
@@ -221,7 +221,7 @@ fn diagnose_reports_config_and_lock_status() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn diagnose_text_format_reports_bots() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -238,7 +238,7 @@ fn diagnose_text_format_reports_bots() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn import_validates_bot_exists_in_config() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -274,7 +274,7 @@ fn import_validates_bot_exists_in_config() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn validate_config_reports_npub_mismatch_with_db() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
 
@@ -294,7 +294,7 @@ fn validate_config_reports_npub_mismatch_with_db() -> Result<(), Box<dyn Error>>
 
 #[tokio::test(flavor = "multi_thread")]
 async fn diagnose_reports_relay_connectivity_with_mock_relay() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
 
@@ -336,7 +336,7 @@ async fn diagnose_reports_relay_connectivity_with_mock_relay() -> Result<(), Box
 
 #[tokio::test(flavor = "multi_thread")]
 async fn diagnose_reports_bunker_connectivity_with_mock_relay() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
 

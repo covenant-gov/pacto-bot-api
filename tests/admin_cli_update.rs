@@ -32,7 +32,7 @@ fn setup_update_env(cmd: &mut Command, temp: &Path) -> Result<(), Box<dyn Error>
 
 #[test]
 fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot");
 
     let mut new_cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -93,7 +93,7 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn update_fails_without_lock_file() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = common::tempdir().unwrap();
     let project_dir = temp.path().join("missing-lock");
     fs::create_dir_all(project_dir.join(".pacto").join("bots").join("echo-bot")).unwrap();
 

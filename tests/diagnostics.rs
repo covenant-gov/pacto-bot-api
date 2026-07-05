@@ -1,3 +1,4 @@
+mod common;
 use nostr::ToBech32;
 /// req(R31, R35, R37)
 use pacto_bot_api::bot_state::BotState;
@@ -57,7 +58,7 @@ fn status_transitions() {
 
 #[tokio::test]
 async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = common::tempdir()?;
     let diag = Diagnostics::new();
 
     diag.set_status(DaemonStatus::Ready);
@@ -101,7 +102,7 @@ async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Erro
 
 #[tokio::test]
 async fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = common::tempdir()?;
     let diag = Diagnostics::new();
 
     diag.record_error(
@@ -128,7 +129,7 @@ async fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::
 
 #[tokio::test]
 async fn report_directory_is_created_lazily() -> Result<(), Box<dyn std::error::Error>> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = common::tempdir()?;
     let nested = tmp.path().join("a").join("b");
     let diag = Diagnostics::new();
 

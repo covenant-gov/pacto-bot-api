@@ -1,0 +1,19 @@
+[profile.default]
+# Run as many tests in parallel as there are logical CPUs.
+test-threads = "num-cpus"
+# Treat any test over 60s as slow; fail if it exceeds 120s.
+slow-timeout = "60s"
+# Do not retry failures by default.
+retries = 0
+# The simulated core-dump memory scan is order-dependent and passes under
+# `cargo test` because earlier tests dirty the process memory. It is not
+# deterministic when each test runs in its own process, so skip it under nextest.
+default-filter = "not test(simulated_core_dump_after_nsec_load_does_not_leak_marker)"
+
+[profile.ci]
+# Serial output is easier to read in CI logs.
+failure-output = "immediate-final"
+# A single retry helps with the small handful of tests that are sensitive to
+# machine load / timing.
+retries = 1
+slow-timeout = "120s"

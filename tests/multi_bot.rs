@@ -81,7 +81,7 @@ async fn decrypt_reply_content(
 async fn multi_bot_multiplexing_with_mixed_signing_backends()
 -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     // Nsec-backed bot.
     let (mut nsec_config, _nsec) = common::generate_nsec_bot("nsec-bot")?;
@@ -100,7 +100,7 @@ async fn multi_bot_multiplexing_with_mixed_signing_backends()
     bunker_config.capabilities = vec!["ReadMessages".into(), "SendMessages".into()];
 
     // Let the mock bunker subscribe before the daemon starts and connects.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let config_path = common::make_config(&dir, vec![nsec_config.clone(), bunker_config.clone()])?;
     let log_path = dir.path().join("daemon.log");
@@ -127,7 +127,7 @@ async fn multi_bot_multiplexing_with_mixed_signing_backends()
         .await?;
 
         // Give the daemon relay subscriptions and bunker connection time to settle.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let sender = Keys::generate();
 

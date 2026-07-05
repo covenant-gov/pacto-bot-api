@@ -103,7 +103,7 @@ async fn start_http_daemon(
     relay: &MockRelay,
 ) -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir, Arc<Dispatch>), Box<dyn std::error::Error>>
 {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let data_dir = dir.path().to_path_buf();
 
     let bot_keys = nostr::Keys::generate();

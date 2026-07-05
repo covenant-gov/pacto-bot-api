@@ -7,14 +7,14 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn status_reports_live_daemon_metrics() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
     let child = common::spawn_daemon_until_ready(&config).await?;
 
     // Give the daemon a moment to finish startup and populate BotHealth.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args(["--config", &config.to_string_lossy(), "status"]);
@@ -52,12 +52,12 @@ async fn status_reports_live_daemon_metrics() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn status_json_format_reports_expected_fields() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
     let child = common::spawn_daemon_until_ready(&config).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([
@@ -102,12 +102,12 @@ async fn status_json_format_reports_expected_fields() -> Result<(), Box<dyn Erro
 
 #[tokio::test]
 async fn status_reads_latest_report_when_daemon_stopped() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
     let child = common::spawn_daemon_until_ready(&config).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
     common::shutdown_daemon(child).await?;
 
     let latest_path = dir.path().join("reports").join("latest.json");

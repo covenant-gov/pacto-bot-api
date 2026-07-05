@@ -321,7 +321,7 @@ async fn subscribe_bot_with_since_filters_older_events() {
 
     // Wait briefly so the relay has processed the REQ subscription before
     // injecting events; otherwise the filter may not be applied yet.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     // An event older than the cursor must not be forwarded.
     let older = common::build_gift_wrap_with_timestamp(

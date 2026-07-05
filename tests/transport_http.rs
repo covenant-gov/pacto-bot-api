@@ -1,5 +1,5 @@
-/// req(R2, R3)
 mod common;
+/// req(R2, R3)
 mod support;
 
 use nostr::ToBech32;
@@ -279,7 +279,7 @@ async fn http_handler_unregister_returns_unregistered_flag()
 
 #[tokio::test]
 async fn http_rejects_non_loopback_bind() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let transport = HttpTransport::new("0.0.0.0:0", dir.path());
     let (_shutdown_tx, shutdown_rx) = oneshot::channel();
     let (_disconnect_tx, _disconnect_rx) = mpsc::channel::<Option<String>>(1);
@@ -690,7 +690,7 @@ async fn http_idle_timeout_closes_connection() -> Result<(), Box<dyn std::error:
 
 async fn start_server()
 -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let data_dir = dir.path().to_path_buf();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -712,7 +712,7 @@ async fn start_server_with_limits(
     max_connections: usize,
     idle_timeout: Duration,
 ) -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let data_dir = dir.path().to_path_buf();
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
@@ -743,7 +743,7 @@ async fn start_dispatch_server_with_relay(
     relay: &MockRelay,
 ) -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir, Arc<Dispatch>), Box<dyn std::error::Error>>
 {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let data_dir = dir.path().to_path_buf();
 
     let bot_keys = nostr::Keys::generate();

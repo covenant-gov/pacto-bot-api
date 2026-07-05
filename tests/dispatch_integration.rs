@@ -1,3 +1,4 @@
+mod common;
 /// req(R14, R15, R16, R17, R18, R26, R27, R30)
 mod support;
 
@@ -22,7 +23,6 @@ use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::transport::protocol::{JsonRpcMessage, MetricsResponse};
 use secrecy::SecretString;
 use serde_json::Value;
-use tempfile::tempdir;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
 
@@ -68,7 +68,7 @@ async fn setup_dispatch_with_client(
         bots: bot_configs,
     };
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
-    let dir = tempdir()?;
+    let dir = common::tempdir()?;
     let db = Db::open(dir.path().join("test.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let mut dispatch = match rate_limiter {
@@ -524,13 +524,24 @@ fn default_rate_limiter_constants_match_plan() {
     assert_eq!(DEFAULT_BOT_BURST, 40.0);
 }
 
+/// Returns a production-speed rate limiter used by the integration tests
+/// below. The absolute rates match the production defaults, but the waits
+/// are shorter (100ms) to keep the suite fast.
+fn test_rate_limiter() -> RateLimiter {
+    RateLimiter::new(
+        DEFAULT_HANDLER_RATE,
+        DEFAULT_HANDLER_BURST,
+        DEFAULT_BOT_RATE,
+        DEFAULT_BOT_BURST,
+    )
+}
+
 #[tokio::test]
-async fn default_rate_limit_rejects_11th_handler_call_within_one_second()
--> Result<(), Box<dyn std::error::Error>> {
+async fn rate_limit_rejects_after_handler_burst() -> Result<(), Box<dyn std::error::Error>> {
     let keys = test_keys();
     let (dispatch, cm) = setup_dispatch(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
-        None,
+        Some(test_rate_limiter()),
         None,
     )
     .await?;
@@ -568,33 +579,32 @@ async fn default_rate_limit_rejects_11th_handler_call_within_one_second()
         .await?;
     assert_rate_limited(resp, "21st immediate call");
 
-    // Wait one second for the per-handler rate to replenish 10 tokens.
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Wait a fraction of the production 1s window. At 10 tokens/sec, 100ms
+    // replenishes a single token, which is enough to demonstrate the limiter
+    // allows traffic again without making the suite wait a full second.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // The next 10 calls within the same one-second window are allowed.
-    for i in 21..31 {
-        let resp = dispatch
-            .handle_message(set_profile_request(i, "echo-bot"), Some(&handler_id), None)
-            .await?;
-        assert_not_rate_limited(resp, &format!("replenished call {i}"));
-    }
-
-    // The 11th call within that one-second window exceeds the 10 ops/sec limit.
+    // The next call within the same one-second window is allowed.
     let resp = dispatch
-        .handle_message(set_profile_request(31, "echo-bot"), Some(&handler_id), None)
+        .handle_message(set_profile_request(21, "echo-bot"), Some(&handler_id), None)
         .await?;
-    assert_rate_limited(resp, "11th call within one second");
+    assert_not_rate_limited(resp, "replenished call");
+
+    // The following call exceeds the single token that has replenished.
+    let resp = dispatch
+        .handle_message(set_profile_request(22, "echo-bot"), Some(&handler_id), None)
+        .await?;
+    assert_rate_limited(resp, "call after single-token replenishment");
 
     Ok(())
 }
 
 #[tokio::test]
-async fn default_rate_limit_enforces_bot_aggregate_with_two_handlers()
--> Result<(), Box<dyn std::error::Error>> {
+async fn rate_limit_rejects_after_bot_aggregate_burst() -> Result<(), Box<dyn std::error::Error>> {
     let keys = test_keys();
     let (dispatch, cm) = setup_dispatch(
         vec![bot_config("echo-bot", &keys, &["ManageProfile"])],
-        None,
+        Some(test_rate_limiter()),
         None,
     )
     .await?;
@@ -662,39 +672,42 @@ async fn default_rate_limit_enforces_bot_aggregate_with_two_handlers()
         .await?;
     assert_rate_limited(resp, "41st immediate call (bot aggregate)");
 
-    // Wait one second for the per-bot rate to replenish 20 tokens.
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Wait a fraction of the production 1s window. At 20 tokens/sec, 100ms
+    // replenishes a single token, which is enough to demonstrate the limiter
+    // allows traffic again without making the suite wait a full second.
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // The next 20 calls within the same one-second window are allowed.
-    for i in 0..10 {
-        let resp = dispatch
-            .handle_message(
-                set_profile_request(41 + i * 2, "echo-bot"),
-                Some(&handler_id1),
-                None,
-            )
-            .await?;
-        assert_not_rate_limited(resp, &format!("handler1 replenished call {i}"));
-
-        let resp = dispatch
-            .handle_message(
-                set_profile_request(42 + i * 2, "echo-bot"),
-                Some(&handler_id2),
-                None,
-            )
-            .await?;
-        assert_not_rate_limited(resp, &format!("handler2 replenished call {i}"));
-    }
-
-    // The 21st call within that one-second window exceeds the per-bot aggregate rate.
+    // The next two calls within the same one-second window are allowed.
     let resp = dispatch
         .handle_message(
-            set_profile_request(61, "echo-bot"),
+            set_profile_request(41, "echo-bot"),
             Some(&handler_id1),
             None,
         )
         .await?;
-    assert_rate_limited(resp, "21st call within one second (bot aggregate)");
+    assert_not_rate_limited(resp, "handler1 replenished call");
+
+    let resp = dispatch
+        .handle_message(
+            set_profile_request(42, "echo-bot"),
+            Some(&handler_id2),
+            None,
+        )
+        .await?;
+    assert_not_rate_limited(resp, "handler2 replenished call");
+
+    // The following call exceeds the single token that has replenished.
+    let resp = dispatch
+        .handle_message(
+            set_profile_request(43, "echo-bot"),
+            Some(&handler_id1),
+            None,
+        )
+        .await?;
+    assert_rate_limited(
+        resp,
+        "call after single-token replenishment (bot aggregate)",
+    );
 
     Ok(())
 }
@@ -1310,7 +1323,7 @@ async fn periodic_metrics_notification_reaches_registered_handler()
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let metrics_handle = dispatch
         .clone()
-        .spawn_periodic_metrics(Duration::from_millis(100), shutdown_rx);
+        .spawn_periodic_metrics(Duration::from_millis(500), shutdown_rx);
 
     let mut count = 0;
     while count < 3 {

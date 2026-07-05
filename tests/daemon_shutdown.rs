@@ -26,7 +26,7 @@ async fn wait_for_child(
 
 #[tokio::test]
 async fn sigterm_triggers_clean_shutdown_and_writes_report() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -58,7 +58,7 @@ async fn sigterm_triggers_clean_shutdown_and_writes_report() -> Result<(), Box<d
 
 #[tokio::test]
 async fn second_sigterm_forces_immediate_exit() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -96,7 +96,7 @@ async fn second_sigterm_forces_immediate_exit() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn shutdown_preserves_cursor_after_prior_dispatch() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
 
@@ -128,7 +128,7 @@ async fn shutdown_preserves_cursor_after_prior_dispatch() -> Result<(), Box<dyn 
 
 #[tokio::test]
 async fn relay_stop_then_sigterm_triggers_clean_exit() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;
 
     let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;

@@ -25,7 +25,7 @@ use support::mock_relay::MockRelay;
 async fn multi_bot_example_daemon_routes_dms_to_the_right_handler()
 -> Result<(), Box<dyn std::error::Error>> {
     let relay = MockRelay::start().await?;
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
 
     // 1. Configure two bots that share the same relay.
     let (mut alice_config, _alice_nsec) = common::generate_nsec_bot("alice")?;
@@ -59,7 +59,7 @@ async fn multi_bot_example_daemon_routes_dms_to_the_right_handler()
     .await?;
 
     // Give the daemon relay subscriptions time to settle.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // 3. A single user sends a DM to each bot.
     let sender = Keys::generate();

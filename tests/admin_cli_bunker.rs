@@ -15,7 +15,7 @@ use support::mock_relay::MockRelay;
 
 #[tokio::test]
 async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("echo-bot", true)?;
@@ -27,7 +27,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Wait for the signer to bootstrap and subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -51,7 +51,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
 
     // Generate a bot config whose configured npub does not match the bunker.
@@ -64,7 +64,7 @@ async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Wait for the signer to bootstrap and subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -87,7 +87,7 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
     let relay = support::mock_relay::MockRelay::start().await?;
     let keys = nostr::Keys::generate();
     let bunker = support::mock_bunker::MockBunker::new(keys.clone(), vec![relay.url()]).await?;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let uri = bunker.uri(&relay.url());
     pacto_bot_api::nip46::verify_bunker_public_key(
@@ -104,7 +104,7 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn test_bunker_unreachable_or_invalid() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let bot = pacto_bot_api::config::BotConfig {
         id: "echo-bot".to_string(),
         npub: "npub1invalid".to_string(),
@@ -139,7 +139,7 @@ async fn bunker_local_sign_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Give the bunker time to subscribe before the signer connects.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
     assert!(matches!(signer, SignerBackend::BunkerLocal(_)));
@@ -182,7 +182,7 @@ async fn bunker_local_sign_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("profile-bot", true)?;
@@ -194,7 +194,7 @@ async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
     bot.relays = vec![relay.url()];
 
     // Give the bunker time to subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -240,7 +240,7 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
     let bunker_uri = std::env::var("PACTO_DEV_ENV_BUNKER_URI")
         .unwrap_or_else(|_| "bunker://PUBKEY?relay=wss://bunker.localtest.me:7443".into());
 
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let bot = pacto_bot_api::config::BotConfig {
         id: "remote-bot".to_string(),
         npub: std::env::var("PACTO_DEV_ENV_BOT_NPUB").unwrap_or_else(|_| "npub1remote".into()),
@@ -268,7 +268,7 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn local_key_send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;
     let (mut bot, _nsec) = common::generate_nsec_bot("send-bot")?;
     bot.relays = vec![relay.url()];
