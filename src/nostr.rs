@@ -640,14 +640,10 @@ fn event_signing_bytes(unsigned: &UnsignedEvent) -> Result<Vec<u8>, DaemonError>
 }
 
 #[cfg(test)]
-#[path = "../tests/support/mock_relay.rs"]
-mod mock_relay;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::signer::LocalKey;
-    use mock_relay::MockRelay;
+    use crate::test_support::mock_relay::MockRelay;
     use nostr::ToBech32;
     use std::time::Duration;
     use tokio_stream::StreamExt;

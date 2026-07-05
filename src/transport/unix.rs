@@ -450,7 +450,12 @@ mod tests {
     impl UnixAcceptor for FailingAcceptor {
         async fn accept(&self) -> Result<UnixStream, std::io::Error> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            if self.errors_remaining.fetch_sub(1, Ordering::SeqCst) > 0 {
+            if self
+                .errors_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .unwrap_or(0)
+                > 0
+            {
                 let _ = self.error_sent.try_send(());
                 return Err(std::io::Error::new(
                     self.error_kind,

@@ -305,6 +305,12 @@ async fn http_handler_unregister_without_identity_rejected()
         unregister_response.starts_with("HTTP/1.1 401"),
         "expected 401 for missing handler identity, got: {unregister_response}"
     );
+    assert!(
+        unregister_response.lines().any(|line| line
+            .to_ascii_lowercase()
+            .starts_with("content-type: application/json")),
+        "expected application/json content type, got: {unregister_response}"
+    );
 
     let body = unregister_response
         .split("\r\n\r\n")

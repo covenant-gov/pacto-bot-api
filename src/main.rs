@@ -119,13 +119,13 @@ impl ShutdownCoordinator {
         let (force_tx, force_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c()
-                .map_err(|e| format!("failed to install ctrl-c handler: {e}"))
-                .await;
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                warn!("failed to install ctrl-c handler: {e}");
+            }
             let _ = shutdown_tx.send(());
-            let _ = tokio::signal::ctrl_c()
-                .map_err(|e| format!("failed to install ctrl-c handler: {e}"))
-                .await;
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                warn!("failed to install ctrl-c handler: {e}");
+            }
             let _ = force_tx.send(());
         });
 

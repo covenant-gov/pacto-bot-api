@@ -305,7 +305,7 @@ async fn http_handler(
                         }
                         return (
                             StatusCode::UNAUTHORIZED,
-                            [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+                            [(CONTENT_TYPE, "application/json")],
                             body.into_bytes(),
                         );
                     }
