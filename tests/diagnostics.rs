@@ -282,9 +282,14 @@ fn client_manager_populates_diagnostics_bots() {
     };
 
     let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
-            .await
-            .unwrap()
+        let data_dir = tempfile::tempdir().unwrap();
+        ClientManager::new(
+            data_dir.path(),
+            config,
+            NostrClient::new(vec![]).await.unwrap(),
+        )
+        .await
+        .unwrap()
     });
 
     let diag = Diagnostics::new();

@@ -562,7 +562,38 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
 fn redact_secrets(input: &str) -> String {
     let mut out = redact_word_prefix(input, "nsec1");
     out = redact_query_param(&out, "secret");
-    redact_query_param(&out, "token")
+    out = redact_query_param(&out, "token");
+    redact_mls_paths(&out)
+}
+
+/// Redact the path to per-bot MLS databases so their content and location
+/// are not preserved in diagnostics.
+fn redact_mls_paths(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    const FILENAME: &str = "vector-mls.db";
+
+    while let Some(pos) = rest.find(FILENAME) {
+        // Find the beginning of the filesystem path by scanning backward over
+        // path characters. This redacts the entire per-bot directory
+        // (data_dir/<bot_id>/) rather than just the filename.
+        let path_start = rest[..pos]
+            .rfind(|c: char| !is_path_char(c))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+
+        result.push_str(&rest[..path_start]);
+        result.push_str("[REDACTED]/");
+        result.push_str(FILENAME);
+        rest = &rest[pos + FILENAME.len()..];
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Return true for characters that can appear in a filesystem path component.
+fn is_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '\\' | '_' | '-' | '~' | '%')
 }
 
 /// Redact a contiguous alphanumeric token that starts with `prefix`.
@@ -827,6 +858,25 @@ mod tests {
     fn redact_secrets_does_not_mutate_secret_free_input() {
         let input = "relay wss://relay.example connected for npub1public";
         assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn redact_mls_db_path() {
+        let input = "storage error for /data/bots/squad/vector-mls.db";
+        let out = redact_secrets(input);
+        assert!(
+            !out.contains("/data/bots/squad/"),
+            "redacted output still contains per-bot directory: {out}"
+        );
+        assert!(
+            !out.contains("/data/bots/squad/vector-mls.db"),
+            "redacted output still contains mls db path: {out}"
+        );
+        assert!(
+            out.contains("[REDACTED]/vector-mls.db"),
+            "missing redaction marker: {out}"
+        );
+        assert_eq!(out, "storage error for [REDACTED]/vector-mls.db");
     }
 
     #[test]

@@ -27,6 +27,7 @@ use tracing::{error, info};
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
+use crate::mls::MlsEngineHandle;
 use crate::signer::Signer;
 
 /// Bot signer storage: maps recipient public key to bot id and signer.
@@ -231,6 +232,106 @@ impl NostrClient {
         Ok(*output.id())
     }
 
+    /// Publish a KeyPackage event (kind:443) for MLS group participation.
+    ///
+    /// This method creates a key package using the MLS engine, builds a kind:443
+    /// event with the required tags, signs it, and publishes to relays.
+    ///
+    /// Returns the published event ID on success.
+    pub async fn publish_key_package(
+        &self,
+        mls_engine: &MlsEngineHandle,
+        signer: &dyn Signer,
+        relays: Vec<String>,
+    ) -> Result<EventId, DaemonError> {
+        let bot_pubkey = signer.public_key();
+        let relay_urls = relays
+            .iter()
+            .filter_map(|r| nostr::RelayUrl::parse(r).ok())
+            .collect::<Vec<_>>();
+
+        let (content, tags) = mls_engine
+            .publish_key_package(&bot_pubkey, relay_urls)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("MLS key package creation failed: {e}")))?;
+
+        let rumor = UnsignedEvent::new(
+            bot_pubkey,
+            Timestamp::now(),
+            Kind::MlsKeyPackage,
+            tags.to_vec(),
+            content,
+        );
+
+        let event = sign_unsigned_event(signer, rumor).await?;
+
+        let output = self.client.send_event(&event).await.map_err(|e| {
+            error!(
+                bot_npub = %bot_pubkey.to_bech32().unwrap_or_else(|_| bot_pubkey.to_hex()),
+                error = %e,
+                "failed to publish KeyPackage"
+            );
+            DaemonError::Nostr(format!("failed to publish event: {e}"))
+        })?;
+
+        Ok(*output.id())
+    }
+
+    /// Send an encrypted MLS group message.
+    ///
+    /// This method creates an MLS group message using the engine, wraps it in
+    /// a kind:445 event, and publishes to relays.
+    ///
+    /// Returns the published event ID on success.
+    pub async fn send_group_message(
+        &self,
+        mls_engine: &MlsEngineHandle,
+        signer: &dyn Signer,
+        group_id: Vec<u8>,
+        content: String,
+    ) -> Result<EventId, DaemonError> {
+        let bot_pubkey = signer.public_key();
+
+        // Build the plaintext inner rumor event. The inner kind must differ from
+        // the kind:445 MLS wrapper so that decrypted group content is not mistaken
+        // for the wire-format wrapper itself.
+        let rumor = UnsignedEvent::new(
+            bot_pubkey,
+            Timestamp::now(),
+            Kind::TextNote,
+            Vec::new(),
+            content,
+        );
+
+        let wrapper = mls_engine
+            .create_group_message(group_id, rumor)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("MLS group message creation failed: {e}")))?;
+
+        // The wrapper returned by the MLS engine is signed with an ephemeral group
+        // exporter key. Re-sign it with the bot's key so relays attribute the event
+        // to the bot and the signature is valid for the bot's public key.
+        let unsigned = UnsignedEvent::new(
+            bot_pubkey,
+            wrapper.created_at,
+            wrapper.kind,
+            wrapper.tags.to_vec(),
+            wrapper.content,
+        );
+        let signed_wrapper = sign_unsigned_event(signer, unsigned).await?;
+
+        let output = self.client.send_event(&signed_wrapper).await.map_err(|e| {
+            error!(
+                bot_npub = %bot_pubkey.to_bech32().unwrap_or_else(|_| bot_pubkey.to_hex()),
+                error = %e,
+                "failed to publish group message"
+            );
+            DaemonError::Nostr(format!("failed to publish event: {e}"))
+        })?;
+
+        Ok(*output.id())
+    }
+
     /// Publish a kind:0 metadata event for the bot.
     ///
     /// Only fields that are `Some` are included in the metadata JSON.
@@ -393,10 +494,17 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("rumor missing id".into()))?
             .to_hex();
 
+        // Detect MLS Welcome messages (kind:444) and route them separately
+        let event_type = if rumor.kind == Kind::MlsWelcome {
+            EventType::MlsWelcomeReceived
+        } else {
+            EventType::DmReceived
+        };
+
         Ok(AgentEvent {
             bot_id: bot_id.clone(),
             event_id: event.id.to_hex(),
-            event_type: EventType::DmReceived,
+            event_type,
             chat_id: None,
             content: rumor.content,
             rumor_id,

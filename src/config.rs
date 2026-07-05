@@ -244,9 +244,35 @@ fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError
     Ok(())
 }
 
+/// Validate that `bot_id` is a safe, single directory name.
+///
+/// Rejects empty values, names that are too long, whitespace, path
+/// separators, and the parent-directory component `..` so that the id can be
+/// joined onto a data directory without escaping it.
+pub fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
+    if bot_id.is_empty() {
+        return Err(DaemonError::Config("bot_id must not be empty".into()));
+    }
+    if bot_id.len() > 64 {
+        return Err(DaemonError::Config(
+            "bot_id must be 64 characters or fewer".into(),
+        ));
+    }
+    if bot_id.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+        return Err(DaemonError::Config(
+            "bot_id must not contain whitespace, '/', or '\\'".into(),
+        ));
+    }
+    if bot_id == ".." {
+        return Err(DaemonError::Config("bot_id must not be '..'".into()));
+    }
+    Ok(())
+}
+
 fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
     let mut seen = HashSet::new();
     for bot in bots {
+        validate_bot_id(&bot.id)?;
         if !seen.insert(bot.id.clone()) {
             return Err(DaemonError::Config(format!("duplicate bot_id: {}", bot.id)));
         }
@@ -801,5 +827,22 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             tick_count >= 45,
             "runtime blocked during async config load; only {tick_count} timer ticks fired"
         );
+    }
+
+    #[test]
+    fn validate_bot_id_accepts_safe_names() {
+        assert!(validate_bot_id("echo-bot").is_ok());
+        assert!(validate_bot_id("a").is_ok());
+        assert!(validate_bot_id("bot_42").is_ok());
+    }
+
+    #[test]
+    fn validate_bot_id_rejects_unsafe_names() {
+        assert!(validate_bot_id("").is_err());
+        assert!(validate_bot_id("..").is_err());
+        assert!(validate_bot_id("foo/bar").is_err());
+        assert!(validate_bot_id("foo\\bar").is_err());
+        assert!(validate_bot_id("bot id").is_err());
+        assert!(validate_bot_id("a".repeat(65).as_str()).is_err());
     }
 }

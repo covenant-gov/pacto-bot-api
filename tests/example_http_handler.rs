@@ -125,7 +125,7 @@ async fn start_http_daemon(
 
     let nostr_client = NostrClient::new(vec![relay.url()]).await?;
     let client_manager = Arc::new(tokio::sync::RwLock::new(
-        ClientManager::new(config, nostr_client).await?,
+        ClientManager::new(&data_dir, config, nostr_client).await?,
     ));
     let db = Db::open(&data_dir.join("example.db")).await?;
     let dispatch = Arc::new(Dispatch::new(client_manager, db, Diagnostics::new()));

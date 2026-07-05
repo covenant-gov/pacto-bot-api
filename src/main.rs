@@ -232,9 +232,10 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         .map_err(|e| format!("failed to initialize nostr client: {e}"))?
         .with_diagnostics(diagnostics.clone());
 
-    let mut client_manager = ClientManager::new(config.clone(), nostr_client.clone())
-        .await
-        .map_err(|e| format!("failed to initialize client manager: {e}"))?;
+    let mut client_manager =
+        ClientManager::new(Path::new(&data_dir), config.clone(), nostr_client.clone())
+            .await
+            .map_err(|e| format!("failed to initialize client manager: {e}"))?;
 
     client_manager.update_diagnostics(&diagnostics);
 

@@ -60,6 +60,9 @@ pub enum DaemonError {
     #[error("json-rpc error: {0}")]
     JsonRpc(#[from] JsonRpcError),
 
+    #[error("MLS engine error: {0}")]
+    Mls(#[from] crate::mls::MlsError),
+
     #[error("unknown bot: {0}")]
     UnknownBot(String),
 
@@ -117,7 +120,7 @@ impl DaemonError {
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
             DaemonError::TokenGeneration(_) => -32603,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
-            DaemonError::Sqlite(_) => -32603,
+            DaemonError::Sqlite(_) | DaemonError::Mls(_) => -32603,
         }
     }
 }

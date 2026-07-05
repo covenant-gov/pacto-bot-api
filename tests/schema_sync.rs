@@ -268,6 +268,8 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.list_handlers"
                 | "agent.unregister_handler"
                 | "agent.version"
+                | "agent.send_group_message"
+                | "agent.publish_key_package"
                 | "admin.send_test_dm"
         );
         if expects_result {

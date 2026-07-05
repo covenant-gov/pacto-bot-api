@@ -328,6 +328,7 @@ fn generate_reconnect_token() -> Result<SecretString, DaemonError> {
 fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
     match event_type {
         "dm_received" => Ok(EventType::DmReceived),
+        "mls_welcome_received" => Ok(EventType::MlsWelcomeReceived),
         _ => Err(DaemonError::InvalidEventType(event_type.to_string())),
     }
 }
@@ -762,10 +763,12 @@ mod tests {
             bots,
         };
         let nostr_client = NostrClient::new(vec![]).await.unwrap();
-        let cm = Arc::new(RwLock::new(
-            ClientManager::new(config, nostr_client).await.unwrap(),
-        ));
         let dir = tempdir().unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(dir.path(), config, nostr_client)
+                .await
+                .unwrap(),
+        ));
         let db = Db::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();

@@ -13,7 +13,7 @@ use nostr::key::Keys;
 use nostr::secp256k1::schnorr::Signature;
 use nostr::{Event, Kind, PublicKey, Timestamp, ToBech32, UnsignedEvent};
 use nostr_sdk::Client;
-use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig};
+use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig, validate_bot_id};
 use pacto_bot_api::diagnostics::{
     BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
     check_relay_connectivity,
@@ -1113,23 +1113,6 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
     }
 
     lines.join("\n") + "\n"
-}
-
-fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
-    if bot_id.is_empty() {
-        return Err(DaemonError::Config("bot_id must not be empty".into()));
-    }
-    if bot_id.len() > 64 {
-        return Err(DaemonError::Config(
-            "bot_id must be 64 characters or fewer".into(),
-        ));
-    }
-    if bot_id.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
-        return Err(DaemonError::Config(
-            "bot_id must not contain whitespace, '/', or '\\\\'".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn validate_backend(backend: &str) -> Result<(), DaemonError> {

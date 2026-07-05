@@ -181,6 +181,10 @@ pub enum Method {
     AgentUnregisterHandler,
     #[serde(rename = "agent.version")]
     AgentVersion,
+    #[serde(rename = "agent.send_group_message")]
+    AgentSendGroupMessage,
+    #[serde(rename = "agent.publish_key_package")]
+    AgentPublishKeyPackage,
     #[serde(rename = "admin.send_test_dm")]
     AdminSendTestDm,
 }
@@ -202,6 +206,8 @@ impl Method {
             Method::AgentListHandlers,
             Method::AgentUnregisterHandler,
             Method::AgentVersion,
+            Method::AgentSendGroupMessage,
+            Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
         ]
     }
@@ -225,6 +231,8 @@ impl FromStr for Method {
             "agent.list_handlers" => Ok(Self::AgentListHandlers),
             "agent.unregister_handler" => Ok(Self::AgentUnregisterHandler),
             "agent.version" => Ok(Self::AgentVersion),
+            "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
+            "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
             _ => Err(DaemonError::MethodNotFound),
         }

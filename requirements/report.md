@@ -31,8 +31,8 @@ The following requirements were tagged directly in test source files:
 - **R16** — tests/dispatch_integration.rs
 - **R17** — tests/dispatch_integration.rs, tests/integration_test.rs, tests/multi_bot.rs
 - **R18** — tests/dispatch_integration.rs
-- **R19** — tests/daemon_shutdown.rs
-- **R20** — tests/daemon_startup.rs
+- **R19** — tests/daemon_shutdown.rs, tests/mls_send_only.rs
+- **R20** — tests/daemon_startup.rs, tests/mls_send_only.rs
 - **R21** — tests/cli_args.rs, tests/daemon_startup.rs
 - **R22** — tests/daemon_shutdown.rs
 - **R23** — tests/daemon_shutdown.rs
@@ -73,8 +73,8 @@ The following requirements were tagged directly in test source files:
 | R16 | The daemon dispatches events to registered handlers based on event type and bot identity. A handler receives only events for bot identities it registered for. The daemon enforces per-call capabilit... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R17 | Multiple handlers can register for the same bot identity and event type. The daemon fans out events to all matching handlers. | tests/dispatch_integration.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/dispatch.rs | — | ✅ covered |
 | R18 | Handlers respond to `agent.event` notifications with one of: `ack`, `reply`, `defer`, or `ignore` (see API spec). The daemon enforces a per-handler rate limit of 10 mutating operations per second (... | tests/dispatch_integration.rs | src/dispatch.rs | — | ✅ covered |
-| R19 | The daemon persists event cursors, handler registrations, and bot configuration in a SQLite database (`agent.db`) using WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`). The ... | tests/daemon_shutdown.rs<br>tests/admin_cli_migration.rs | src/db.rs | — | ✅ covered |
-| R20 | The daemon recovers state on restart: validates that stored npub values match the config, resets cursors for mismatched identities, and resumes event subscriptions from the last persisted cursor. C... | tests/daemon_startup.rs<br>tests/daemon_shutdown.rs | src/db.rs<br>src/client_manager.rs | — | ✅ covered |
+| R19 | The daemon persists event cursors, handler registrations, and bot configuration in a SQLite database (`agent.db`) using WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`). The ... | tests/daemon_shutdown.rs<br>tests/admin_cli_migration.rs<br>tests/mls_send_only.rs | src/db.rs | — | ✅ covered |
+| R20 | The daemon recovers state on restart: validates that stored npub values match the config, resets cursors for mismatched identities, and resumes event subscriptions from the last persisted cursor. C... | tests/daemon_startup.rs<br>tests/daemon_shutdown.rs<br>tests/mls_send_only.rs | src/db.rs<br>src/client_manager.rs | — | ✅ covered |
 | R21 | The daemon runs as a long-lived process. On first run it creates `$DATA_DIR` if it does not exist. It starts, acquires an exclusive file lock on `$DATA_DIR/daemon.lock` (exit if held), validates co... | tests/daemon_startup.rs<br>tests/cli_args.rs | src/main.rs<br>src/config.rs<br>src/db.rs | — | ✅ covered |
 | R22 | The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:"shutting_down"}`, closes relay and bunker connections, releases the lock file, ... | tests/daemon_shutdown.rs | src/main.rs<br>src/diagnostics.rs | — | ✅ covered |
 | R23 | The daemon emits `agent.status` notifications to handlers on state transitions: `initializing`, `ready`, `shutting_down`, `stopped`. | tests/daemon_shutdown.rs | src/diagnostics.rs<br>src/transport/mod.rs | — | ✅ covered |

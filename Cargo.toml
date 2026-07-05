@@ -21,12 +21,15 @@ members = [".", "xtask"]
 resolver = "3"
 
 [dependencies]
+mdk-core = { git = "https://github.com/marmot-protocol/mdk", rev = "f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c" }
+mdk-sqlite-storage = { git = "https://github.com/marmot-protocol/mdk", rev = "f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c" }
+mdk-storage-traits = { git = "https://github.com/marmot-protocol/mdk", rev = "f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_with = "3"
 serde_yaml = "0.9"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 toml = "0.8"
 axum = "0.8"
 nostr-sdk = { version = "0.43", features = ["nip06", "nip44", "nip59"] }
@@ -91,4 +94,3 @@ panic = "deny"
 disallowed_names = "deny"
 # Avoid debug macro leakage.
 dbg_macro = "warn"
-

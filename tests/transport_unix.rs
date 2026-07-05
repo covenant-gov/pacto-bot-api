@@ -57,9 +57,11 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
         daemon: GlobalDaemonConfig::default(),
         bots: vec![bot],
     };
-    let nostr_client = NostrClient::new(vec![]).await?;
-    let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
     let dir = common::tempdir()?;
+    let nostr_client = NostrClient::new(vec![]).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client).await?,
+    ));
     let db = Db::open(dir.path().join("agent.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));
