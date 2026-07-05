@@ -6,6 +6,7 @@ use crate::errors::DaemonError;
 
 use crate::handlers::HandlerRegistry;
 use crate::nostr::NostrClient;
+use crate::nostr::NostrSubscribe;
 use crate::signer::Signer;
 use nostr::nips::nip59;
 use nostr::{PublicKey, Timestamp};
@@ -102,6 +103,19 @@ impl ClientManager {
     /// Must be called after signers are registered with the underlying
     /// [`NostrClient`] so that incoming events can be decrypted.
     pub async fn subscribe_bots(&mut self, db: &Db) -> Result<(), DaemonError> {
+        let client = self.nostr_client.clone();
+        self.subscribe_bots_with_client(db, &client).await
+    }
+
+    /// Subscribe each bot using the provided [`NostrSubscribe`] implementation.
+    ///
+    /// This is the testable core of [`Self::subscribe_bots`]; production code
+    /// passes `self.nostr_client`, while unit tests pass a mock client.
+    pub async fn subscribe_bots_with_client(
+        &mut self,
+        db: &Db,
+        client: &dyn NostrSubscribe,
+    ) -> Result<(), DaemonError> {
         for (pubkey, bot) in self.bots.iter_mut() {
             let since = match db.load_cursor(bot.bot_id()).await? {
                 Some((stored_npub, cursor)) if stored_npub == bot.npub() => {
@@ -121,10 +135,7 @@ impl ClientManager {
                 None => None,
             };
 
-            let sub_id = self
-                .nostr_client
-                .subscribe_bot_with_since(pubkey, since)
-                .await?;
+            let sub_id = client.subscribe_bot_with_since(pubkey, since).await?;
             bot.add_subscription(sub_id.to_string());
         }
         Ok(())
@@ -158,8 +169,12 @@ impl ClientManager {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+    use crate::db::Db;
     use crate::handlers::ConnectionHandle;
-    use nostr::ToBech32;
+    use nostr::nips::nip59;
+    use nostr::{SubscriptionId, Timestamp, ToBech32};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
@@ -280,6 +295,185 @@ mod tests {
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("invalid npub"));
+    }
+
+    async fn manager_with_bots_async(bot_configs: Vec<BotConfig>) -> ClientManager {
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: bot_configs,
+        };
+        ClientManager::new(config, NostrClient::new(vec![]).await.unwrap())
+            .await
+            .unwrap()
+    }
+
+    async fn temp_db() -> (Db, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("agent.db")).await.unwrap();
+        (db, dir)
+    }
+
+    type SubscriptionCall = (PublicKey, Option<Timestamp>);
+
+    /// A minimal [`NostrSubscribe`] implementation that records subscription
+    /// requests and returns deterministic subscription IDs for testing.
+    #[derive(Default)]
+    struct MockNostrClient {
+        calls: Arc<Mutex<Vec<SubscriptionCall>>>,
+    }
+
+    impl MockNostrClient {
+        fn calls(&self) -> Vec<SubscriptionCall> {
+            self.calls.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NostrSubscribe for MockNostrClient {
+        async fn subscribe_bot_with_since(
+            &self,
+            npub: &PublicKey,
+            since: Option<Timestamp>,
+        ) -> Result<SubscriptionId, DaemonError> {
+            let sub_id = format!("sub-{}", self.calls.lock().len());
+            self.calls.lock().push((*npub, since));
+            Ok(SubscriptionId::new(sub_id))
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_bots_uses_cursor_as_since_filter() {
+        let keys = nostr::Keys::generate();
+        let pubkey = keys.public_key();
+        let npub = pubkey.to_bech32().unwrap();
+        let mut manager = manager_with_bots_async(vec![bot_config("cursor-bot", &keys)]).await;
+        let (db, _dir) = temp_db().await;
+
+        let cursor = 1_700_000_000_i64;
+        db.save_cursor("cursor-bot", &npub, cursor).await.unwrap();
+
+        let mock = MockNostrClient::default();
+        manager
+            .subscribe_bots_with_client(&db, &mock)
+            .await
+            .unwrap();
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pubkey);
+
+        let cursor_ts = Timestamp::from(cursor as u64);
+        let expected_since = Some(cursor_ts - nip59::RANGE_RANDOM_TIMESTAMP_TWEAK.end);
+        assert_eq!(
+            calls[0].1, expected_since,
+            "since should be cursor minus the max NIP-59 tweak"
+        );
+
+        let bot = manager.get_bot_mut(&pubkey).unwrap();
+        assert_eq!(bot.clear_subscriptions(), vec!["sub-0"]);
+    }
+
+    #[tokio::test]
+    async fn subscribe_bots_without_cursor_uses_no_since() {
+        let keys = nostr::Keys::generate();
+        let pubkey = keys.public_key();
+        let mut manager = manager_with_bots_async(vec![bot_config("no-cursor-bot", &keys)]).await;
+        let (db, _dir) = temp_db().await;
+
+        let mock = MockNostrClient::default();
+        manager
+            .subscribe_bots_with_client(&db, &mock)
+            .await
+            .unwrap();
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, pubkey);
+        assert_eq!(
+            calls[0].1, None,
+            "since should be None when no cursor is persisted"
+        );
+
+        assert!(
+            !manager
+                .get_bot_mut(&pubkey)
+                .unwrap()
+                .clear_subscriptions()
+                .is_empty(),
+            "subscription should be tracked even when no cursor exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_bots_ignores_cursor_on_npub_mismatch() {
+        let keys = nostr::Keys::generate();
+        let _pubkey = keys.public_key();
+        let other_keys = nostr::Keys::generate();
+        let other_npub = other_keys.public_key().to_bech32().unwrap();
+
+        let mut manager = manager_with_bots_async(vec![bot_config("mismatch-bot", &keys)]).await;
+        let (db, _dir) = temp_db().await;
+        db.save_cursor("mismatch-bot", &other_npub, 1_700_000_000)
+            .await
+            .unwrap();
+
+        let mock = MockNostrClient::default();
+        manager
+            .subscribe_bots_with_client(&db, &mock)
+            .await
+            .unwrap();
+
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1, None,
+            "since should be None when stored npub does not match config"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscribe_bots_tracks_multiple_subscription_ids() {
+        let keys_a = nostr::Keys::generate();
+        let keys_b = nostr::Keys::generate();
+        let pubkey_a = keys_a.public_key();
+        let pubkey_b = keys_b.public_key();
+
+        let mut manager = manager_with_bots_async(vec![
+            bot_config("bot-a", &keys_a),
+            bot_config("bot-b", &keys_b),
+        ])
+        .await;
+        let (db, _dir) = temp_db().await;
+
+        let mock = MockNostrClient::default();
+        manager
+            .subscribe_bots_with_client(&db, &mock)
+            .await
+            .unwrap();
+
+        assert_eq!(mock.calls().len(), 2);
+
+        let subs_a = manager
+            .get_bot_mut(&pubkey_a)
+            .unwrap()
+            .clear_subscriptions();
+        let subs_b = manager
+            .get_bot_mut(&pubkey_b)
+            .unwrap()
+            .clear_subscriptions();
+        assert_eq!(subs_a.len(), 1);
+        assert_eq!(subs_b.len(), 1);
+        assert_ne!(
+            subs_a[0], subs_b[0],
+            "each bot should receive a distinct subscription id"
+        );
+
+        let all_ids: std::collections::HashSet<_> =
+            [subs_a[0].clone(), subs_b[0].clone()].into_iter().collect();
+        assert_eq!(
+            all_ids,
+            std::collections::HashSet::from(["sub-0".into(), "sub-1".into()])
+        );
     }
 
     #[test]

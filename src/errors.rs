@@ -84,6 +84,9 @@ pub enum DaemonError {
     #[error("method not found")]
     MethodNotFound,
 
+    #[error("handler not dispatched this event")]
+    HandlerNotDispatched,
+
     #[error("method {0} not supported over this transport")]
     MethodNotSupported(String),
 
@@ -107,6 +110,7 @@ impl DaemonError {
             DaemonError::UnauthorizedBot => -32006,
             DaemonError::HandlerAlreadyConnected => -32007,
             DaemonError::InvalidReconnectToken => -32008,
+            DaemonError::HandlerNotDispatched => -32010,
             DaemonError::JsonRpc(e) => e.code,
             DaemonError::MethodNotFound => -32601,
             DaemonError::MethodNotSupported(_) => -32009,
@@ -159,6 +163,7 @@ mod tests {
             -32008
         );
         assert_eq!(DaemonError::MethodNotFound.to_json_rpc_code(), -32601);
+        assert_eq!(DaemonError::HandlerNotDispatched.to_json_rpc_code(), -32010);
     }
 
     #[test]

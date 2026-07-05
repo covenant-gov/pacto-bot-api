@@ -142,6 +142,32 @@ async fn http_token_file_is_owner_only() -> Result<(), Box<dyn std::error::Error
 }
 
 #[tokio::test]
+async fn http_rejects_invalid_utf8_with_400() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    // Invalid UTF-8 byte sequence.
+    let body = b"\x80\x81\x82";
+    let response = raw_http_post_bytes(port, Some(&token), None, body).await?;
+    assert!(response.starts_with("HTTP/1.1 400"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body)?;
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["error"]["code"], -32700);
+    assert!(
+        parsed["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("UTF-8"),
+        "expected UTF-8 error message, got: {parsed}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_handler_register_returns_handler_id() -> Result<(), Box<dyn std::error::Error>> {
     let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
     let token = read_token(dir.path()).await?;
@@ -346,6 +372,47 @@ async fn http_invalid_handler_id_send_dm_rejected() -> Result<(), Box<dyn std::e
         response.contains("\"code\":-32001"),
         "expected HandlerNotRegistered in body: {response}"
     );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_events_requires_matching_handler_id_header() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    // Register a handler for the echo bot.
+    let register_body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    ))?;
+    let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+
+    // Missing header should be rejected.
+    let response = raw_events_get(port, Some(&token), None, &handler_id).await?;
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "expected 401 for missing header, got: {response}"
+    );
+
+    // Mismatched header should be rejected.
+    let response =
+        raw_events_get(port, Some(&token), Some("other-handler-id"), &handler_id).await?;
+    assert!(
+        response.starts_with("HTTP/1.1 403"),
+        "expected 403 for mismatched header, got: {response}"
+    );
+
+    // Matching header should succeed.
+    let _sse = SseClient::connect(port, &token, &handler_id).await?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -730,6 +797,15 @@ async fn raw_http_post(
     handler_id: Option<&str>,
     body: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    raw_http_post_bytes(port, secret, handler_id, body.as_bytes()).await
+}
+
+async fn raw_http_post_bytes(
+    port: u16,
+    secret: Option<&str>,
+    handler_id: Option<&str>,
+    body: &[u8],
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await?;
 
     let secret_header = secret
@@ -746,15 +822,49 @@ async fn raw_http_post(
          Content-Length: {}\r\n\
          {secret_header}\
          {handler_header}\
-         \r\n\
-         {body}",
+         \r\n",
         body.len()
+    );
+    stream.write_all(request.as_bytes()).await?;
+    stream.write_all(body).await?;
+    stream.flush().await?;
+
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(30), stream.read(&mut buf))
+        .await
+        .map_err(|_| "timed out reading HTTP response")??;
+    buf.truncate(n);
+    Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+async fn raw_events_get(
+    port: u16,
+    secret: Option<&str>,
+    handler_id_header: Option<&str>,
+    query_handler_id: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await?;
+
+    let secret_header = secret
+        .map(|s| format!("X-Pacto-Bot-Secret: {s}\r\n"))
+        .unwrap_or_default();
+    let handler_header = handler_id_header
+        .map(|s| format!("X-Pacto-Handler-Id: {s}\r\n"))
+        .unwrap_or_default();
+
+    let request = format!(
+        "GET /events?handler_id={query_handler_id} HTTP/1.1\r\n\
+         Host: 127.0.0.1:{port}\r\n\
+         Accept: text/event-stream\r\n\
+         {secret_header}\
+         {handler_header}\
+         \r\n"
     );
     stream.write_all(request.as_bytes()).await?;
     stream.flush().await?;
 
     let mut buf = vec![0u8; 4096];
-    let n = tokio::time::timeout(Duration::from_secs(30), stream.read(&mut buf))
+    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
         .await
         .map_err(|_| "timed out reading HTTP response")??;
     buf.truncate(n);
@@ -819,6 +929,7 @@ impl SseClient {
             "GET /events?handler_id={handler_id} HTTP/1.1\r\n\
              Host: 127.0.0.1:{port}\r\n\
              X-Pacto-Bot-Secret: {secret}\r\n\
+             X-Pacto-Handler-Id: {handler_id}\r\n\
              Accept: text/event-stream\r\n\
              \r\n"
         );
