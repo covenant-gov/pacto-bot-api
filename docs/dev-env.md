@@ -6,7 +6,7 @@ This document describes how to run the Docker-backed integration tests for
 ## What the tests cover
 
 The dev-env tests live in `tests/dev_env.rs`. They exercise real external
-services instead of the in-process mocks used by the default `cargo test` suite:
+services instead of the in-process mocks used by the default `make test` suite:
 
 - **Nostr relay** at `ws://localhost:7000`
 - **EVM node** (Anvil) at `http://localhost:8545`
@@ -40,11 +40,11 @@ cast block-number --rpc-url http://localhost:8545
 ## Run the gated tests
 
 The dev-env tests are marked `#[ignore]` and also perform a runtime check for
-`PACTO_DEV_ENV=1`. They are **never** executed by default `cargo test`.
+`PACTO_DEV_ENV=1`. They are **never** executed by default `make test`.
 
 ```bash
 # Default test suite (in-process mocks only, no Docker)
-cargo test
+make test
 
 # Dev-env integration tests against the running Docker services
 PACTO_DEV_ENV=1 cargo test -- --ignored

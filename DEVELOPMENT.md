@@ -25,7 +25,8 @@ cargo build --release
 ```bash
 cargo fmt --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
-cargo nextest run
+make test        # full sequential suite, ~76s
+make test-fast   # parallel run with cargo-nextest, ~20-25s
 cargo deny check
 ```
 
@@ -34,6 +35,7 @@ Project tooling:
 - `clippy.toml` — project-specific Clippy lints (e.g., forbidding plain `String`/`&str` for secrets).
 - `deny.toml` — license and audit policy for `cargo-deny`.
 - `xtask/` — project automation such as schema/codegen tasks (`cargo xtask codegen`).
+- `.config/nextest.toml` — profile used by `make test-fast`.
 
 ## Python SDK
 
@@ -64,7 +66,7 @@ git. CI enforces schema sync via `tests/schema_sync.rs`.
 
 ## Git hooks
 
-A pre-commit hook is available in `scripts/pre-commit.sh`. It runs the Beads pre-commit hook (if installed) and `make validate` (format check, clippy, and tests).
+A pre-commit hook is available in `scripts/pre-commit.sh`. It runs the Beads pre-commit hook (if installed) and `make validate` (format check and clippy).
 
 Install it:
 
@@ -114,15 +116,15 @@ cargo run --bin pacto-bot-admin -- diagnose --format json
 ### Default: in-process, no Docker
 
 ```bash
-cargo nextest run
+make test-fast
 ```
 
-This runs the full default suite using in-process mock relay and mock bunker implementations. Target: under 30 seconds.
+This runs the full default suite in parallel using `cargo-nextest` against in-process mock relay and mock bunker implementations. Target: under 30 seconds.
 
-If you do not have `cargo-nextest` installed, the standard test runner works as a fallback:
+If you do not have `cargo-nextest` installed, the sequential runner works as a fallback:
 
 ```bash
-cargo test
+make test
 ```
 
 ### Integration tests
@@ -130,13 +132,13 @@ cargo test
 Integration tests live in `tests/` and run against in-process mock relay and bunker implementations by default. Run them with:
 
 ```bash
-cargo nextest run --test integration
+make test-fast --test integration
 ```
 
 Readable "example tests" that demonstrate common handler patterns are also in `tests/`:
 
 ```bash
-cargo test --test example_http_handler --test example_multi_bot
+make test --test example_http_handler --test example_multi_bot
 ```
 
 Tests that need external services (a local Nostr relay, EVM node, or NIP-46 bunker) are gated behind `#[ignore]` and can be run selectively once those services are available:
@@ -225,10 +227,10 @@ capabilities = ["ReadMessages", "SendMessages"]
 cargo watch -x "nextest run"
 
 # Run a specific test binary
-cargo nextest run --test cli_args
+make test-fast -- --test cli_args
 
 # Run a single test by name
-cargo nextest run --test cli_args -- my_test_name
+make test-fast -- --test cli_args -- my_test_name
 
 # Generate and view docs
 cargo doc --open
