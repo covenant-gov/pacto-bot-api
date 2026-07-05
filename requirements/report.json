@@ -12,11 +12,9 @@
       "tests": [
         "tests/transport_unix.rs",
         "tests/integration_test.rs",
-        "tests/support/req_attr.rs",
         "tests/transport_http.rs"
       ],
       "parsed_tests": [
-        "tests/support/req_attr.rs",
         "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
@@ -31,11 +29,9 @@
       "summary": "The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ...",
       "tests": [
         "tests/transport_http.rs",
-        "tests/integration_test.rs",
-        "tests/support/req_attr.rs"
+        "tests/integration_test.rs"
       ],
       "parsed_tests": [
-        "tests/support/req_attr.rs",
         "tests/transport_http.rs"
       ],
       "sources": [
@@ -50,12 +46,10 @@
       "tests": [
         "tests/transport_unix.rs",
         "tests/transport_http.rs",
-        "tests/sighup_token_reload.rs",
-        "tests/support/req_attr.rs"
+        "tests/sighup_token_reload.rs"
       ],
       "parsed_tests": [
         "tests/sighup_token_reload.rs",
-        "tests/support/req_attr.rs",
         "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
@@ -91,13 +85,11 @@
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs",
-        "tests/support/req_attr.rs"
+        "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs",
-        "tests/support/req_attr.rs"
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "src/client_manager.rs",
@@ -179,12 +171,10 @@
       "id": "R10",
       "summary": "Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co...",
       "tests": [
-        "tests/admin_cli_migration.rs",
-        "tests/support/req_attr.rs"
+        "tests/admin_cli_migration.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_migration.rs",
-        "tests/support/req_attr.rs"
+        "tests/admin_cli_migration.rs"
       ],
       "sources": [
         "src/admin.rs",
@@ -197,12 +187,10 @@
       "id": "R11",
       "summary": "The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations.",
       "tests": [
-        "tests/admin_cli_creation.rs",
-        "tests/support/req_attr.rs"
+        "tests/admin_cli_creation.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_creation.rs",
-        "tests/support/req_attr.rs"
+        "tests/admin_cli_creation.rs"
       ],
       "sources": [
         "src/main.rs",
@@ -558,12 +546,10 @@
       "id": "R32",
       "summary": "**Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio...",
       "tests": [
-        "tests/schema_sync.rs",
-        "tests/support/req_attr.rs"
+        "tests/schema_sync.rs"
       ],
       "parsed_tests": [
-        "tests/schema_sync.rs",
-        "tests/support/req_attr.rs"
+        "tests/schema_sync.rs"
       ],
       "sources": [
         "schemas/",
@@ -581,13 +567,11 @@
         "tests/support/mock_relay.rs",
         "tests/support/mock_bunker.rs",
         "tests/integration_test.rs",
-        "tests/multi_bot.rs",
-        "tests/support/req_attr.rs"
+        "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs",
-        "tests/support/req_attr.rs"
+        "tests/multi_bot.rs"
       ],
       "sources": [
         "tests/support/"
@@ -599,12 +583,10 @@
       "id": "R34",
       "summary": "**Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite...",
       "tests": [
-        "tests/secret_redaction.rs",
-        "tests/support/req_attr.rs"
+        "tests/secret_redaction.rs"
       ],
       "parsed_tests": [
-        "tests/secret_redaction.rs",
-        "tests/support/req_attr.rs"
+        "tests/secret_redaction.rs"
       ],
       "sources": [
         "src/errors.rs",
@@ -656,13 +638,11 @@
       "summary": "**Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs...",
       "tests": [
         "tests/diagnostics.rs",
-        "tests/daemon_shutdown.rs",
-        "tests/support/req_attr.rs"
+        "tests/daemon_shutdown.rs"
       ],
       "parsed_tests": [
         "tests/daemon_shutdown.rs",
-        "tests/diagnostics.rs",
-        "tests/support/req_attr.rs"
+        "tests/diagnostics.rs"
       ],
       "sources": [
         "src/diagnostics.rs",

@@ -84,21 +84,28 @@ def _extract_req_ids(source: str) -> set[str]:
 
 
 def parse_test_tags(tests_dir: Path) -> dict[str, list[str]]:
-    """Parse req(...) tags from test source files.
+    """Parse req(...) tags from actual test source files.
 
-    Walks `tests/**/*.rs` recursively and returns a mapping from requirement ID
-    to the list of test files (relative to the repo root) that tag it.
+    Walks `tests/**/*.rs` recursively, skipping helper/support modules
+    (`tests/support/` and `tests/common/`) whose contents are fixtures and
+    parsing utilities, not tests that validate requirements. Returns a mapping
+    from requirement ID to the list of test files (relative to the repo root)
+    that tag it.
     """
     tags: dict[str, list[str]] = {}
     if not tests_dir.exists():
         return tags
 
+    skip_prefixes = ("support/", "common/")
     for path in sorted(tests_dir.rglob("*.rs")):
+        rel = path.relative_to(tests_dir).as_posix()
+        if rel.startswith(skip_prefixes):
+            continue
         text = path.read_text(encoding="utf-8")
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel_repo = path.relative_to(REPO_ROOT).as_posix()
         ids = _extract_req_ids(text)
         for req_id in sorted(ids):
-            tags.setdefault(req_id, []).append(rel)
+            tags.setdefault(req_id, []).append(rel_repo)
 
     return tags
 
