@@ -428,7 +428,7 @@ impl NostrSubscribe for NostrClient {
         npub: &PublicKey,
         since: Option<Timestamp>,
     ) -> Result<SubscriptionId, DaemonError> {
-        self.subscribe_bot_with_since(npub, since).await
+        NostrClient::subscribe_bot_with_since(self, npub, since).await
     }
 }
 
