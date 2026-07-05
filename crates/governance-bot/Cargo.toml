@@ -1,0 +1,36 @@
+[package]
+name = "governance-bot"
+version = "0.1.0"
+edition = "2024"
+authors = ["Pacto Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/covenant-gov/pacto-bot-api"
+description = "Example on-chain governance reader for Pacto snapshot bot."
+rust-version = "1.96"
+
+[dependencies]
+alloy = { version = "1.6", features = ["full"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+disallowed_names = "deny"
+dbg_macro = "warn"
