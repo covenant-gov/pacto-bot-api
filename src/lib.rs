@@ -25,3 +25,6 @@ pub mod service_compatibility_generated;
 pub mod signer;
 pub mod transport;
 pub mod version;
+
+#[cfg(test)]
+pub mod test_support;

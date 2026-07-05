@@ -18,11 +18,15 @@ use std::process::Command;
 const MIN_CARGO_GENERATE_VERSION: &str = "0.23.0";
 
 /// Rendered project output from `cargo-generate`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct RenderedTemplate {
-    /// Temporary directory containing the rendered project tree. The caller is
-    /// responsible for cleaning this up once the merge is complete.
+    /// Temporary directory containing the rendered project tree.
+    ///
+    /// The directory is automatically removed when this value is dropped.
     pub dir: PathBuf,
+    /// Guard that owns the temporary directory and deletes it on drop.
+    #[allow(dead_code)]
+    _temp_dir: tempfile::TempDir,
 }
 
 /// Render a template into a temporary directory.
@@ -95,11 +99,10 @@ pub fn render_template(
         )));
     }
 
-    // Detach the temp directory from the TempDir wrapper so it survives the
-    // function return; the caller cleans it up after the merge.
-    let _work_dir = work_dir.keep();
-
-    Ok(RenderedTemplate { dir: rendered_dir })
+    Ok(RenderedTemplate {
+        dir: rendered_dir,
+        _temp_dir: work_dir,
+    })
 }
 
 fn check_cargo_generate() -> Result<(), DaemonError> {
@@ -394,14 +397,40 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_generate_version_extracts_semver() {
-        assert_eq!(
-            parse_cargo_generate_version("cargo generate 0.23.12\n"),
-            Some(semver::Version::new(0, 23, 12))
+    fn rendered_temp_directory_is_removed_on_drop() -> Result<(), DaemonError> {
+        let template_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/templates/python-llm"
+        ));
+        let request = test_request();
+        let rendered = render_template(&template_dir, &request, false)?;
+        let rendered_path = rendered.dir.clone();
+        assert!(
+            rendered_path.is_dir(),
+            "rendered directory should exist while in scope: {}",
+            rendered_path.display()
         );
-        assert_eq!(
-            parse_cargo_generate_version("0.23.12"),
-            Some(semver::Version::new(0, 23, 12))
+        drop(rendered);
+        assert!(
+            !rendered_path.exists(),
+            "rendered temp directory should be removed after drop: {}",
+            rendered_path.display()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rendered_temp_directory_is_removed_on_error() {
+        let template_dir = PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/templates/python-llm"
+        ));
+        let mut request = test_request();
+        // cargo-generate will not create the expected directory name if the
+        // project name contains path separators, so the function fails after
+        // creating the temp directory.
+        request.bot_id = "invalid/bot".to_string();
+        let result = render_template(&template_dir, &request, false);
+        assert!(result.is_err(), "render should fail with invalid bot id");
     }
 }

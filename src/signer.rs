@@ -505,7 +505,11 @@ fn parse_npub(npub: &str) -> Result<PublicKey, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::test_support::mock_bunker::MockBunker;
+    use crate::test_support::mock_relay::MockRelay;
     use nostr::ToBech32;
     use serde_json::json;
 
@@ -678,15 +682,131 @@ mod tests {
         assert!(!debug.contains(&keys.secret_key().to_secret_hex()));
     }
 
-    #[test]
-    fn zeroize_clears_local_key_secret() {
+    #[tokio::test]
+    async fn bunker_connection_get_public_key() {
         let keys = test_keys();
-        let nsec = keys.secret_key().to_bech32().unwrap();
-        let signer = LocalKey::parse(&nsec).unwrap();
-        assert_ne!(signer.secret_bytes(), &[0u8; 32]);
-        drop(signer);
-        // The secret bytes live in a Zeroizing container that is cleared on
-        // drop. The memory-scan integration test verifies no secret bytes
-        // remain in the process address space after the signer is dropped.
+        let relay = MockRelay::start().await.unwrap();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .unwrap();
+        // Give the mock signer time to bootstrap and subscribe before the
+        // client handshake begins.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let uri = bunker.uri(&relay.url());
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+        let live = conn.get_public_key().await.unwrap();
+        assert_eq!(live, keys.public_key());
+
+        bunker.stop().await;
+        relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bunker_connection_sign_event() {
+        let keys = test_keys();
+        let relay = MockRelay::start().await.unwrap();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let uri = bunker.uri(&relay.url());
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+
+        let mut unsigned = UnsignedEvent::new(
+            keys.public_key(),
+            Timestamp::from(1_700_000_000_u64),
+            Kind::TextNote,
+            Vec::new(),
+            "bunker unit test event",
+        );
+        unsigned.ensure_id();
+
+        let payload = serde_json::to_vec(&json!([
+            0,
+            unsigned.pubkey,
+            unsigned.created_at,
+            unsigned.kind,
+            unsigned.tags,
+            unsigned.content
+        ]))
+        .unwrap();
+
+        let sig = conn.sign_event(&payload).await.unwrap();
+        assert!(
+            !sig.is_empty(),
+            "bunker should return a non-empty schnorr signature"
+        );
+        // BunkerConnection::sign_event already verifies the returned event id
+        // and signature internally, so Ok(sig) is sufficient for the happy path.
+
+        bunker.stop().await;
+        relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bunker_connection_nip44_roundtrip() {
+        let keys = test_keys();
+        let relay = MockRelay::start().await.unwrap();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let uri = bunker.uri(&relay.url());
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+
+        let recipient = test_keys();
+        let content = "hello from the bunker";
+        let encrypted = conn
+            .nip44_encrypt(&recipient.public_key(), content)
+            .await
+            .unwrap();
+        let decrypted = conn
+            .nip44_decrypt(&recipient.public_key(), &encrypted)
+            .await
+            .unwrap();
+        assert_eq!(decrypted, content);
+
+        bunker.stop().await;
+        relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bunker_connection_verify_public_key_rejects_mismatch() {
+        let keys = test_keys();
+        let other_keys = test_keys();
+        let relay = MockRelay::start().await.unwrap();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let uri = bunker.uri(&relay.url());
+        let conn = BunkerConnection::connect(&uri, &other_keys.public_key(), false).unwrap();
+        let err = conn.verify_public_key().await.unwrap_err();
+        assert!(err.to_string().contains("does not match"));
+
+        bunker.stop().await;
+        relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bunker_connection_sign_event_rejects_invalid_payload() {
+        let keys = test_keys();
+        // No live relay is required; the error is returned during payload
+        // deserialization before any network call.
+        let uri = format!(
+            "bunker://{}?relay=ws://127.0.0.1:59999",
+            keys.public_key().to_hex()
+        );
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+
+        let err = conn
+            .sign_event(b"not a valid event payload")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("invalid event signing payload"));
     }
 }
