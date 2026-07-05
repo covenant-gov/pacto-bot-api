@@ -13,6 +13,36 @@ use std::path::{Path, PathBuf};
 /// Current lock file schema version.
 pub const LOCK_VERSION: u32 = 1;
 
+/// Original scaffold invocation settings preserved for `pacto-bot-admin update`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ScaffoldSettings {
+    /// Command names passed to the scaffold template.
+    #[serde(default)]
+    pub commands: Vec<String>,
+
+    /// Whether the scaffold included test files.
+    #[serde(default = "default_true")]
+    pub with_tests: bool,
+
+    /// Whether the scaffold should expose an HTTP server.
+    #[serde(default)]
+    pub http: bool,
+}
+
+impl Default for ScaffoldSettings {
+    fn default() -> Self {
+        Self {
+            commands: Vec::new(),
+            with_tests: true,
+            http: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Resolved triple recorded in a per-bot lock file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ScaffoldLock {
@@ -20,6 +50,10 @@ pub struct ScaffoldLock {
 
     #[serde(flatten)]
     pub triple: ResolvedTriple,
+
+    /// Original scaffold settings used to regenerate the bot during update.
+    #[serde(default, rename = "scaffold")]
+    pub scaffold: ScaffoldSettings,
 }
 
 /// The resolved contract/SDK/template triple.
@@ -149,6 +183,11 @@ mod tests {
                     version: "0.6.0".to_string(),
                 },
             },
+            scaffold: ScaffoldSettings {
+                commands: vec!["ask".to_string(), "tell".to_string()],
+                with_tests: true,
+                http: false,
+            },
         }
     }
 
@@ -186,5 +225,50 @@ mod tests {
             err.to_string()
                 .contains("unsupported scaffold lock version")
         );
+    }
+
+    #[test]
+    fn missing_scaffold_section_uses_defaults() {
+        let raw = r#"
+lock_version = 1
+
+[template]
+path = "python-llm"
+ref = "v0.1.0"
+resolved_commit = "abc123"
+
+[contract]
+name = "pacto-contract"
+version = "0.1.0"
+
+[sdk]
+name = "pacto-bot-sdk"
+version = "0.2.0"
+
+[admin]
+version = "0.6.0"
+"#;
+
+        let lock: ScaffoldLock = toml::from_str(raw).unwrap();
+        assert_eq!(lock.scaffold.commands, Vec::<String>::new());
+        assert!(lock.scaffold.with_tests);
+        assert!(!lock.scaffold.http);
+    }
+
+    #[test]
+    fn scaffold_section_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scaffold.lock");
+        let mut lock = sample_lock();
+        lock.scaffold = ScaffoldSettings {
+            commands: vec!["ask".to_string(), "tell".to_string()],
+            with_tests: false,
+            http: true,
+        };
+
+        write_lock(&path, &lock).unwrap();
+        let read = read_lock(&path).unwrap();
+
+        assert_eq!(read.scaffold, lock.scaffold);
     }
 }
