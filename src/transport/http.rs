@@ -260,7 +260,8 @@ async fn http_handler(
                 Value::Null,
                 JsonRpcError::new(-32700, "body is not valid UTF-8"),
             );
-            let body = serialize_message(&err).unwrap_or_default();
+            let mut body = serialize_message(&err).unwrap_or_default();
+            body.push('\n');
             return (
                 StatusCode::BAD_REQUEST,
                 [(CONTENT_TYPE, "text/plain; charset=utf-8")],
