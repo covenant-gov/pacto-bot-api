@@ -112,7 +112,7 @@ impl JsonRpcMessage {
 /// Parse a newline-delimited JSON frame into a [`JsonRpcMessage`].
 pub fn parse_message(line: &str) -> Result<JsonRpcMessage, DaemonError> {
     let value: Value =
-        serde_json::from_str(line).map_err(|e| DaemonError::JsonRpcParse(e.to_string()))?;
+        serde_json::from_str(line).map_err(|e| DaemonError::JsonRpcParseError(e.to_string()))?;
 
     let obj = value
         .as_object()

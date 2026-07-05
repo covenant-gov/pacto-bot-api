@@ -61,7 +61,7 @@ pub enum DaemonError {
     JsonRpc(#[from] JsonRpcError),
 
     #[error("json-rpc parse error: {0}")]
-    JsonRpcParse(String),
+    JsonRpcParseError(String),
 
     #[error("invalid json-rpc request: {0}")]
     InvalidJsonRpcRequest(String),
@@ -121,7 +121,7 @@ impl DaemonError {
             DaemonError::InvalidReconnectToken => -32008,
             DaemonError::HandlerNotDispatched => -32010,
             DaemonError::JsonRpc(e) => e.code,
-            DaemonError::JsonRpcParse(_) => -32700,
+            DaemonError::JsonRpcParseError(_) => -32700,
             DaemonError::InvalidJsonRpcRequest(_) => -32600,
             DaemonError::MethodNotFound => -32601,
             DaemonError::MethodNotSupported(_) => -32009,
@@ -175,6 +175,15 @@ mod tests {
         );
         assert_eq!(DaemonError::MethodNotFound.to_json_rpc_code(), -32601);
         assert_eq!(DaemonError::HandlerNotDispatched.to_json_rpc_code(), -32010);
+    }
+
+    #[test]
+    fn json_rpc_parse_error_codes() {
+        let err = DaemonError::JsonRpcParseError("malformed json".into());
+        assert_eq!(err.to_json_rpc_code(), -32700);
+
+        let err = DaemonError::InvalidJsonRpcRequest("missing jsonrpc".into());
+        assert_eq!(err.to_json_rpc_code(), -32600);
     }
 
     #[test]
