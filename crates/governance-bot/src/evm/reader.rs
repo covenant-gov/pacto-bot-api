@@ -32,7 +32,12 @@ pub enum GovernanceError {
     /// The requested squad index is out of bounds.
     #[error("invalid squad index {index} (count: {count})")]
     InvalidSquadIndex { index: usize, count: usize },
+    /// Deployment count reported by the registry exceeds the safety limit.
+    #[error("deployment count {count} exceeds maximum allowed {max}")]
+    DeploymentCountTooLarge { count: U256, max: usize },
 }
+
+pub const MAX_DEPLOYMENT_COUNT: usize = 10_000;
 
 /// A token the reader should track in treasury balances.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,10 +77,23 @@ impl<P: Provider> GovernanceReader<P> {
     ///
     /// Returns an empty list when `deploymentCount() == 0`.
     pub async fn discover_squads(&self) -> Result<Vec<SquadInfo>, GovernanceError> {
-        let count = self
+        let count: U256 = self
             .eth_call_decode(self.registry, &INavePirataRegistry::deploymentCountCall {})
             .await?;
-        let count: usize = count.try_into().unwrap_or(usize::MAX);
+
+        if count > U256::from(MAX_DEPLOYMENT_COUNT) {
+            return Err(GovernanceError::DeploymentCountTooLarge {
+                count,
+                max: MAX_DEPLOYMENT_COUNT,
+            });
+        }
+        let count: usize =
+            count
+                .try_into()
+                .map_err(|_| GovernanceError::DeploymentCountTooLarge {
+                    count,
+                    max: MAX_DEPLOYMENT_COUNT,
+                })?;
 
         let mut squads = Vec::with_capacity(count);
         for i in 0..count {
@@ -291,13 +309,14 @@ impl<P: Provider> GovernanceReader<P> {
         proposer_candidates: &[Address],
     ) -> Result<SnapshotData, GovernanceError> {
         let squads = self.discover_squads().await?;
+        let squad_count = squads.len();
         let squad =
             squads
                 .into_iter()
                 .nth(squad_index)
                 .ok_or(GovernanceError::InvalidSquadIndex {
                     index: squad_index,
-                    count: 0,
+                    count: squad_count,
                 })?;
 
         let proposals = self

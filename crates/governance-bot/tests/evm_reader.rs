@@ -8,33 +8,72 @@
 use alloy::primitives::{Address, U256};
 use alloy::providers::ProviderBuilder;
 use governance_bot::evm::addresses::{hats_address, registry_address};
-use governance_bot::evm::reader::{GovernanceError, GovernanceReader, TokenInfo};
+use governance_bot::evm::reader::{
+    GovernanceError, GovernanceReader, MAX_DEPLOYMENT_COUNT, TokenInfo,
+};
 use governance_bot::evm::snapshot::SnapshotData;
 use serde_json::json;
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufStream};
 use tokio::net::TcpListener;
 
-/// Spawn a TCP server that echoes every JSON-RPC `id` and always returns a
-/// zero-valued `eth_call` / `eth_getBalance` result.
-async fn start_zero_rpc_server() -> SocketAddr {
+/// Spawn a TCP server that echoes every JSON-RPC `id` and returns the
+/// provided 32-byte ABI-encoded `eth_call` / `eth_getBalance` result.
+async fn start_rpc_server_with_hex(result: &str) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let result = result.to_string();
     tokio::spawn(async move {
         loop {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let result = result.clone();
             tokio::spawn(async move {
-                let mut buf = vec![0u8; 4096];
-                let n = stream.read(&mut buf).await.unwrap_or(0);
-                let body = String::from_utf8_lossy(&buf[..n]);
-                let id = serde_json::from_str::<serde_json::Value>(&body)
+                let mut stream = BufStream::new(stream);
+
+                // Read the HTTP request headers line by line.
+                let mut headers = String::new();
+                loop {
+                    let mut line = String::new();
+                    match stream.read_line(&mut line).await {
+                        Ok(0) => return,
+                        Err(_) => return,
+                        Ok(_) => {}
+                    }
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                    headers.push_str(&line);
+                }
+
+                // Parse Content-Length to know how many bytes belong to the body.
+                let content_length = headers
+                    .lines()
+                    .filter_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        if key.trim().eq_ignore_ascii_case("Content-Length") {
+                            value.trim().parse::<usize>().ok()
+                        } else {
+                            None
+                        }
+                    })
+                    .next()
+                    .unwrap_or(0);
+
+                // Read the JSON-RPC body.
+                let mut body = vec![0u8; content_length];
+                if content_length > 0 && stream.read_exact(&mut body).await.is_err() {
+                    return;
+                }
+
+                let id = serde_json::from_slice::<serde_json::Value>(&body)
                     .ok()
                     .and_then(|v| v.get("id").cloned())
                     .unwrap_or(json!(null));
+
                 let response = json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": "0x0000000000000000000000000000000000000000000000000000000000000000"
+                    "result": result
                 });
                 let response_body = response.to_string();
                 let http = format!(
@@ -43,10 +82,18 @@ async fn start_zero_rpc_server() -> SocketAddr {
                     response_body
                 );
                 let _ = stream.write_all(http.as_bytes()).await;
+                let _ = stream.flush().await;
             });
         }
     });
     addr
+}
+
+/// Spawn a TCP server that echoes every JSON-RPC `id` and always returns a
+/// zero-valued `eth_call` / `eth_getBalance` result.
+async fn start_zero_rpc_server() -> SocketAddr {
+    start_rpc_server_with_hex("0x0000000000000000000000000000000000000000000000000000000000000000")
+        .await
 }
 
 fn test_reader(addr: SocketAddr) -> GovernanceReader<impl alloy::providers::Provider> {
@@ -69,6 +116,19 @@ async fn discover_squads_returns_empty_when_count_zero() {
     assert!(
         squads.is_empty(),
         "deploymentCount=0 should yield empty squads"
+    );
+}
+
+#[tokio::test]
+async fn discover_squads_errors_when_deployment_count_exceeds_cap() {
+    let count = U256::from(MAX_DEPLOYMENT_COUNT + 1);
+    let hex = format!("0x{:064x}", count);
+    let addr = start_rpc_server_with_hex(&hex).await;
+    let reader = test_reader(addr);
+    let result = reader.discover_squads().await;
+    assert!(
+        matches!(result, Err(GovernanceError::DeploymentCountTooLarge { .. })),
+        "deployment count above the safety cap should return a bounded error, got {result:?}"
     );
 }
 

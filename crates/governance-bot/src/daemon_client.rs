@@ -294,6 +294,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn unix_client_reports_connection_error_for_missing_socket() {
         let client = DaemonClient::unix("/nonexistent/path/to/pacto.sock");
         let err = client
