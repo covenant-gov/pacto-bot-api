@@ -60,6 +60,8 @@ pub async fn verify_bunker_public_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::mock_bunker::MockBunker;
+    use crate::test_support::mock_relay::MockRelay;
     #[test]
     fn rejects_non_bunker_uri() {
         let keys = Keys::generate();
@@ -79,6 +81,65 @@ mod tests {
             ))
             .unwrap_err();
         assert!(err.to_string().contains("invalid bunker URI"));
+    }
+
+    #[tokio::test]
+    async fn accepts_matching_bunker_pubkey() {
+        let relay = MockRelay::start().await.expect("mock relay starts");
+        let keys = Keys::generate();
+        let bunker = MockBunker::new(keys.clone(), vec![relay.url()])
+            .await
+            .expect("mock bunker starts");
+
+        // Give the signer time to bootstrap and subscribe before the client
+        // connects.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let uri = bunker.uri(&relay.url());
+        let result =
+            verify_bunker_public_key(&uri, &keys.public_key(), Duration::from_secs(5)).await;
+
+        bunker.stop().await;
+        relay.stop().await;
+
+        assert!(result.is_ok(), "expected matching bunker pubkey to verify");
+    }
+
+    #[tokio::test]
+    async fn times_out_when_bunker_does_not_respond() {
+        // A relay that accepts the connection but never speaks Nostr will
+        // force the NIP-46 handshake to hit the call timeout.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stall relay");
+        let addr = listener.local_addr().expect("local addr");
+
+        // Spawn a task that accepts connections and drops them, so the
+        // bunker client cannot complete the handshake.
+        let stall_handle = tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let keys = Keys::generate();
+        let uri = format!(
+            "bunker://{}?relay=ws://{}",
+            keys.public_key().to_hex(),
+            addr
+        );
+        let err = verify_bunker_public_key(&uri, &keys.public_key(), Duration::from_millis(100))
+            .await
+            .expect_err("expected timeout error");
+
+        stall_handle.abort();
+        let _ = stall_handle.await;
+
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("timeout") || msg.contains("deadline") || msg.contains("timed out"),
+            "expected timeout error, got: {err}"
+        );
     }
 
     #[test]
