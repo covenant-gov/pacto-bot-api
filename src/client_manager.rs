@@ -307,9 +307,10 @@ mod tests {
             .unwrap()
     }
 
-    async fn temp_db() -> Db {
+    async fn temp_db() -> (Db, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        Db::open(&dir.path().join("agent.db")).await.unwrap()
+        let db = Db::open(&dir.path().join("agent.db")).await.unwrap();
+        (db, dir)
     }
 
     type SubscriptionCall = (PublicKey, Option<Timestamp>);
@@ -346,7 +347,7 @@ mod tests {
         let pubkey = keys.public_key();
         let npub = pubkey.to_bech32().unwrap();
         let mut manager = manager_with_bots_async(vec![bot_config("cursor-bot", &keys)]).await;
-        let db = temp_db().await;
+        let (db, _dir) = temp_db().await;
 
         let cursor = 1_700_000_000_i64;
         db.save_cursor("cursor-bot", &npub, cursor).await.unwrap();
@@ -377,7 +378,7 @@ mod tests {
         let keys = nostr::Keys::generate();
         let pubkey = keys.public_key();
         let mut manager = manager_with_bots_async(vec![bot_config("no-cursor-bot", &keys)]).await;
-        let db = temp_db().await;
+        let (db, _dir) = temp_db().await;
 
         let mock = MockNostrClient::default();
         manager
@@ -411,7 +412,7 @@ mod tests {
         let other_npub = other_keys.public_key().to_bech32().unwrap();
 
         let mut manager = manager_with_bots_async(vec![bot_config("mismatch-bot", &keys)]).await;
-        let db = temp_db().await;
+        let (db, _dir) = temp_db().await;
         db.save_cursor("mismatch-bot", &other_npub, 1_700_000_000)
             .await
             .unwrap();
@@ -442,7 +443,7 @@ mod tests {
             bot_config("bot-b", &keys_b),
         ])
         .await;
-        let db = temp_db().await;
+        let (db, _dir) = temp_db().await;
 
         let mock = MockNostrClient::default();
         manager
