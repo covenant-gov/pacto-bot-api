@@ -48,6 +48,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
+use crate::scaffold::safety::set_config_permissions;
 use pacto_bot_api::guide;
 
 mod scaffold;
@@ -331,6 +332,14 @@ enum Command {
         /// Allow `cargo-generate` to execute pre/post-generation hooks.
         #[arg(long)]
         allow_hooks: bool,
+
+        /// Path to write the generated bot config snippet.
+        #[arg(short, long, value_name = "PATH", default_value = "pacto-bot-api.toml")]
+        output: PathBuf,
+
+        /// Print the raw config snippet (including private keys) to stdout.
+        #[arg(long)]
+        emit_secrets: bool,
     },
     /// Publish a bot profile (kind:0) event.
     #[command(after_help = PUBLISH_PROFILE_AFTER_HELP)]
@@ -570,6 +579,8 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             refresh,
             prune_cache,
             allow_hooks,
+            output,
+            emit_secrets,
         } => {
             cmd_new(
                 bot_id.as_deref(),
@@ -591,6 +602,8 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
                 refresh,
                 prune_cache,
                 allow_hooks,
+                &output,
+                emit_secrets,
             )
             .await
         }
@@ -715,6 +728,8 @@ async fn cmd_new(
     refresh: bool,
     prune_cache: bool,
     allow_hooks: bool,
+    output: &Path,
+    emit_secrets: bool,
 ) -> Result<(), DaemonError> {
     let interactive = bot_id.is_none();
 
@@ -831,7 +846,7 @@ async fn cmd_new(
             http,
             force,
             allow_hooks,
-            project_dir,
+            project_dir: project_dir.clone(),
             template_repo: template_repo.to_string(),
             template_ref: template_ref.map(|s| s.to_string()),
             refresh,
@@ -842,19 +857,54 @@ async fn cmd_new(
             "Created scaffolded project for {} in {}",
             params.bot_id, project_dir_display
         );
+        println!("npub: {npub}");
+        println!(
+            "config: {}",
+            project_dir.join("pacto-bot-api.toml").display()
+        );
         return Ok(());
     }
 
+    let output_path = expand_path_buf(output);
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    if output_path.exists() && !force {
+        return Err(DaemonError::Config(format!(
+            "refusing to overwrite existing config file: {} (use --force to overwrite)",
+            output_path.display()
+        )));
+    }
+
     if interactive {
+        let preview = if emit_secrets {
+            snippet.clone()
+        } else {
+            redact_snippet(&snippet, &nsec)
+        };
+        if emit_secrets {
+            eprintln!("warning: --emit-secrets prints raw private keys to stdout");
+        }
         println!("\nPreview of the config snippet that will be generated:\n");
-        println!("{snippet}");
+        println!("{preview}");
         if !prompt_yes_no("Create this bot identity?")? {
             println!("Cancelled.");
             return Ok(());
         }
     }
 
-    println!("{snippet}");
+    std::fs::write(&output_path, &snippet).map_err(DaemonError::Io)?;
+    set_config_permissions(&output_path)?;
+
+    if emit_secrets {
+        eprintln!("warning: --emit-secrets prints raw private keys to stdout");
+        println!("{snippet}");
+    } else {
+        println!("npub: {npub}");
+        println!("config: {}", output_path.display());
+    }
     Ok(())
 }
 
@@ -1111,6 +1161,11 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
     lines.join("\n") + "\n"
 }
 
+/// Return a copy of the config snippet with the raw nsec value redacted.
+fn redact_snippet(snippet: &str, nsec: &str) -> String {
+    snippet.replace(&format!("nsec = {nsec:?}"), "nsec = \"<REDACTED>\"")
+}
+
 fn validate_backend(backend: &str) -> Result<(), DaemonError> {
     match backend {
         "nsec" | "bunker_local" | "bunker_remote" => Ok(()),
@@ -1152,7 +1207,9 @@ fn prompt_bot_id() -> Result<String, DaemonError> {
 
 fn prompt_backend() -> Result<String, DaemonError> {
     println!("Signing backend:");
-    println!("  1) nsec         - local dev key (prints nsec; do not use in production)");
+    println!(
+        "  1) nsec         - local dev key (writes nsec to config file; do not use in production)"
+    );
     println!("  2) bunker_local - NIP-46 bunker on the same machine");
     println!("  3) bunker_remote - NIP-46 bunker reachable over wss://");
 
@@ -3671,6 +3728,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_rejects_empty_bot_id() {
+        let output = Path::new("/tmp/pacto-admin-test-reject");
         let err = cmd_new(
             Some(""),
             "nsec",
@@ -3691,6 +3749,8 @@ mod tests {
             false,
             false,
             false,
+            output,
+            false,
         )
         .await
         .unwrap_err();
@@ -3699,6 +3759,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_rejects_unknown_backend() {
+        let output = Path::new("/tmp/pacto-admin-test-reject");
         let err = cmd_new(
             Some("x"),
             "invalid",
@@ -3718,6 +3779,8 @@ mod tests {
             None,
             false,
             false,
+            false,
+            output,
             false,
         )
         .await

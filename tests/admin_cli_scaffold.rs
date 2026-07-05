@@ -504,6 +504,7 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
     cmd.assert().success();
 
     // Add a second bot identity to the shared config.
+    let snippet_path = temp.path().join("price-bot.toml");
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([
         "new",
@@ -512,10 +513,13 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
         "nsec",
         "--relays",
         "ws://localhost:7000",
+        "--output",
+        &snippet_path.to_string_lossy(),
     ]);
     setup_scaffold_env(&mut cmd, temp.path())?;
-    let output = cmd.assert().success();
-    let snippet = std::str::from_utf8(&output.get_output().stdout)?;
+    cmd.assert().success();
+
+    let snippet = fs::read_to_string(&snippet_path)?;
 
     let config_path = project_dir.join("pacto-bot-api.toml");
     fs::OpenOptions::new()
