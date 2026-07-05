@@ -5,6 +5,8 @@ topic: generated-python-client
 
 # Generated Python Client for pacto-bot-api
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Create a generated Python SDK under `python/` that is produced from `schemas/jsonrpc.json` via `cargo xtask codegen`. The SDK exposes Pydantic models for every JSON-RPC type and a low-level async client, plus a hand-written high-level bot layer with decorators and command parsing. Example bots live in `python/examples/` and are excluded from the PyPI wheel. Documentation is written for both humans and LLMs, so an LLM pointed at the repo can infer how to register a handler, dispatch commands, and send replies.

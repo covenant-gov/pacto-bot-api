@@ -147,7 +147,7 @@ Save it as `echo_bot.py` and run it against the daemon's Unix socket:
 
 ```bash
 pip install pacto-bot-sdk
-python echo_bot.py --socket ~/.local/share/pacto-bot-api/pacto-bot-api.sock
+python python/examples/greeting_bot.py --socket ~/.local/share/pacto-bot-api/pacto-bot-api.sock
 ```
 
 Handlers can also connect directly over the Unix socket or HTTP transport and
@@ -170,8 +170,6 @@ Reference material:
 - [`python/examples/greeting_bot.py`](python/examples/greeting_bot.py) and
   [`python/examples/joke_bot.py`](python/examples/joke_bot.py) — reference bots
   using the generated SDK.
-- [`examples/`](examples/) — legacy standard-library seed handler (`echo_bot.py`)
-  and pytest fixtures/tests.
 - [`tests/example_http_handler.rs`](tests/example_http_handler.rs) and
   [`tests/example_multi_bot.rs`](tests/example_multi_bot.rs) — Rust example tests.
 
@@ -258,11 +256,10 @@ pacto-bot-api/
 ├── schemas/                   # Canonical JSON Schema / OpenRPC contracts
 ├── src/                       # Daemon and admin CLI source
 ├── tests/                     # In-process integration tests
-├── python/                    # Generated Python SDK and Python tests
+├── python/                    # Generated Python SDK, examples, and tests
 │   ├── src/pacto_bot_sdk/     # SDK package (`Bot`, `PactoClient`, models)
 │   ├── examples/              # Reference bots using the generated SDK
-│   └── tests/                 # Python SDK tests
-├── examples/                  # Legacy standard-library seed handler/tests
+│   └── tests/                 # Python SDK and example contract tests
 └── xtask/                     # Build/task runner (cargo xtask codegen)
 ```
 

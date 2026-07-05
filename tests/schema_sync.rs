@@ -43,7 +43,7 @@ const EXEMPT_SCHEMAS: &[(&str, &str)] = &[
     ),
     (
         "example-manifest.json",
-        "Python-facing CI manifest schema; consumed by examples/conftest.py, not by Rust code",
+        "Python-facing CI manifest schema; consumed by python/tests/conftest.py, not by Rust code",
     ),
 ];
 

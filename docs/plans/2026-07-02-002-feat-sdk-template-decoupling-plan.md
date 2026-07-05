@@ -8,6 +8,8 @@ deepened: 2026-07-02
 
 # feat: Decouple bot SDK and templates from the pacto-bot-api release cycle
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Turn `pacto-bot-admin` into a compatibility-aware bootstrapper that resolves a versioned contract artifact, a published PyPI SDK, and a `cargo-generate` template from a single versioned git template repository, then writes the resolved triple into a per-bot `.pacto/bots/<bot-id>/scaffold.lock`. Add `pacto-bot-admin update` to re-render projects while protecting user-edited files, and provide a standalone LLM skill for migrating pre-lock projects.

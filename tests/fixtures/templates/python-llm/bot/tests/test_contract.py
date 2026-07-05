@@ -3,7 +3,7 @@
 Loads the generated manifest.json and verifies that each declared command
 contract maps to a real handler and produces a matching response. This runs
 in-process without a daemon; the full end-to-end contract harness lives in
-examples/test_examples_contract.py.
+python/tests/test_examples_contract.py.
 """
 
 from __future__ import annotations

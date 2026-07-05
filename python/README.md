@@ -7,7 +7,7 @@ This package is produced from `schemas/jsonrpc.json` by `cargo xtask codegen`. B
 ## Installation
 
 ```bash
-pip install -e python/
+pip install pacto-bot-sdk
 ```
 
 ## Quickstart
@@ -292,10 +292,8 @@ cargo xtask codegen
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e python/
-pip install -r examples/requirements.txt
+pip install -e python/[dev]
 pytest python/tests/
-pytest examples/test_examples_contract.py
 ```
 
 ## When to use which layer

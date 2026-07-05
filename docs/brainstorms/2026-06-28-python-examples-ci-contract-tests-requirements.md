@@ -5,6 +5,8 @@ topic: python-examples-ci-contract-tests
 
 # Python Examples CI Contract Tests
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Add a CI job that discovers every example bot in `examples/`, validates each against a per-bot manifest of JSON-RPC contract pieces over the Unix socket, uses the PR's daemon binary artifact produced by the Rust build step, and reports results as an allowed-to-fail informational check that graduates to a required gate once stable.
