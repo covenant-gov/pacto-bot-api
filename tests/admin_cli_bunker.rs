@@ -8,7 +8,10 @@ use std::time::Duration;
 use assert_cmd::Command;
 use nostr::NostrSigner as NostrSignerTrait;
 use nostr::{Keys, Kind, Timestamp, ToBech32, UnsignedEvent};
-use pacto_bot_api::signer::{Signer, SignerBackend};
+use pacto_bot_api::config::{BotConfig, SigningConfig};
+use pacto_bot_api::nostr::NostrClient;
+use pacto_bot_api::secrecy::SecretString;
+use pacto_bot_api::signer::{BunkerConnection, Signer, SignerBackend};
 use serde_json::json;
 use support::mock_bunker::MockBunker;
 use support::mock_relay::MockRelay;
@@ -216,6 +219,58 @@ async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
         events
             .iter()
             .any(|e| e.kind == Kind::Metadata && e.id.to_hex() == event_id),
+        "published kind-0 profile event should appear on the mock relay"
+    );
+
+    bunker.stop().await;
+    relay.stop().await;
+    Ok(())
+}
+
+/// In-process coverage for the bunker_remote admin CLI publish-profile path.
+///
+/// The production `pacto-bot-admin publish-profile` requires `wss://` for
+/// `bunker_remote` signers, which the mock relay cannot provide. The same
+/// publish logic is available through [`NostrClient::publish_bot_profile`], so
+/// this test exercises that function with a `BunkerRemote` signer connected to
+/// the in-process mock relay and bunker.
+#[tokio::test]
+async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let bunker = MockBunker::new(keys.clone(), vec![relay.url()]).await?;
+
+    // Give the mock bunker time to subscribe before the signer connects.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let bot = BotConfig {
+        id: "remote-profile-bot".to_string(),
+        npub: keys.public_key().to_bech32()?,
+        signing: SigningConfig::BunkerRemote {
+            uri: SecretString::new(bunker.uri(&relay.url()).into()),
+        },
+        relays: vec![relay.url()],
+        capabilities: vec!["ReadMessages".into()],
+        ..Default::default()
+    };
+
+    // Create a BunkerRemote signer without the wss-only enforcement so the
+    // in-process ws:// mock relay can be used for this test.
+    let conn = BunkerConnection::connect(&bunker.uri(&relay.url()), &keys.public_key(), false)?;
+    let signer = SignerBackend::BunkerRemote(conn);
+
+    let client = NostrClient::new(vec![relay.url()]).await?;
+    let event_id = client.publish_bot_profile(&bot, &signer).await?;
+    assert_eq!(event_id.to_hex().len(), 64);
+
+    let events = relay
+        .wait_for_event(
+            |e| e.kind == Kind::Metadata && e.id == event_id,
+            Duration::from_secs(5),
+        )
+        .await?;
+    assert!(
+        events.iter().any(|e| e.id == event_id),
         "published kind-0 profile event should appear on the mock relay"
     );
 

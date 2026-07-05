@@ -119,9 +119,13 @@ impl ShutdownCoordinator {
         let (force_tx, force_rx) = oneshot::channel();
 
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                warn!("failed to install ctrl-c handler: {e}");
+            }
             let _ = shutdown_tx.send(());
-            let _ = tokio::signal::ctrl_c().await;
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                warn!("failed to install ctrl-c handler: {e}");
+            }
             let _ = force_tx.send(());
         });
 
@@ -130,9 +134,54 @@ impl ShutdownCoordinator {
             force_rx,
         })
     }
+
+    #[cfg(test)]
+    fn start_with(
+        shutdown_signal: impl Future<Output = ()> + Send + 'static,
+        force_signal: impl Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (force_tx, force_rx) = oneshot::channel();
+
+        tokio::spawn(async move {
+            let _ = shutdown_signal.await;
+            let _ = shutdown_tx.send(());
+        });
+
+        tokio::spawn(async move {
+            let _ = force_signal.await;
+            let _ = force_tx.send(());
+        });
+
+        Self {
+            shutdown_rx,
+            force_rx,
+        }
+    }
 }
 
-async fn run_daemon(cli: Cli) -> Result<(), String> {
+/// Resources produced by the daemon startup sequence.
+struct StartupContext {
+    config: DaemonConfig,
+    data_dir: String,
+    #[allow(dead_code)]
+    lock_file: File,
+    db: Db,
+}
+
+impl std::fmt::Debug for StartupContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartupContext")
+            .field("config", &self.config)
+            .field("data_dir", &self.data_dir)
+            .field("lock_file", &self.lock_file)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Run the startup sequence up to (but not including) the long-lived network
+/// and transport layers.
+async fn daemon_startup(cli: &Cli) -> Result<StartupContext, String> {
     info!(
         config = %cli.config.display(),
         enable_http = cli.enable_http,
@@ -171,13 +220,6 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         }
     }
 
-    // Best-effort dev-env service-version probe; mismatches are logged as
-    // warnings and never block daemon startup.
-    tokio::spawn(async move {
-        let results = run_probe().await;
-        log_warnings(&results);
-    });
-
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
     let lock_file = acquire_lock_file(&lock_path)
         .await
@@ -203,6 +245,29 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                 .map_err(|e| format!("failed to reset cursor for {}: {e}", bot.id))?;
         }
     }
+
+    Ok(StartupContext {
+        config,
+        data_dir,
+        lock_file,
+        db,
+    })
+}
+
+async fn run_daemon(cli: Cli) -> Result<(), String> {
+    let startup = daemon_startup(&cli).await?;
+    let config = startup.config;
+    let data_dir = startup.data_dir;
+    let db = startup.db;
+    let lock_file = startup.lock_file;
+    let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
+
+    // Best-effort dev-env service-version probe; mismatches are logged as
+    // warnings and never block daemon startup.
+    tokio::spawn(async move {
+        let results = run_probe().await;
+        log_warnings(&results);
+    });
 
     if cli.enable_http {
         warn!("localhost HTTP transport is enabled; ensure the secret token is protected");
@@ -473,4 +538,111 @@ async fn acquire_lock_file(lock_path: &Path) -> Result<File, String> {
 async fn emit_agent_status(diagnostics: &Diagnostics, dispatch: &Dispatch, status: DaemonStatus) {
     diagnostics.set_status(status);
     dispatch.broadcast_status(status).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs2::FileExt;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::time::timeout;
+
+    fn write_test_config(dir: &std::path::Path) -> std::io::Result<PathBuf> {
+        let path = dir.join("pacto-bot-api.toml");
+        std::fs::write(&path, "[daemon]\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path)?.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&path, perms)?;
+        }
+        Ok(path)
+    }
+
+    #[tokio::test]
+    async fn startup_succeeds_with_valid_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = write_test_config(dir.path()).unwrap();
+        let data_dir = dir.path().join("data");
+        let cli = Cli {
+            config: config_path,
+            data_dir: Some(data_dir.clone()),
+            enable_http: false,
+            log_level: None,
+        };
+
+        let result = daemon_startup(&cli).await;
+        assert!(result.is_ok(), "expected startup to succeed: {result:?}");
+
+        let lock_path = data_dir.join(DAEMON_LOCK_FILE);
+        assert!(lock_path.exists(), "lock file should exist after startup");
+
+        let contents = std::fs::read_to_string(&lock_path).unwrap();
+        let pid: u32 = contents.trim().parse().unwrap();
+        assert_eq!(pid, std::process::id());
+    }
+
+    #[tokio::test]
+    async fn startup_exits_when_lock_already_held() {
+        let dir = TempDir::new().unwrap();
+        let config_path = write_test_config(dir.path()).unwrap();
+        let data_dir = dir.path().join("data");
+
+        // Pre-create the lock file and hold it.
+        let lock_path = data_dir.join(DAEMON_LOCK_FILE);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)
+            .unwrap();
+        held.try_lock_exclusive().unwrap();
+
+        let cli = Cli {
+            config: config_path,
+            data_dir: Some(data_dir),
+            enable_http: false,
+            log_level: None,
+        };
+
+        let result = daemon_startup(&cli).await;
+        assert!(
+            result.is_err(),
+            "expected startup to fail when lock is held"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("already running"),
+            "expected lock-held error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn clean_shutdown_on_signal() {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (_force_tx, force_rx) = tokio::sync::oneshot::channel::<()>();
+        let coordinator = ShutdownCoordinator::start_with(
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            async move {
+                let _ = force_rx.await;
+            },
+        );
+
+        let _ = shutdown_tx.send(());
+
+        let ShutdownCoordinator {
+            shutdown_rx,
+            force_rx: _,
+        } = coordinator;
+        timeout(Duration::from_secs(1), shutdown_rx)
+            .await
+            .expect("shutdown signal should resolve")
+            .expect("coordinator should receive shutdown");
+    }
 }

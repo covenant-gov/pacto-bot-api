@@ -245,10 +245,8 @@ async fn http_handler_unregister_returns_unregistered_flag()
 
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         2.into(),
-        "agent.unregister_handler",
-        Some(serde_json::json!({
-            "handler_id": handler_id,
-        })),
+        "handler.unregister",
+        None,
     ))?;
     let unregister_response =
         raw_http_post(port, Some(&token), Some(&handler_id), &unregister_body).await?;
@@ -257,6 +255,95 @@ async fn http_handler_unregister_returns_unregistered_flag()
         "got: {unregister_response}"
     );
 
+    let body = unregister_response
+        .split("\r\n\r\n")
+        .nth(1)
+        .or_else(|| unregister_response.split("\n\n").nth(1))
+        .unwrap_or("")
+        .trim();
+    let msg: JsonRpcMessage = serde_json::from_str(body)?;
+    match msg {
+        JsonRpcMessage::Response {
+            result: Some(r), ..
+        } => {
+            assert_eq!(r, serde_json::json!({ "unregistered": true }));
+        }
+        _ => panic!("expected unregister response, got {msg:?}"),
+    }
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_handler_unregister_without_identity_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let register_body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages", "SendMessages"],
+        })),
+    ))?;
+    let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+
+    // handler.unregister without the X-Pacto-Handler-Id header must be rejected
+    // with a JSON-RPC error rather than silently reaching the dispatch layer.
+    let unregister_body = serialize_message(&JsonRpcMessage::request(
+        2.into(),
+        "handler.unregister",
+        None,
+    ))?;
+    let unregister_response = raw_http_post(port, Some(&token), None, &unregister_body).await?;
+    assert!(
+        unregister_response.starts_with("HTTP/1.1 401"),
+        "expected 401 for missing handler identity, got: {unregister_response}"
+    );
+    assert!(
+        unregister_response.lines().any(|line| line
+            .to_ascii_lowercase()
+            .starts_with("content-type: application/json")),
+        "expected application/json content type, got: {unregister_response}"
+    );
+
+    let body = unregister_response
+        .split("\r\n\r\n")
+        .nth(1)
+        .or_else(|| unregister_response.split("\n\n").nth(1))
+        .unwrap_or("")
+        .trim();
+    let msg: JsonRpcMessage = serde_json::from_str(body)?;
+    match msg {
+        JsonRpcMessage::Error { error, .. } => {
+            assert_eq!(error.code, -32006);
+            assert!(
+                error.message.contains("handler identity required"),
+                "expected identity error, got: {error:?}"
+            );
+        }
+        _ => panic!("expected JSON-RPC error, got {msg:?}"),
+    }
+
+    // The handler should still be registered; a subsequent unregister with the
+    // correct header succeeds, proving the identity-less call did not mutate
+    // daemon state.
+    let unregister_body = serialize_message(&JsonRpcMessage::request(
+        3.into(),
+        "handler.unregister",
+        None,
+    ))?;
+    let unregister_response =
+        raw_http_post(port, Some(&token), Some(&handler_id), &unregister_body).await?;
+    assert!(
+        unregister_response.starts_with("HTTP/1.1 200"),
+        "got: {unregister_response}"
+    );
     let body = unregister_response
         .split("\r\n\r\n")
         .nth(1)

@@ -1,4 +1,4 @@
-use crate::config::{BotConfig, SigningConfig};
+use crate::config::{BotConfig, SigningConfig, redact_bunker_uri};
 use crate::errors::DaemonError;
 use chrono::{DateTime, Utc};
 use secrecy::ExposeSecret;
@@ -525,12 +525,13 @@ pub async fn check_bunker_connectivity(bot: &BotConfig) -> Option<BunkerCheck> {
 
 /// Extract the relay URL from a `bunker://` URI.
 pub fn parse_bunker_relay(uri: &str) -> Result<String, DaemonError> {
+    let redacted = redact_bunker_uri(uri);
     let after_scheme = uri.strip_prefix("bunker://").ok_or_else(|| {
-        DaemonError::Config(format!("bunker uri missing bunker:// scheme: {uri}"))
+        DaemonError::Config(format!("bunker uri missing bunker:// scheme: {redacted}"))
     })?;
-    let idx = after_scheme
-        .find("?relay=")
-        .ok_or_else(|| DaemonError::Config(format!("bunker uri missing relay param: {uri}")))?;
+    let idx = after_scheme.find("?relay=").ok_or_else(|| {
+        DaemonError::Config(format!("bunker uri missing relay param: {redacted}"))
+    })?;
     let relay_start = idx + "?relay=".len();
     let relay = after_scheme[relay_start..].split('&').next().unwrap_or("");
     if relay.is_empty() {
@@ -886,9 +887,48 @@ mod tests {
     }
 
     #[test]
-    fn parse_bunker_relay_rejects_missing_scheme() {
-        let err = parse_bunker_relay("http://deadbeef?relay=ws://x").unwrap_err();
-        assert!(err.to_string().contains("bunker://"));
+    fn parse_bunker_relay_error_redacts_query_params() {
+        let uri = "bunker://deadbeef?secret=topsecret";
+        let err = parse_bunker_relay(uri).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing relay param"),
+            "expected missing relay error: {msg}"
+        );
+        assert!(!msg.contains("topsecret"), "secret leaked in error: {msg}");
+        assert!(
+            msg.contains("secret=[REDACTED]"),
+            "secret not redacted: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_bunker_relay_error_redacts_non_bunker_uri() {
+        let err = parse_bunker_relay("http://deadbeef?token=secrettoken").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing bunker:// scheme"),
+            "expected scheme error: {msg}"
+        );
+        assert!(!msg.contains("secrettoken"), "token leaked in error: {msg}");
+        assert!(
+            msg.contains("token=[REDACTED]"),
+            "token not redacted: {msg}"
+        );
+    }
+
+    #[test]
+    fn redact_bunker_uri_masks_query_values() {
+        let out = crate::config::redact_bunker_uri(
+            "bunker://pubkey?relay=wss://relay.example&secret=shh&token=abc",
+        );
+        assert!(out.contains("bunker://pubkey"));
+        assert!(out.contains("relay=[REDACTED]"));
+        assert!(out.contains("secret=[REDACTED]"));
+        assert!(out.contains("token=[REDACTED]"));
+        assert!(!out.contains("wss://relay.example"));
+        assert!(!out.contains("shh"));
+        assert!(!out.contains("abc"));
     }
 
     #[test]

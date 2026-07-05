@@ -295,10 +295,18 @@ async fn http_handler(
                     // Mutating methods require a per-request handler identity
                     // because HTTP has no per-connection registration state.
                     if handler_id.is_none() && is_mutating_method(method) {
+                        let err = JsonRpcMessage::error(
+                            id.unwrap_or(Value::Null),
+                            JsonRpcError::new(-32006, "handler identity required"),
+                        );
+                        let mut body = serialize_message(&err).unwrap_or_default();
+                        if !body.is_empty() {
+                            body.push('\n');
+                        }
                         return (
                             StatusCode::UNAUTHORIZED,
-                            [(CONTENT_TYPE, "text/plain")],
-                            Vec::new(),
+                            [(CONTENT_TYPE, "application/json")],
+                            body.into_bytes(),
                         );
                     }
                     // Non-registration requests do not need a persistent
@@ -447,7 +455,8 @@ struct EventsQuery {
 fn is_mutating_method(method: Option<Method>) -> bool {
     matches!(
         method,
-        Some(Method::AgentSendDm)
+        Some(Method::HandlerUnregister)
+            | Some(Method::AgentSendDm)
             | Some(Method::AgentSetProfile)
             | Some(Method::AgentError)
             | Some(Method::AgentListHandlers)

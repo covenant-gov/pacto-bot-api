@@ -65,7 +65,7 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 ## Development Commands
 
 ```bash
-# Full validation suite (fmt, clippy) — run this before committing
+# Format and clippy validation gate (not the full test suite) — run this before committing
 make validate
 
 # Build all targets

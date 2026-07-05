@@ -261,6 +261,13 @@ pub struct EventTraceRow {
 
 /// Async wrapper around [`Database`] that runs blocking SQLite work on
 /// Tokio's blocking thread pool so the async runtime stays responsive.
+///
+/// # Lock ordering
+///
+/// The `ClientManager` lock is always acquired before the database lock. When
+/// a caller needs both, it must take the `ClientManager` lock first and then use
+/// [`Db`]; database methods must never be invoked while holding the database
+/// lock and then waiting on the `ClientManager` lock.
 #[derive(Debug, Clone)]
 pub struct Db {
     inner: Arc<StdMutex<Database>>,

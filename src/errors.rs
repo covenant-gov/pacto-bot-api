@@ -60,6 +60,12 @@ pub enum DaemonError {
     #[error("json-rpc error: {0}")]
     JsonRpc(#[from] JsonRpcError),
 
+    #[error("json-rpc parse error: {0}")]
+    JsonRpcParse(String),
+
+    #[error("invalid json-rpc request: {0}")]
+    InvalidJsonRpcRequest(String),
+
     #[error("MLS engine error: {0}")]
     Mls(#[from] crate::mls::MlsError),
 
@@ -115,6 +121,8 @@ impl DaemonError {
             DaemonError::InvalidReconnectToken => -32008,
             DaemonError::HandlerNotDispatched => -32010,
             DaemonError::JsonRpc(e) => e.code,
+            DaemonError::JsonRpcParse(_) => -32700,
+            DaemonError::InvalidJsonRpcRequest(_) => -32600,
             DaemonError::MethodNotFound => -32601,
             DaemonError::MethodNotSupported(_) => -32009,
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,

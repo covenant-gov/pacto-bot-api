@@ -98,6 +98,8 @@ impl HandlerAction {
 struct PendingDispatch {
     sender: mpsc::UnboundedSender<(String, HandlerAction)>,
     handler_ids: HashSet<String>,
+    response_counts: HashMap<String, usize>,
+    max_responses: usize,
 }
 
 /// Token bucket for rate limiting.
@@ -186,7 +188,18 @@ impl Default for RateLimiter {
 /// Default time a handler may be disconnected before the reaper removes it.
 const HANDLER_STALE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum number of responses a single handler may send for one event.
+const MAX_RESPONSES_PER_HANDLER: usize = 1;
+
 /// Event dispatch router.
+///
+/// # Lock ordering
+///
+/// `client_manager` is locked before `db`. Any method that needs both locks
+/// must acquire the `ClientManager` lock first, then perform the database
+/// operation while still holding that guard. Code paths that only need the
+/// database (e.g. flushing cursors) release the `ClientManager` guard before
+/// calling the database.
 #[derive(Debug)]
 pub struct Dispatch {
     client_manager: Arc<RwLock<ClientManager>>,
@@ -309,6 +322,8 @@ impl Dispatch {
                 PendingDispatch {
                     sender: response_tx,
                     handler_ids,
+                    response_counts: HashMap::new(),
+                    max_responses: MAX_RESPONSES_PER_HANDLER,
                 },
             );
         }
@@ -906,8 +921,8 @@ impl Dispatch {
             debug!(handler_id = %hid, event_id = %event_id, ?action, "handler response received");
         }
 
-        let pending = self.pending.lock().await;
-        if let Some(dispatch) = pending.get(event_id) {
+        let mut pending = self.pending.lock().await;
+        if let Some(dispatch) = pending.get_mut(event_id) {
             let response_handler_id = handler_id.unwrap_or("unknown");
             if !dispatch.handler_ids.contains(response_handler_id) {
                 warn!(
@@ -917,6 +932,24 @@ impl Dispatch {
                 );
                 return Err(DaemonError::HandlerNotDispatched);
             }
+
+            let count = dispatch
+                .response_counts
+                .get(response_handler_id)
+                .copied()
+                .unwrap_or(0);
+            if count >= dispatch.max_responses {
+                warn!(
+                    handler_id = %response_handler_id,
+                    event_id = %event_id,
+                    "handler.response exceeds per-handler response limit"
+                );
+                return Err(DaemonError::RateLimited);
+            }
+
+            dispatch
+                .response_counts
+                .insert(response_handler_id.to_string(), count + 1);
             let _ = dispatch
                 .sender
                 .send((response_handler_id.to_string(), action));
@@ -1251,13 +1284,17 @@ impl Dispatch {
 
     /// Restore persisted handler registrations as disconnected entries.
     pub async fn restore_handlers(&self) -> Result<(), DaemonError> {
-        let handlers = self.db.load_handlers().await?;
-
-        let count = handlers.len() as u64;
+        // Maintain the global lock order: ClientManager -> Database. Clone the
+        // Db handle first, then acquire the ClientManager lock before the
+        // database call so both locks are taken in the same order everywhere.
+        let db = self.db.clone();
         let mut cm = self.client_manager.write().await;
+        let handlers = db.load_handlers().await?;
+        let count = handlers.len() as u64;
         for handler in handlers {
             cm.handler_registry.restore(handler);
         }
+        drop(cm);
         self.handlers_registered.store(count, Ordering::SeqCst);
         self.diagnostics.set_handlers_registered(count);
         Ok(())
@@ -1305,7 +1342,7 @@ mod tests {
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
-    use crate::nostr::NostrClient;
+    use crate::nostr::{NostrClient, NostrSubscribe};
     use crate::transport::protocol::JsonRpcMessage;
     use nostr::ToBech32;
     use tempfile::tempdir;
@@ -1908,6 +1945,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn greedy_handler_response_is_throttled_and_others_still_respond() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let (tx_a, mut rx_a) = mpsc::channel(1);
+        let (tx_b, mut rx_b) = mpsc::channel(1);
+        let (handler_a, handler_b) = {
+            let bot_config_for_register = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+            };
+            let mut registry = HandlerRegistry::new();
+            let id_a = registry
+                .register(
+                    ConnectionHandle::new(tx_a),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    std::slice::from_ref(&bot_config_for_register),
+                )
+                .unwrap()
+                .handler_id;
+            let id_b = registry
+                .register(
+                    ConnectionHandle::new(tx_b),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    std::slice::from_ref(&bot_config_for_register),
+                )
+                .unwrap()
+                .handler_id;
+            {
+                let mut cm = cm.write().await;
+                cm.handler_registry = registry;
+            }
+            (id_a, id_b)
+        };
+
+        let mut dispatch = dispatch;
+        dispatch.set_dispatch_timeout(Duration::from_secs(1));
+
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-greedy".into(),
+            event_type: EventType::DmReceived,
+            chat_id: None,
+            content: "hello".into(),
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+        };
+
+        let dispatch = Arc::new(dispatch);
+        let dispatch_clone = Arc::clone(&dispatch);
+        let dispatch_task = tokio::spawn(async move {
+            dispatch_clone.dispatch_event(event).await.unwrap();
+        });
+
+        // Both handlers must receive the event before they can respond.
+        let received_a = rx_a.recv().await.unwrap();
+        let received_b = rx_b.recv().await.unwrap();
+        assert!(matches!(received_a, JsonRpcMessage::Notification { .. }));
+        assert!(matches!(received_b, JsonRpcMessage::Notification { .. }));
+
+        // First response from handler A is accepted.
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "handler.response",
+            Some(serde_json::json!({
+                "event_id": "evt-greedy",
+                "action": "ack",
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_a), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(resp, JsonRpcMessage::Response { .. }));
+
+        // Second response from handler A exceeds the per-handler limit and is throttled.
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "handler.response",
+            Some(serde_json::json!({
+                "event_id": "evt-greedy",
+                "action": "ack",
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_a), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response for throttled response");
+        };
+        assert_eq!(error.code, -32005);
+
+        // Response from handler B is still accepted despite handler A being throttled.
+        let req = JsonRpcMessage::request(
+            3.into(),
+            "handler.response",
+            Some(serde_json::json!({
+                "event_id": "evt-greedy",
+                "action": "ack",
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_b), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(resp, JsonRpcMessage::Response { .. }));
+
+        // Dispatch completes because both handlers were able to respond.
+        dispatch_task.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn lock_ordering_releases_last_cursor_before_db() {
         let keys = test_keys();
         let (dispatch, _cm) =
@@ -1947,5 +2106,51 @@ mod tests {
 
         let cursor = dispatch.load_cursor("echo-bot").await.unwrap();
         assert_eq!(cursor, Some((npub, 42)));
+    }
+
+    #[tokio::test]
+    async fn client_manager_database_lock_order_prevents_deadlock() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("lock-order-bot", &keys, &[])]).await;
+        let db = dispatch.db.clone();
+
+        struct NoOpNostrClient;
+
+        #[async_trait::async_trait]
+        impl NostrSubscribe for NoOpNostrClient {
+            async fn subscribe_bot_with_since(
+                &self,
+                _npub: &nostr::PublicKey,
+                _since: Option<nostr::Timestamp>,
+            ) -> Result<nostr::SubscriptionId, DaemonError> {
+                Ok(nostr::SubscriptionId::new("sub-deadlock-test"))
+            }
+        }
+
+        // One task holds the ClientManager lock and then reads cursors from the
+        // database. This used to be able to deadlock against restore_handlers,
+        // which previously loaded the database before taking the ClientManager
+        // lock. The small sleep ensures restore_handlers reaches its first lock
+        // acquisition while we still hold the ClientManager write lock.
+        let subscribe = tokio::spawn(async move {
+            let mut cm = cm.write().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            cm.subscribe_bots_with_client(&db, &NoOpNostrClient)
+                .await
+                .unwrap();
+        });
+
+        let restore = tokio::spawn(async move {
+            dispatch.restore_handlers().await.unwrap();
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (sub_res, rest_res) = tokio::join!(subscribe, restore);
+            sub_res.unwrap();
+            rest_res.unwrap();
+        })
+        .await
+        .expect("deadlock between ClientManager and Database locks");
     }
 }

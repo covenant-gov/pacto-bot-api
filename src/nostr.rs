@@ -24,6 +24,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tracing::{error, info};
 
+use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
@@ -386,6 +387,31 @@ impl NostrClient {
         Ok(*output.id())
     }
 
+    /// Publish a kind:0 metadata event for the bot using the admin CLI profile
+    /// format.
+    ///
+    /// The metadata JSON includes `bot: true`, the bot's capabilities, and any
+    /// configured optional fields (`about`, `picture`). This is the
+    /// implementation behind `pacto-bot-admin publish-profile`.
+    pub async fn publish_bot_profile(
+        &self,
+        bot: &BotConfig,
+        signer: &dyn Signer,
+    ) -> Result<EventId, DaemonError> {
+        let event = build_bot_profile_event(bot, signer).await?;
+
+        let output = self.client.send_event(&event).await.map_err(|e| {
+            error!(
+                bot_id = %bot.id,
+                error = %e,
+                "failed to publish profile event"
+            );
+            DaemonError::Nostr(format!("failed to publish event: {e}"))
+        })?;
+
+        Ok(*output.id())
+    }
+
     /// Decrypt a single incoming gift-wrap event using the registered bot signer.
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
@@ -568,6 +594,38 @@ async fn sign_unsigned_event(
     ))
 }
 
+/// Build the kind:0 profile event used by `pacto-bot-admin publish-profile`.
+///
+/// The metadata JSON includes `bot: true`, the bot's capabilities, and any
+/// configured optional fields (`about`, `picture`).
+pub async fn build_bot_profile_event(
+    bot: &BotConfig,
+    signer: &dyn Signer,
+) -> Result<Event, DaemonError> {
+    let name = bot.display_name.as_deref().unwrap_or(&bot.id);
+    let mut profile = json!({
+        "name": name,
+        "bot": true,
+        "capabilities": bot.capabilities,
+    });
+    if let Some(about) = &bot.about {
+        profile["about"] = about.clone().into();
+    }
+    if let Some(picture) = &bot.picture {
+        profile["picture"] = picture.clone().into();
+    }
+    let content = serde_json::to_string(&profile).map_err(DaemonError::Json)?;
+
+    let unsigned = UnsignedEvent::new(
+        signer.public_key(),
+        Timestamp::now(),
+        Kind::Metadata,
+        Vec::new(),
+        content,
+    );
+    sign_unsigned_event(signer, unsigned).await
+}
+
 /// Serialize the canonical event-id preimage for signing.
 fn event_signing_bytes(unsigned: &UnsignedEvent) -> Result<Vec<u8>, DaemonError> {
     serde_json::to_vec(&json!([
@@ -585,6 +643,7 @@ fn event_signing_bytes(unsigned: &UnsignedEvent) -> Result<Vec<u8>, DaemonError>
 mod tests {
     use super::*;
     use crate::signer::LocalKey;
+    use crate::test_support::mock_relay::MockRelay;
     use nostr::ToBech32;
     use std::time::Duration;
     use tokio_stream::StreamExt;
@@ -771,5 +830,117 @@ mod tests {
             matches!(next, Ok(None)),
             "stream should terminate after shutdown"
         );
+    }
+
+    #[tokio::test]
+    async fn receive_events_yields_decrypted_agent_event() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let (signer, _npub) = test_signer();
+        let bot_pubkey = signer.public_key();
+        client
+            .add_signer(bot_pubkey, "bot-1".into(), Arc::new(signer))
+            .await;
+
+        let mut stream = client.receive_events();
+        client.subscribe_bot(&bot_pubkey).await.unwrap();
+
+        // Allow the client to connect and the relay to record the subscription.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let sender_keys = nostr::Keys::generate();
+        let event = EventBuilder::private_msg(
+            &sender_keys,
+            bot_pubkey,
+            "hello from relay",
+            Vec::<Tag>::new(),
+        )
+        .await
+        .unwrap();
+        relay.inject_event(event.clone()).await;
+
+        let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+        let agent_event = next
+            .expect("stream should produce an event before timeout")
+            .expect("stream should not end")
+            .expect("event should decrypt successfully");
+
+        assert_eq!(agent_event.bot_id, "bot-1");
+        assert_eq!(agent_event.event_type, EventType::DmReceived);
+        assert_eq!(agent_event.content, "hello from relay");
+        assert_eq!(agent_event.author, sender_keys.public_key().to_hex());
+    }
+
+    #[tokio::test]
+    async fn receive_events_yields_error_for_unregistered_recipient() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let unregistered_keys = nostr::Keys::generate();
+        let unregistered_pubkey = unregistered_keys.public_key();
+
+        let mut stream = client.receive_events();
+        client.subscribe_bot(&unregistered_pubkey).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let sender_keys = nostr::Keys::generate();
+        let event = EventBuilder::private_msg(
+            &sender_keys,
+            unregistered_pubkey,
+            "secret message",
+            Vec::<Tag>::new(),
+        )
+        .await
+        .unwrap();
+        relay.inject_event(event.clone()).await;
+
+        let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+        let err = next
+            .expect("stream should produce an item before timeout")
+            .expect("stream should not end")
+            .expect_err("decryption should fail for unregistered recipient");
+
+        assert!(
+            err.to_string().contains("no signer registered"),
+            "error should report missing signer: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn receive_events_ignores_non_gift_wrap_events() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let (signer, _npub) = test_signer();
+        let bot_pubkey = signer.public_key();
+        client
+            .add_signer(bot_pubkey, "bot-1".into(), Arc::new(signer))
+            .await;
+
+        let mut stream = client.receive_events();
+        client.subscribe_bot(&bot_pubkey).await.unwrap();
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let sender_keys = nostr::Keys::generate();
+        let text_note = EventBuilder::text_note("not a gift wrap")
+            .sign(&sender_keys)
+            .await
+            .unwrap();
+        // The relay filter will match only kind 1059 events, so the text note
+        // should never reach the client. We still verify the stream is not
+        // polluted by unrelated events.
+        relay.inject_event(text_note).await;
+
+        // The stream should remain open and produce nothing for the text note.
+        let next = tokio::time::timeout(Duration::from_millis(500), stream.next()).await;
+        assert!(
+            next.is_err(),
+            "non-gift-wrap event should not be emitted on the stream"
+        );
+
+        client.shutdown().await;
     }
 }
