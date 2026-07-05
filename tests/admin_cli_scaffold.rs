@@ -31,7 +31,7 @@ fn setup_scaffold_env(cmd: &mut Command, temp: &Path) -> Result<PathBuf, Box<dyn
 }
 #[test]
 fn new_scaffold_lock_file_contains_expected_fields() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("lock-check");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -88,7 +88,7 @@ fn new_scaffold_lock_file_contains_expected_fields() -> Result<(), Box<dyn Error
 
 #[test]
 fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -252,7 +252,7 @@ fn new_scaffold_creates_multi_bot_project() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn new_scaffold_project_name_sets_project_directory() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("my-custom-project");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -294,7 +294,7 @@ fn new_scaffold_project_name_sets_project_directory() -> Result<(), Box<dyn Erro
 
 #[test]
 fn new_scaffold_uses_project_name_default() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot-project");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -327,7 +327,7 @@ fn new_scaffold_uses_project_name_default() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn new_scaffold_project_dir_overrides_project_name() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("explicit-project");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -367,7 +367,7 @@ fn new_scaffold_project_dir_overrides_project_name() -> Result<(), Box<dyn Error
 
 #[test]
 fn new_scaffold_no_tests_skips_test_files() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot-project");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -405,7 +405,7 @@ fn new_scaffold_no_tests_skips_test_files() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn scaffold_fails_when_bot_not_in_config() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([
@@ -423,7 +423,7 @@ fn scaffold_fails_when_bot_not_in_config() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -483,7 +483,7 @@ fn scaffold_with_tests_adds_tests_without_overwriting_handler() -> Result<(), Bo
 
 #[test]
 fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("multi-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -559,7 +559,7 @@ fn scaffold_adds_second_bot_to_multi_bot_project() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -606,7 +606,7 @@ fn scaffold_force_overwrites_readme_but_not_config() -> Result<(), Box<dyn Error
 
 #[test]
 fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("echo-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -647,7 +647,7 @@ fn generated_files_contain_no_real_secrets_except_config() -> Result<(), Box<dyn
 
 #[test]
 fn new_interactive_scaffold_prompts_and_creates_project() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("interactive-bot-project");
 
     let stdin = format!(
@@ -697,7 +697,7 @@ fn new_interactive_scaffold_prompts_and_creates_project() -> Result<(), Box<dyn 
 
 #[test]
 fn new_scaffold_with_http_adds_http_dependencies_and_tests() -> Result<(), Box<dyn Error>> {
-    let temp = tempfile::tempdir()?;
+    let temp = common::tempdir()?;
     let project_dir = temp.path().join("price-bot");
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;

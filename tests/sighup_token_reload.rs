@@ -23,7 +23,7 @@ const NEW_TOKEN: &str = "reloaded-token-from-sighup-test";
 
 #[tokio::test]
 async fn sighup_reloads_http_token() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let data_dir = dir.path();
     let socket_path = data_dir.join("pacto-bot-api.sock");
     let log_path = data_dir.join("daemon.log");

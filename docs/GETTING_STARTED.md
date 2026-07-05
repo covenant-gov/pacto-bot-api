@@ -385,7 +385,8 @@ If the daemon exists in `pacto-app/src-tauri/pacto-bot-api`:
 ```bash
 cd ~/src/covenant-gov/pacto-app/src-tauri/pacto-bot-api
 cargo build
-cargo test
+make test-fast        # parallel nextest run, ~20-25s
+# or: make test       # sequential cargo test, ~76s
 ```
 
 If it is a standalone repo:
@@ -393,7 +394,8 @@ If it is a standalone repo:
 ```bash
 cd ~/src/covenant-gov/pacto-bot-api
 cargo build
-cargo test
+make test-fast        # parallel nextest run, ~20-25s
+# or: make test       # sequential cargo test, ~76s
 ```
 
 ### 8.2 Test the bot with a NIP-46 bunker (advanced)
@@ -441,7 +443,7 @@ For production bunkers, use `wss://` URIs and set a real `ENCRYPTION_KEY` in `de
 3. In one terminal, run `pacto-app` for UI development: `cd pacto-app && pnpm run tauri:dev`.
 4. In another terminal, deploy the governance contracts to Anvil and copy addresses into the app's network config.
 5. If working on bots, start `pacto-bot-api` with a test config pointing at the local relay; add the bunker profile if you need NIP-46 signing tests.
-6. Iterate. Re-run `cargo test`, `forge test`, or `pnpm test` as appropriate.
+6. Iterate. Re-run `make test-fast` (or `make test`), `forge test`, or `pnpm test` as appropriate.
 
 ---
 

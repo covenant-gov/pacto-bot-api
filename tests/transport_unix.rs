@@ -1,3 +1,4 @@
+mod common;
 use nostr::ToBech32;
 /// req(R1, R3, R28)
 use pacto_bot_api::client_manager::ClientManager;
@@ -58,7 +59,7 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
     };
     let nostr_client = NostrClient::new(vec![]).await?;
     let cm = Arc::new(RwLock::new(ClientManager::new(config, nostr_client).await?));
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let db = Db::open(dir.path().join("agent.db").as_path()).await?;
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));

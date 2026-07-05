@@ -48,7 +48,13 @@ fmt-check: ## Check formatting without writing
 clippy: ## Run clippy lints across the workspace
 	cargo clippy --all-targets --all-features --workspace -- -D warnings
 
-test: ## Run the full test suite
+test: ## Run the full test suite (reliable, sequential cargo test)
+	cargo test --all-targets --all-features
+
+test-fast: ## Run the full test suite with cargo-nextest (parallel, fastest)
+	cargo nextest run --workspace --all-features
+
+test-cargo: ## Run the full test suite with cargo test (alias for `test`)
 	cargo test --all-targets --all-features
 
 build: ## Build all targets

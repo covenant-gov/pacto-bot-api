@@ -117,7 +117,7 @@ fn new_help_mentions_interactive_wizard() {
 
 #[test]
 fn publish_profile_builds_kind0_event() -> Result<(), Box<dyn Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 

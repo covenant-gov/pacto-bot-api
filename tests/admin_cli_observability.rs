@@ -19,7 +19,7 @@ impl Drop for DaemonGuard {
 
 #[tokio::test]
 async fn doctor_reports_config_and_daemon_status() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config = common::make_config(&dir, vec![])?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -36,7 +36,7 @@ async fn doctor_reports_config_and_daemon_status() -> Result<(), Box<dyn std::er
 
 #[tokio::test]
 async fn trace_events_prints_recent_rows() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
     let db_path = dir.path().join("agent.db");
@@ -84,7 +84,7 @@ async fn trace_events_prints_recent_rows() -> Result<(), Box<dyn std::error::Err
 #[tokio::test(flavor = "multi_thread")]
 async fn diagnose_json_contains_socket_fields_when_daemon_stopped()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config = common::make_config(&dir, vec![])?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -119,7 +119,7 @@ async fn diagnose_json_contains_socket_fields_when_daemon_stopped()
 #[tokio::test(flavor = "multi_thread")]
 async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
 
@@ -178,7 +178,7 @@ async fn diagnose_json_reports_connectivity_and_service_versions_with_mock_relay
 #[tokio::test(flavor = "multi_thread")]
 async fn diagnose_text_includes_socket_connectivity_and_service_sections()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let relay_url = relay.url();
 
@@ -236,7 +236,7 @@ async fn diagnose_text_includes_socket_connectivity_and_service_sections()
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let (mut bot, _nsec) = common::generate_nsec_bot("send-bot")?;
     bot.relays = vec![relay.url()];

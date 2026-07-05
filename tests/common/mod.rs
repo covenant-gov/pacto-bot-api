@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
@@ -27,7 +28,40 @@ use tokio::net::UnixStream;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 
-/// Generate a bot config backed by a freshly generated local nsec key.
+/// Return a [`tempfile::TempDir`] created under a project-local directory
+/// (`target/test-temp`) rather than the system temp directory.
+///
+/// The project-local root is created with `0o700` permissions so the daemon's
+/// config-file permission checks pass even when the host's `/tmp` is
+/// group/world-writable.
+pub fn tempdir() -> io::Result<tempfile::TempDir> {
+    let root = project_temp_root();
+    fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&root)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&root, permissions)?;
+    }
+    let dir = tempfile::tempdir_in(root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = dir.path().metadata()?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(dir.path(), permissions)?;
+    }
+    Ok(dir)
+}
+
+fn project_temp_root() -> PathBuf {
+    let manifest = std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    manifest.join("target").join("test-temp")
+}
+
 pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>> {
     let keys = nostr::Keys::generate();
     let nsec = keys.secret_key().to_bech32()?;

@@ -1,3 +1,4 @@
+mod common;
 /// req(R6, R7, R8, R20, R21, R24, R25)
 use fs2::FileExt;
 use nostr::nips::nip59;
@@ -10,7 +11,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-mod common;
 mod support;
 
 async fn spawn_until_ready(
@@ -39,7 +39,7 @@ async fn wait_for_exit(
 #[tokio::test]
 async fn startup_succeeds_with_valid_config_and_acquires_lock()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -61,7 +61,7 @@ async fn startup_succeeds_with_valid_config_and_acquires_lock()
 
 #[tokio::test]
 async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("bunker-bot", true)?;
@@ -75,7 +75,7 @@ async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std:
     let config = common::make_config(&dir, vec![bot])?;
 
     // Give the mock bunker time to subscribe before the daemon connects.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let child = spawn_until_ready(&config).await?;
     common::shutdown_daemon(child).await?;
@@ -87,7 +87,7 @@ async fn startup_succeeds_with_bunker_local_backend() -> Result<(), Box<dyn std:
 
 #[tokio::test]
 async fn startup_exits_when_bunker_pubkey_mismatches() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
 
     // Configured npub differs from the live bunker pubkey.
@@ -102,7 +102,7 @@ async fn startup_exits_when_bunker_pubkey_mismatches() -> Result<(), Box<dyn std
     let config = common::make_config(&dir, vec![bot])?;
 
     // Give the mock bunker time to subscribe before the daemon connects.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     let log_path = dir.path().join("mismatch.log");
     let log_file = std::fs::File::create(&log_path)?;
@@ -140,7 +140,7 @@ async fn startup_exits_when_bunker_pubkey_mismatches() -> Result<(), Box<dyn std
 
 #[tokio::test]
 async fn startup_exits_when_lock_already_held() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -175,7 +175,7 @@ async fn startup_exits_when_lock_already_held() -> Result<(), Box<dyn std::error
 
 #[tokio::test]
 async fn startup_exits_with_error_on_invalid_config() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config = dir.path().join("pacto-bot-api.toml");
     std::fs::write(&config, "not valid toml [[")?;
     #[cfg(unix)]
@@ -203,7 +203,7 @@ async fn startup_exits_with_error_on_invalid_config() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn startup_exits_with_error_on_loose_config_permissions()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let config = dir.path().join("pacto-bot-api.toml");
     common::write_loose_config(
         &config,
@@ -232,7 +232,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
 #[tokio::test]
 async fn startup_resets_cursor_when_stored_npub_mismatches_config()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
 
@@ -264,7 +264,7 @@ async fn startup_resets_cursor_when_stored_npub_mismatches_config()
 #[tokio::test]
 async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
 -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     bot.relays = vec![relay.url()];
@@ -303,7 +303,7 @@ async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
     relay.inject_event(older).await;
     assert!(
         handler
-            .next_notification(std::time::Duration::from_millis(500))
+            .next_notification(std::time::Duration::from_millis(100))
             .await
             .is_err(),
         "older event should not be dispatched"
@@ -344,7 +344,7 @@ async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
 #[tokio::test]
 async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn std::error::Error>>
 {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let relay = support::mock_relay::MockRelay::start().await?;
     let (mut bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     bot.relays = vec![relay.url()];
@@ -383,7 +383,7 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
     relay.inject_event(older).await;
     assert!(
         handler
-            .next_notification(std::time::Duration::from_millis(500))
+            .next_notification(std::time::Duration::from_millis(100))
             .await
             .is_err(),
         "older event should not be dispatched"
@@ -424,7 +424,7 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
 async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::error::Error>> {
     use pacto_bot_api::events::EventType;
 
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
     let socket_path = dir.path().join("pacto-bot-api.sock");
@@ -502,7 +502,7 @@ async fn restart_preserves_handler_registrations() -> Result<(), Box<dyn std::er
 
 #[tokio::test]
 async fn unregister_deletes_persisted_handler_row() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot.clone()])?;
     let socket_path = dir.path().join("pacto-bot-api.sock");
@@ -534,7 +534,7 @@ async fn unregister_deletes_persisted_handler_row() -> Result<(), Box<dyn std::e
 
 #[tokio::test]
 async fn startup_path_completes_without_blocking() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
     let config = common::make_config(&dir, vec![bot])?;
 

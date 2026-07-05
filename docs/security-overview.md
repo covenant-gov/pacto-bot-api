@@ -135,7 +135,7 @@ The repository includes tests that exercise these protections:
 - `tests/schema_sync.rs` — machine-readable schemas stay in sync with the code.
 - `tests/requirement_coverage.rs` — every requirement has a covering test.
 
-You can run them with `cargo test` (Docker-free, in-process mocks) or
+You can run them with `make test` (Docker-free, in-process mocks) or
 `cargo test -- --ignored` when the `pacto-dev-env` Docker services are running.
 
 ## If something goes wrong

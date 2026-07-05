@@ -59,7 +59,7 @@ async fn dev_env_admin_diagnose_reports_relay_ok() -> Result<(), Box<dyn std::er
         return Ok(());
     }
 
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (mut bot_config, _nsec) = common::generate_nsec_bot("diagnose-bot")?;
     bot_config.relays = vec![DEV_RELAY.to_string()];
     bot_config.capabilities = vec!["ReadMessages".into()];
@@ -118,7 +118,7 @@ async fn dev_env_daemon_dm_round_trip_over_unix_socket() -> Result<(), Box<dyn s
         return Ok(());
     }
 
-    let dir = tempfile::tempdir()?;
+    let dir = common::tempdir()?;
     let (bot_config, _nsec) = common::generate_nsec_bot("echo-bot")?;
 
     let mut config_bots = bot_config.clone();
