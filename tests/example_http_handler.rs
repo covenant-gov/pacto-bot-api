@@ -255,6 +255,7 @@ impl SseClient {
             "GET /events?handler_id={handler_id} HTTP/1.1\r\n\
              Host: 127.0.0.1:{port}\r\n\
              X-Pacto-Bot-Secret: {secret}\r\n\
+             X-Pacto-Handler-Id: {handler_id}\r\n\
              Accept: text/event-stream\r\n\
              \r\n"
         );

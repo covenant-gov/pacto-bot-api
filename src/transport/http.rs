@@ -403,6 +403,20 @@ async fn events_handler(
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     }
 
+    let header_handler_id = headers
+        .get(&HANDLER_ID_HEADER)
+        .and_then(|h| h.to_str().ok());
+    if header_handler_id.is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "x-pacto-handler-id header required",
+        )
+            .into_response();
+    }
+    if header_handler_id != Some(query.handler_id.as_str()) {
+        return (StatusCode::FORBIDDEN, "handler_id mismatch").into_response();
+    }
+
     let mut outbound = state.outbound.lock().await;
     let receiver = match outbound.remove(&query.handler_id) {
         Some(rx) => rx,
