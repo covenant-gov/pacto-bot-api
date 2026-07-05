@@ -3,6 +3,7 @@
   "total_requirements": 37,
   "covered_requirements": 37,
   "uncovered_requirements": [],
+  "requirements_without_tests": [],
   "path_warnings": [],
   "coverage": [
     {
@@ -10,9 +11,11 @@
       "summary": "The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i...",
       "tests": [
         "tests/transport_unix.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
+        "tests/support/req_attr.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [
@@ -26,9 +29,11 @@
       "summary": "The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ...",
       "tests": [
         "tests/transport_http.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
+        "tests/support/req_attr.rs",
         "tests/transport_http.rs"
       ],
       "sources": [
@@ -42,9 +47,13 @@
       "summary": "The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo...",
       "tests": [
         "tests/transport_unix.rs",
-        "tests/transport_http.rs"
+        "tests/transport_http.rs",
+        "tests/sighup_token_reload.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
+        "tests/sighup_token_reload.rs",
+        "tests/support/req_attr.rs",
         "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
@@ -80,11 +89,13 @@
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs"
+        "tests/multi_bot.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs"
+        "tests/multi_bot.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "src/client_manager.rs",
@@ -166,10 +177,12 @@
       "id": "R10",
       "summary": "Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co...",
       "tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "src/admin.rs",
@@ -182,10 +195,12 @@
       "id": "R11",
       "summary": "The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations.",
       "tests": [
-        "tests/admin_cli_creation.rs"
+        "tests/admin_cli_creation.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_creation.rs"
+        "tests/admin_cli_creation.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "src/main.rs",
@@ -541,9 +556,13 @@
       "id": "R32",
       "summary": "**Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio...",
       "tests": [
-        "tests/schema_sync.rs"
+        "tests/schema_sync.rs",
+        "tests/support/req_attr.rs"
       ],
-      "parsed_tests": [],
+      "parsed_tests": [
+        "tests/schema_sync.rs",
+        "tests/support/req_attr.rs"
+      ],
       "sources": [
         "schemas/",
         "src/config_generated.rs",
@@ -560,11 +579,13 @@
         "tests/support/mock_relay.rs",
         "tests/support/mock_bunker.rs",
         "tests/integration_test.rs",
-        "tests/multi_bot.rs"
+        "tests/multi_bot.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
-        "tests/multi_bot.rs"
+        "tests/multi_bot.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "tests/support/"
@@ -576,10 +597,12 @@
       "id": "R34",
       "summary": "**Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite...",
       "tests": [
-        "tests/secret_redaction.rs"
+        "tests/secret_redaction.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
-        "tests/secret_redaction.rs"
+        "tests/secret_redaction.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "src/errors.rs",
@@ -614,7 +637,9 @@
       "tests": [
         "tests/dev_env_probe.rs"
       ],
-      "parsed_tests": [],
+      "parsed_tests": [
+        "tests/dev_env_probe.rs"
+      ],
       "sources": [
         "src/dev_env_probe.rs",
         "src/main.rs",
@@ -629,11 +654,13 @@
       "summary": "**Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs...",
       "tests": [
         "tests/diagnostics.rs",
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/support/req_attr.rs"
       ],
       "parsed_tests": [
         "tests/daemon_shutdown.rs",
-        "tests/diagnostics.rs"
+        "tests/diagnostics.rs",
+        "tests/support/req_attr.rs"
       ],
       "sources": [
         "src/diagnostics.rs",

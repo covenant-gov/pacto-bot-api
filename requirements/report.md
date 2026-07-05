@@ -7,22 +7,23 @@
 | Total requirements | 37 |
 | Covered requirements | 37 |
 | Uncovered requirements | 0 |
+| Requirements without covering tests | 0 |
 
 ## Auto-detected Test Tags
 
 The following requirements were tagged directly in test source files:
 
-- **R1** — tests/transport_unix.rs
-- **R2** — tests/transport_http.rs
-- **R3** — tests/transport_http.rs, tests/transport_unix.rs
+- **R1** — tests/support/req_attr.rs, tests/transport_unix.rs
+- **R2** — tests/support/req_attr.rs, tests/transport_http.rs
+- **R3** — tests/sighup_token_reload.rs, tests/support/req_attr.rs, tests/transport_http.rs, tests/transport_unix.rs
 - **R4** — tests/integration_test.rs, tests/multi_bot.rs
-- **R5** — tests/integration_test.rs, tests/multi_bot.rs
+- **R5** — tests/integration_test.rs, tests/multi_bot.rs, tests/support/req_attr.rs
 - **R6** — tests/admin_cli_bunker.rs, tests/daemon_startup.rs
 - **R7** — tests/cli_args.rs, tests/daemon_startup.rs
 - **R8** — tests/daemon_startup.rs
 - **R9** — tests/admin_cli_creation.rs
-- **R10** — tests/admin_cli_migration.rs
-- **R11** — tests/admin_cli_creation.rs
+- **R10** — tests/admin_cli_migration.rs, tests/support/req_attr.rs
+- **R11** — tests/admin_cli_creation.rs, tests/support/req_attr.rs
 - **R12** — tests/integration_test.rs, tests/multi_bot.rs, tests/nostr_client.rs
 - **R13** — tests/integration_test.rs, tests/multi_bot.rs, tests/nostr_client.rs
 - **R14** — tests/dispatch_integration.rs
@@ -43,26 +44,28 @@ The following requirements were tagged directly in test source files:
 - **R29** — tests/admin_cli_migration.rs
 - **R30** — tests/dispatch_integration.rs
 - **R31** — tests/admin_cli_migration.rs, tests/admin_cli_status.rs, tests/diagnostics.rs
-- **R33** — tests/integration_test.rs, tests/multi_bot.rs
-- **R34** — tests/secret_redaction.rs
+- **R32** — tests/schema_sync.rs, tests/support/req_attr.rs
+- **R33** — tests/integration_test.rs, tests/multi_bot.rs, tests/support/req_attr.rs
+- **R34** — tests/secret_redaction.rs, tests/support/req_attr.rs
 - **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs
-- **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs
+- **R36** — tests/dev_env_probe.rs
+- **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs, tests/support/req_attr.rs
 
 ## Coverage by Requirement
 
 | ID | Summary | Tests | Sources | Justification | Status |
 |---|---|---|---|---|---|
-| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs | src/transport/unix.rs | — | ✅ covered |
-| R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs | src/transport/http.rs | — | ✅ covered |
-| R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
+| R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs<br>tests/support/req_attr.rs | src/transport/unix.rs | — | ✅ covered |
+| R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs<br>tests/support/req_attr.rs | src/transport/http.rs | — | ✅ covered |
+| R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs<br>tests/sighup_token_reload.rs<br>tests/support/req_attr.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
 | R4 | The API supports the full method catalog defined in the architecture doc §7.7.4, adapted for daemon→handler direction (see High-Level Technical Design). | tests/integration_test.rs<br>tests/dispatch_integration.rs<br>tests/multi_bot.rs | src/transport/protocol.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
-| R5 | The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir... | tests/integration_test.rs<br>tests/multi_bot.rs | src/client_manager.rs<br>src/bot_state.rs | — | ✅ covered |
+| R5 | The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir... | tests/integration_test.rs<br>tests/multi_bot.rs<br>tests/support/req_attr.rs | src/client_manager.rs<br>src/bot_state.rs | — | ✅ covered |
 | R6 | The daemon supports three signing backends per bot identity: (a) **local test key** — nsec hex in config or `PACTO_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** — a bunker on ... | tests/admin_cli_bunker.rs<br>tests/secret_redaction.rs<br>tests/daemon_startup.rs | src/signer.rs<br>src/nip46.rs<br>src/config.rs | — | ✅ covered |
 | R7 | Bot identities are configured via a TOML config file (`pacto-bot-api.toml`) listing each bot's npub, signing backend (one of `nsec`, `bunker_local`, `bunker_remote`), relay list, and capabilities. ... | tests/admin_cli_migration.rs<br>tests/daemon_startup.rs<br>tests/cli_args.rs | src/config.rs | — | ✅ covered |
 | R8 | A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` ↔ `npub` mapping, and duplicate `bot_id` values within a single config are a validati... | tests/daemon_startup.rs | src/client_manager.rs<br>src/db.rs | — | ✅ covered |
 | R9 | Bot identities are created and deleted only through the `pacto-bot-admin` CLI; the daemon runtime never creates or deletes identities. | tests/admin_cli_creation.rs | src/admin.rs | Daemon runtime exposes no create/delete identity endpoints; lifecycle is isolated in pacto-bot-admin. | ✅ covered |
-| R10 | Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co... | tests/admin_cli_migration.rs | src/admin.rs<br>src/db.rs | — | ✅ covered |
-| R11 | The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations. | tests/admin_cli_creation.rs | src/main.rs<br>src/admin.rs | Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods. | ✅ covered |
+| R10 | Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co... | tests/admin_cli_migration.rs<br>tests/support/req_attr.rs | src/admin.rs<br>src/db.rs | — | ✅ covered |
+| R11 | The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations. | tests/admin_cli_creation.rs<br>tests/support/req_attr.rs | src/main.rs<br>src/admin.rs | Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods. | ✅ covered |
 | R12 | The daemon sends and receives NIP-17/44/59 DMs (gift wrap pipeline) for each registered bot identity. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/bot_state.rs | — | ✅ covered |
 | R13 | The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/dispatch.rs<br>src/events.rs | — | ✅ covered |
 | R14 | Handlers send DM replies via `agent.send_dm` notifications to the daemon. The daemon encrypts, wraps, and publishes the gift wrap. The daemon verifies that the calling handler is authorized for the... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
@@ -83,9 +86,9 @@ The following requirements were tagged directly in test source files:
 | R29 | **State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti... | tests/admin_cli_migration.rs | src/admin.rs | Active split-brain detection is deferred to Phase 2; metadata warning is verified. | ✅ covered |
 | R30 | **Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R31 | **Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,... | tests/diagnostics.rs<br>tests/admin_cli_migration.rs<br>tests/admin_cli_status.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
-| R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs | schemas/<br>src/config_generated.rs<br>src/metrics_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
-| R33 | **Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `... | tests/support/mock_relay.rs<br>tests/support/mock_bunker.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | tests/support/ | — | ✅ covered |
-| R34 | **Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite... | tests/secret_redaction.rs | src/errors.rs<br>src/config.rs<br>src/transport/http.rs | — | ✅ covered |
+| R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs<br>tests/support/req_attr.rs | schemas/<br>src/config_generated.rs<br>src/metrics_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
+| R33 | **Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `... | tests/support/mock_relay.rs<br>tests/support/mock_bunker.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs<br>tests/support/req_attr.rs | tests/support/ | — | ✅ covered |
+| R34 | **Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite... | tests/secret_redaction.rs<br>tests/support/req_attr.rs | src/errors.rs<br>src/config.rs<br>src/transport/http.rs | — | ✅ covered |
 | R35 | **Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing. | tests/diagnostics.rs<br>tests/admin_cli_migration.rs | src/diagnostics.rs<br>src/admin.rs<br>src/metrics_generated.rs | — | ✅ covered |
 | R36 | **Service-version compatibility probing.** When running against `pacto-dev-env`, the daemon probes the versions of external services (relay, bunker, Nostra, Aztec) and warns when they fall outside ... | tests/dev_env_probe.rs | src/dev_env_probe.rs<br>src/main.rs<br>xtask/src/dev_env_probe.rs<br>schemas/service-compatibility.json | — | ✅ covered |
-| R37 | **Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs... | tests/diagnostics.rs<br>tests/daemon_shutdown.rs | src/diagnostics.rs<br>src/main.rs | — | ✅ covered |
+| R37 | **Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs... | tests/diagnostics.rs<br>tests/daemon_shutdown.rs<br>tests/support/req_attr.rs | src/diagnostics.rs<br>src/main.rs | — | ✅ covered |
