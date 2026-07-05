@@ -57,6 +57,7 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 | `python/` | Generated Python SDK (`pacto-bot-sdk`), reference bots in `python/examples/`, and manifest-driven contract tests in `python/tests/`. |
 | `scripts/` | Release install script, packaging script, and pre-commit hook. |
 | `.github/workflows/` | CI and release automation. |
+| `.config/nextest.toml` | `cargo-nextest` profile used by `make test-fast`. |
 | `docs/` | Architecture research, implementation plans, setup guides, and the generated `pacto-bot-admin-llms.txt`. |
 | `docs/plans/` | Formal feature plans and security reviews. |
 | `data/` | Default runtime data directory (gitignored). |
@@ -83,7 +84,8 @@ cargo run --bin pacto-bot-admin -- diagnose --format json
 cargo run --bin pacto-bot-admin -- status --format json
 
 # Default test suite (in-process mocks, no Docker)
-cargo test
+make test        # reliable sequential run, ~76s
+make test-fast   # parallel run with cargo-nextest, ~20-25s
 
 # Gated integration tests against pacto-dev-env (Docker)
 cargo test -- --ignored
@@ -193,8 +195,9 @@ docker compose --profile bunker up -d --build
 
 ## Testing & QA
 
-- **Default test mode:** `cargo test` runs in-process against mock relay and mock bunker implementations in `tests/support/`. Target: under 30 seconds, no Docker.
+- **Default test mode:** `make test` runs the full suite sequentially with `cargo test` against mock relay and mock bunker implementations in `tests/support/`. `make test-fast` runs the same tests in parallel with `cargo-nextest` (~20–25 s). Target: under 30 seconds, no Docker.
 - **Integration mode:** gated tests against `pacto-dev-env` Docker services (`cargo test -- --ignored` with `PACTO_DEV_ENV=1`).
+- **Test temp directories:** integration tests use `common::tempdir()` from `tests/common/mod.rs` instead of `tempfile::tempdir()`. This places temp directories under `target/test-temp` with `0o700` permissions so daemon config-file permission checks pass regardless of the host `/tmp` permissions.
 - **Property/chaos tests:** `proptest` for frame parsing, rate limiting, cursor advancement, and handler authorization.
 - **Schema sync:** `schemas/` JSON Schema/OpenRPC artifacts are canonical; CI enforces that generated Rust types stay in sync.
 - **Secret-redaction suite:** dedicated tests inject synthetic secrets into every log sink, error path, and binary string, asserting no leakage.
