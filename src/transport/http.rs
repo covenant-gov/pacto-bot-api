@@ -1,4 +1,4 @@
-use crate::errors::DaemonError;
+use crate::errors::{DaemonError, JsonRpcError};
 use crate::handlers::ConnectionHandle;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
@@ -253,7 +253,22 @@ async fn http_handler(
         );
     }
 
-    let text = String::from_utf8_lossy(&body);
+    let text = match String::from_utf8(body.to_vec()) {
+        Ok(text) => text,
+        Err(_) => {
+            let err = JsonRpcMessage::error(
+                Value::Null,
+                JsonRpcError::new(-32700, "body is not valid UTF-8"),
+            );
+            let body = serialize_message(&err).unwrap_or_default();
+            return (
+                StatusCode::BAD_REQUEST,
+                [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+                body.into_bytes(),
+            );
+        }
+    };
+
     let mut responses = Vec::new();
 
     for line in text.lines() {

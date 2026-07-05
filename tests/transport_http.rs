@@ -142,6 +142,32 @@ async fn http_token_file_is_owner_only() -> Result<(), Box<dyn std::error::Error
 }
 
 #[tokio::test]
+async fn http_rejects_invalid_utf8_with_400() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    // Invalid UTF-8 byte sequence.
+    let body = b"\x80\x81\x82";
+    let response = raw_http_post_bytes(port, Some(&token), None, body).await?;
+    assert!(response.starts_with("HTTP/1.1 400"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body)?;
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["error"]["code"], -32700);
+    assert!(
+        parsed["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("UTF-8"),
+        "expected UTF-8 error message, got: {parsed}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_handler_register_returns_handler_id() -> Result<(), Box<dyn std::error::Error>> {
     let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
     let token = read_token(dir.path()).await?;
@@ -730,6 +756,15 @@ async fn raw_http_post(
     handler_id: Option<&str>,
     body: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    raw_http_post_bytes(port, secret, handler_id, body.as_bytes()).await
+}
+
+async fn raw_http_post_bytes(
+    port: u16,
+    secret: Option<&str>,
+    handler_id: Option<&str>,
+    body: &[u8],
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await?;
 
     let secret_header = secret
@@ -746,11 +781,11 @@ async fn raw_http_post(
          Content-Length: {}\r\n\
          {secret_header}\
          {handler_header}\
-         \r\n\
-         {body}",
+         \r\n",
         body.len()
     );
     stream.write_all(request.as_bytes()).await?;
+    stream.write_all(body).await?;
     stream.flush().await?;
 
     let mut buf = vec![0u8; 4096];
