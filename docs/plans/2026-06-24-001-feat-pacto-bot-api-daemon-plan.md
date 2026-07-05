@@ -431,6 +431,8 @@ sequenceDiagram
 ```toml
 # pacto-bot-api.toml
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 [daemon]
 data_dir = "~/.local/share/pacto-bot-api"
 socket_path = "~/.local/share/pacto-bot-api/pacto-bot-api.sock"

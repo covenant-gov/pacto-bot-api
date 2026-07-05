@@ -14,13 +14,13 @@ from conftest import (
 )
 
 
-def test_echo_bot_manifest_is_valid() -> None:
+def test_greeting_bot_manifest_is_valid() -> None:
     root = Path(__file__).resolve().parent.parent
-    bot_file = root / "examples" / "echo_bot.py"
+    bot_file = root / "examples" / "greeting_bot.py"
     manifest = load_manifest(bot_file)
     validate_manifest(manifest, bot_file)
     assert manifest["manifest_version"] == "1"
-    assert manifest["bot_file"] == "echo_bot.py"
+    assert manifest["bot_file"] == "greeting_bot.py"
 
 
 def test_manifest_path_derivation() -> None:
@@ -68,8 +68,9 @@ def test_missing_manifest_raises_clear_diagnostic(tmp_path: Path) -> None:
 def test_discovery_excludes_tests_and_dot_dirs() -> None:
     bots = discover_bot_files()
     names = {b.name for b in bots}
-    assert "echo_bot.py" in names
-    assert "test_echo_bot.py" not in names
+    assert "greeting_bot.py" in names
+    assert "joke_bot.py" in names
+    assert "test_greeting_bot.py" not in names
     assert "test_manifest_validation.py" not in names
 
 

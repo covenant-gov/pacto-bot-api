@@ -5,6 +5,16 @@ All notable changes to `pacto-bot-api` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Consolidated Python examples and the contract-test harness under `python/`.
+  - Moved `examples/conftest.py`, `examples/test_examples_contract.py`, and `examples/test_manifest_validation.py` to `python/tests/`.
+  - The parameterized contract harness now discovers only `python/examples/*_bot.py`.
+  - Removed the legacy standard-library seed SDK (`examples/pacto_sdk.py`), `examples/echo_bot.py`, and the root `examples/` directory.
+  - CI installs Python dev dependencies via `pip install -e python/[dev]` and runs contract tests from `python/`.
+
 ## [0.5.0] - 2026-07-03
 
 ### Added

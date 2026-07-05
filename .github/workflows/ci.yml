@@ -283,22 +283,15 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e python/
-          python -m pip install -r examples/requirements.txt
+          python -m pip install -e python/[dev]
 
       - name: Run Python SDK tests
         env:
           PACTO_BOT_API_BIN: ${{ github.workspace }}/target/debug/pacto-bot-api
           PACTO_BOT_ADMIN_BIN: ${{ github.workspace }}/target/debug/pacto-bot-admin
-        run: python -m pytest python/tests/ -v
-
-      - name: Run examples contract tests
-        env:
-          PACTO_BOT_API_BIN: ${{ github.workspace }}/target/debug/pacto-bot-api
-          PACTO_BOT_ADMIN_BIN: ${{ github.workspace }}/target/debug/pacto-bot-admin
         run: |
-          cd examples
-          python -m pytest test_examples_contract.py test_manifest_validation.py -v
+          cd python
+          python -m pytest tests/ -v
 
   examples-contract:
     name: Examples contract tests
@@ -336,8 +329,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e python/
-          python -m pip install -r examples/requirements.txt
+          python -m pip install -e python/[dev]
 
       - name: Run examples contract tests
         id: pytest
@@ -345,9 +337,8 @@ jobs:
           PACTO_BOT_API_BIN: ${{ github.workspace }}/target/debug/pacto-bot-api
           PACTO_BOT_ADMIN_BIN: ${{ github.workspace }}/target/debug/pacto-bot-admin
         run: |
-          cd examples
-          # Run only the contract harness; test_echo_bot.py still needs cargo.
-          python -m pytest test_examples_contract.py test_manifest_validation.py -v
+          cd python
+          python -m pytest tests/test_examples_contract.py tests/test_manifest_validation.py -v
 
       - name: Submit Examples Contract Tests status check
         if: always()

@@ -5,6 +5,8 @@ topic: python-sdk-seed
 
 # Python SDK Seed + 30-Line Bot Template
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Create a single-file Python SDK helper at `examples/pacto_sdk.py` that hides JSON-RPC framing, transport setup, registration, and response lifecycle behind a callback-based client. Authors register command handlers with `client.on('/hello', handle_hello)` and return plain response dicts. The SDK supports both Unix socket and HTTP+SSE transports, includes a small command parser, and provides helpers for `agent.send_dm` and `agent.set_profile`. A `examples/greeting_bot.py` demonstrates a complete bot in roughly 30 lines of business logic.

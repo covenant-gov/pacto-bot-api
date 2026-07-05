@@ -419,13 +419,13 @@ The `Arc<MDK<...>>` is cloned into the blocking closure, used synchronously, and
 **Dependencies:** none (independent of daemon MLS work; can proceed in parallel)
 
 **Files:**
-- `Cargo.toml` (root workspace) — add `examples/governance-bot` to `[workspace] members` so `cargo test --workspace` includes it; the current workspace is `members = [".", "xtask"]` and `examples/` is Python-only
-- `examples/governance-bot/Cargo.toml` — new example crate manifest with `alloy`, `tokio`, `serde`, `reqwest`; note that `deny.toml [sources] allow-git` may need updating for alloy's git deps if any
-- `examples/governance-bot/src/evm/mod.rs` — new EVM reader module
-- `examples/governance-bot/src/evm/bindings.rs` — inline `alloy::sol!` bindings for `INavePirataRegistry` (Deployment struct, `deploymentCount`, `deploymentAt`, `deployment`), `ITreasuryAuthority` (`proposal`, `openProposalOf`), `IMutinyModule` (`activeMutinyId`, `mutiny`), `IQuartermaster` (`pendingCrewAddAt`, `pendingCrewRemoveAt`, `crewChangeDelay`), ERC-20 (`balanceOf`), Hats (`wearerStatus`). Mirror `pacto-app/src-tauri/src/evm/contracts/pacto_gov/read_bindings.rs`.
-- `examples/governance-bot/src/evm/addresses.rs` — Sepolia infrastructure addresses from `pacto-gov/deployments/11155111/full-system.json` (NavePirataRegistry: `0x45127C1c92741C0dA38e1A73fbb97a8a2C46770f`, etc.) + anvil override via env var
-- `examples/governance-bot/src/evm/reader.rs` — `GovernanceReader` struct with a `Provider`; methods: `discover_squads()` (registry → deploymentCount → deploymentAt → deployment), `read_proposals(treasury_authority)`, `read_mutiny(mutiny_module)`, `read_crew_deadlines(quartermaster)`, `read_treasury_balance(safe)`, `read_crew_state(hats, captain_hat, crew_hat)`
-- `examples/governance-bot/src/evm/snapshot.rs` — `SnapshotData` struct aggregating all R3 fields; `GovernanceReader::snapshot(squad_index)` orchestrates the reads
+- `Cargo.toml` (root workspace) — add `crates/governance-bot` to `[workspace] members` so `cargo test --workspace` includes it; Python examples live under `python/examples/` and Rust example crates live under `crates/`
+- `crates/governance-bot/Cargo.toml` — new example crate manifest with `alloy`, `tokio`, `serde`, `reqwest`; note that `deny.toml [sources] allow-git` may need updating for alloy's git deps if any
+- `crates/governance-bot/src/evm/mod.rs` — new EVM reader module
+- `crates/governance-bot/src/evm/bindings.rs` — inline `alloy::sol!` bindings for `INavePirataRegistry` (Deployment struct, `deploymentCount`, `deploymentAt`, `deployment`), `ITreasuryAuthority` (`proposal`, `openProposalOf`), `IMutinyModule` (`activeMutinyId`, `mutiny`), `IQuartermaster` (`pendingCrewAddAt`, `pendingCrewRemoveAt`, `crewChangeDelay`), ERC-20 (`balanceOf`), Hats (`wearerStatus`). Mirror `pacto-app/src-tauri/src/evm/contracts/pacto_gov/read_bindings.rs`.
+- `crates/governance-bot/src/evm/addresses.rs` — Sepolia infrastructure addresses from `pacto-gov/deployments/11155111/full-system.json` (NavePirataRegistry: `0x45127C1c92741C0dA38e1A73fbb97a8a2C46770f`, etc.) + anvil override via env var
+- `crates/governance-bot/src/evm/reader.rs` — `GovernanceReader` struct with a `Provider`; methods: `discover_squads()` (registry → deploymentCount → deploymentAt → deployment), `read_proposals(treasury_authority)`, `read_mutiny(mutiny_module)`, `read_crew_deadlines(quartermaster)`, `read_treasury_balance(safe)`, `read_crew_state(hats, captain_hat, crew_hat)`
+- `crates/governance-bot/src/evm/snapshot.rs` — `SnapshotData` struct aggregating all R3 fields; `GovernanceReader::snapshot(squad_index)` orchestrates the reads
 
 **Approach:** The reader uses `alloy` with a `reqwest`-backed HTTP provider pointing at the configurable RPC endpoint (Sepolia public RPC or anvil localhost). Per-squad clone addresses are discovered dynamically via `NavePirataRegistry.deploymentCount()` → `deploymentAt(i)` → `deployment(topHatId)`, returning the 14-field `Deployment` tuple (safe, quartermaster, mutinyModule, treasuryAuthority, squadAdminProxy, hat IDs, deployedAt, deployer). Each R3 field maps to a contract read:
 - Proposals: `TreasuryAuthority.proposal(id)` returns (proposer, to, value, op, data, deadline, snapshot, yeas, nays, captainApproved, captainDefeated, executed); iterate via `openProposalOf(proposer)` to find active proposal IDs.
@@ -458,8 +458,8 @@ The `Arc<MDK<...>>` is cloned into the blocking closure, used synchronously, and
 **Dependencies:** U8
 
 **Files:**
-- `examples/governance-bot/src/snapshot/format.rs` — `format_snapshot(SnapshotData) -> String` producing Markdown with sections for proposals, deadlines, treasury, mutinies, crew state, and discussion prompts
-- `examples/governance-bot/src/snapshot/mod.rs` — module declaration
+- `crates/governance-bot/src/snapshot/format.rs` — `format_snapshot(SnapshotData) -> String` producing Markdown with sections for proposals, deadlines, treasury, mutinies, crew state, and discussion prompts
+- `crates/governance-bot/src/snapshot/mod.rs` — module declaration
 
 **Approach:** The formatter takes the `SnapshotData` from U8 and produces a Markdown document with headers per R3 section: active proposals (with deadline, vote counts, captain status), upcoming deadlines (crew add/remove timelocks), treasury balance summary (ETH + ERC-20s), active mutinies (proposed new captain, yeas), captain/crew state (active/inactive via Hats), and suggested discussion prompts derived from the data (e.g., "Proposal #3 deadline is in 2 days — discuss"). The exact template shape emerges from the contracts (see origin: Q4) — this unit defines the structure, the implementer refines prompts based on real data.
 
@@ -484,10 +484,10 @@ The `Arc<MDK<...>>` is cloned into the blocking closure, used synchronously, and
 **Dependencies:** U5, U8, U9
 
 **Files:**
-- `examples/governance-bot/src/main.rs` — bot entrypoint: loads config (RPC endpoint, squad index, cadence, bot_id, group_id), connects to the daemon via JSON-RPC (Unix socket or HTTP), registers with `SendGroupMessages` capability, runs a `tokio::time::interval` loop that reads → formats → sends
-- `examples/governance-bot/src/config.rs` — handler-local config (RPC URL, squad index, cadence interval, daemon socket path, bot_id, group_id); loaded from env vars or a local config file (not `pacto-bot-api.toml`)
-- `examples/governance-bot/Cargo.toml` — example crate manifest with `alloy`, `tokio`, `serde`, `reqwest`, and a dependency on the generated Python SDK or direct JSON-RPC client
-- `examples/governance-bot/README.md` — setup instructions (create bot identity, configure, deploy squad on anvil/Sepolia, run)
+- `crates/governance-bot/src/main.rs` — bot entrypoint: loads config (RPC endpoint, squad index, cadence, bot_id, group_id), connects to the daemon via JSON-RPC (Unix socket or HTTP), registers with `SendGroupMessages` capability, runs a `tokio::time::interval` loop that reads → formats → sends
+- `crates/governance-bot/src/config.rs` — handler-local config (RPC URL, squad index, cadence interval, daemon socket path, bot_id, group_id); loaded from env vars or a local config file (not `pacto-bot-api.toml`)
+- `crates/governance-bot/Cargo.toml` — example crate manifest with `alloy`, `tokio`, `serde`, `reqwest`, and a dependency on the generated Python SDK or direct JSON-RPC client
+- `crates/governance-bot/README.md` — setup instructions (create bot identity, configure, deploy squad on anvil/Sepolia, run)
 
 **Approach:** The handler is a standalone process that connects to the daemon over JSON-RPC. It registers for the bot with `SendGroupMessages` capability. On a configurable interval (default daily per R5), it calls the governance reader (U8), formats the snapshot (U9), and calls `agent.send_group_message` on the daemon. Failed posts are retried with backoff (see origin: Q5) — the handler owns retry logic, not the daemon. No human-paste fallback (R7). The bot identity is created via `pacto-bot-admin new` (R1) and the bot must have published a KeyPackage and accepted a Welcome before it can send (the handler triggers KeyPackage publish on startup via a daemon method or a one-time setup step).
 
@@ -548,7 +548,7 @@ The `Arc<MDK<...>>` is cloned into the blocking closure, used synchronously, and
 - `src/config.rs` — add `ReceiveGroupMessages` to capability validation
 - `schemas/jsonrpc.json` — add `ReceiveGroupMessages` capability reference to `agent.event` notification params
 - `python/` — regenerated via `cargo xtask codegen`
-- `examples/governance-bot/src/main.rs` — detect `!snapshot` in delivered plaintext and trigger the same read + format + send flow as F1
+- `crates/governance-bot/src/main.rs` — detect `!snapshot` in delivered plaintext and trigger the same read + format + send flow as F1
 
 **Approach:** The daemon subscribes to `Kind::MlsGroupMessage` (kind:445) per bot, in addition to the existing GiftWrap subscription. On receipt, it extracts the group wire ID from the `h` tag, checks whether the bot is a member of that group (via persisted group state), skips events the bot itself published, and calls `engine.process_message()` on `spawn_blocking` to decrypt. The decrypted plaintext is delivered to handlers registered with `ReceiveGroupMessages` via a new `agent.event` notification type. The handler checks for `!snapshot` in the plaintext and responds by posting the current snapshot. This expands the R9a threat model (R24): the daemon now holds the engine across an inbound event loop, processing other members' MLS commits which can advance the group key schedule.
 

@@ -2,12 +2,12 @@
 
 The generated Python SDK lives in `python/` and is produced from `schemas/jsonrpc.json` via `cargo xtask codegen`.
 
-> **Migration note:** `examples/pacto_sdk.py` was a temporary hand-written seed. New bots should use the generated SDK (`from pacto_bot_sdk import Bot`) documented in [`python/README.md`](../python/README.md).
+> **Migration note:** The temporary hand-written seed SDK at `examples/pacto_sdk.py` has been removed. New bots should use the generated SDK (`from pacto_bot_sdk import Bot`) documented in [`python/README.md`](../python/README.md).
 
 ## Quick start
 
 ```bash
-pip install -e python/
+pip install pacto-bot-sdk
 python python/examples/greeting_bot.py --socket /tmp/pacto.sock
 ```
 
@@ -23,7 +23,7 @@ See [`python/README.md`](../python/README.md) for:
 
 ## Legacy seed SDK
 
-`examples/pacto_sdk.py` remains in the repo until migration is complete. It is a single-file, standard-library-only helper used by the original example bots. Do not use it for new bots.
+The temporary hand-written seed SDK at `examples/pacto_sdk.py` has been removed. The generated `pacto_bot_sdk` package in `python/` replaces it.
 
 ## Regeneration
 

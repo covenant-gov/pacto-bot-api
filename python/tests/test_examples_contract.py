@@ -1,6 +1,6 @@
 """Parameterized contract tests for every example bot manifest.
 
-Discovers ``examples/**/*_bot.py`` (excluding test files), validates the
+Discovers ``python/examples/**/*_bot.py`` (excluding test files), validates the
 matching ``<bot>.manifest.json`` against ``schemas/example-manifest.json``,
 spawns a fresh daemon for each bot, and executes the declared contract pieces.
 """
@@ -189,7 +189,7 @@ async def _execute_contract(
     manifest: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    bot_id = manifest.get("bot_id", "echo-bot")  # Default matches legacy manifests.
+    bot_id = manifest.get("bot_id", "echo-bot")
     diagnostics: list[str] = []
     bot_proc: subprocess.Popen[str] | None = None
 

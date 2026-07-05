@@ -7,6 +7,8 @@ origin: docs/brainstorms/2026-06-29-generated-python-client-requirements.md
 
 # Generated Python Client SDK
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Create a generated Python SDK under `python/` that is produced from `schemas/jsonrpc.json` via `cargo xtask codegen`. The SDK exposes Pydantic v2 models, a low-level async client, and a hand-written decorator-based `Bot` layer. Example bots live in `python/examples/` and are validated by the existing contract harness. Documentation is written for both humans and LLMs.

@@ -7,6 +7,8 @@ origin: docs/brainstorms/2026-06-29-python-sdk-seed-requirements.md
 
 # Python SDK Seed and Greeting Bot Template
 
+> **Historical note:** The root `examples/` directory was consolidated into `python/` after this document was written. The legacy standard-library seed SDK (`examples/pacto_sdk.py`) and the associated example bots were removed; the generated Python SDK is now published to PyPI as `pacto-bot-sdk`. The contract-test harness lives in `python/tests/`. See `CHANGELOG.md` [Unreleased] for the consolidation details.
+
 ## Summary
 
 Create a single-file, standard-library-only Python SDK at `examples/pacto_sdk.py` that abstracts JSON-RPC framing, registration, lifecycle, command dispatch, and response helpers for the `pacto-bot-api` daemon. Ship `examples/greeting_bot.py` and its manifest as a ~30-line demonstration that passes the existing example contract-test harness. Keep `examples/echo_bot.py` unchanged.
