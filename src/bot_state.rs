@@ -158,11 +158,19 @@ mod tests {
             assert!(wal.exists(), "wal sidecar should exist");
             assert!(shm.exists(), "shm sidecar should exist");
             assert_eq!(
-                std::fs::metadata(wal).expect("wal metadata").permissions().mode() & 0o777,
+                std::fs::metadata(wal)
+                    .expect("wal metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o600
             );
             assert_eq!(
-                std::fs::metadata(shm).expect("shm metadata").permissions().mode() & 0o777,
+                std::fs::metadata(shm)
+                    .expect("shm metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o600
             );
         }

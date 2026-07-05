@@ -11,8 +11,14 @@ from pydantic import BaseModel
 # Result type alias for `agent.metrics`.
 AgentMetricsResult = dict[str, Any]
 
+# Result type alias for `agent.publish_key_package`.
+AgentPublishKeyPackageResult = str
+
 # Result type alias for `agent.send_dm`.
 AgentSendDmResult = str
+
+# Result type alias for `agent.send_group_message`.
+AgentSendGroupMessageResult = str
 
 # Result type alias for `agent.set_profile`.
 AgentSetProfileResult = str
@@ -173,6 +179,23 @@ class AgentMetricsParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "agent.metrics"
     pass
 
+class AgentPublishKeyPackageParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.publish_key_package`.
+
+    Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.
+
+    Example:
+
+        >>> AgentPublishKeyPackageParams(bot_id="...")
+
+    jsonrpc_method: ``"agent.publish_key_package"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.publish_key_package"
+    # Bot identity that will publish the KeyPackage.
+    bot_id: str
+
+
 class AgentSendDmParams(BaseModel):
     """
     Model for JSON-RPC method `agent.send_dm`.
@@ -194,6 +217,27 @@ class AgentSendDmParams(BaseModel):
     recipient: str
     # Optional hex event id this message replies to.
     reply_to: str | None = None
+
+
+class AgentSendGroupMessageParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.send_group_message`.
+
+    Send an encrypted MLS group message as the specified bot.
+
+    Example:
+
+        >>> AgentSendGroupMessageParams(bot_id="...", content="...", group_id="...")
+
+    jsonrpc_method: ``"agent.send_group_message"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.send_group_message"
+    # Bot identity that will send the message.
+    bot_id: str
+    # Plaintext message body to encrypt.
+    content: str
+    # Hex-encoded MLS group ID.
+    group_id: str
 
 
 class AgentSetProfileParams(BaseModel):
@@ -412,4 +456,4 @@ class HandlerUnregisterResult(BaseModel):
     unregistered: bool
 
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentSendDmResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentSendDmParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
+__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']

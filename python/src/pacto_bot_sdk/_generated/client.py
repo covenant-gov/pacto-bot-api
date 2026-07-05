@@ -185,6 +185,25 @@ class PactoClient:
         result = response.get('result')
         return result
 
+    async def agent_publish_key_package(self, bot_id: str) -> models.AgentPublishKeyPackageResult:
+        """
+        Call JSON-RPC method `agent.publish_key_package`.
+
+        Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_publish_key_package(...)
+            >>> isinstance(result, AgentPublishKeyPackageResult)
+
+        jsonrpc_method: ``"agent.publish_key_package"``
+        """
+        params = models.AgentPublishKeyPackageParams(bot_id=bot_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.publish_key_package", params_dict)
+        result = response.get('result')
+        return result
+
     async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResult:
         """
         Call JSON-RPC method `agent.send_dm`.
@@ -201,6 +220,25 @@ class PactoClient:
         params = models.AgentSendDmParams(bot_id=bot_id, content=content, recipient=recipient, reply_to=reply_to)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("agent.send_dm", params_dict)
+        result = response.get('result')
+        return result
+
+    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str) -> models.AgentSendGroupMessageResult:
+        """
+        Call JSON-RPC method `agent.send_group_message`.
+
+        Send an encrypted MLS group message as the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_send_group_message(...)
+            >>> isinstance(result, AgentSendGroupMessageResult)
+
+        jsonrpc_method: ``"agent.send_group_message"``
+        """
+        params = models.AgentSendGroupMessageParams(bot_id=bot_id, content=content, group_id=group_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.send_group_message", params_dict)
         result = response.get('result')
         return result
 

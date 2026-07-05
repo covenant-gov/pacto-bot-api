@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
     DmReceived,
+    MlsWelcomeReceived,
 }
 
 /// Notification sent from daemon to handler when an event arrives for a bot.

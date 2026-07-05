@@ -589,6 +589,12 @@ impl Dispatch {
                     .await
             }
             Method::AgentVersion => self.handle_version().await,
+            Method::AgentSendGroupMessage => {
+                self.handle_send_group_message(handler_id, params).await
+            }
+            Method::AgentPublishKeyPackage => {
+                self.handle_publish_key_package(handler_id, params).await
+            }
             Method::AdminSendTestDm => self.handle_admin_send_test_dm(handler_id, params).await,
             Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
         };
@@ -1069,6 +1075,130 @@ impl Dispatch {
         };
         Ok(Some(serde_json::to_value(response)?))
     }
+    async fn handle_send_group_message(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.send_group_message missing params".into()))?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.send_group_message missing bot_id".into()))?;
+        let group_id = params
+            .get("group_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DaemonError::Config("agent.send_group_message missing group_id".into())
+            })?;
+        let content = params
+            .get("content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.send_group_message missing content".into()))?
+            .to_string();
+
+        let event_id = self
+            .handle_send_group_message_inner(bot_id, group_id, content, handler_id)
+            .await?;
+        Ok(Some(Value::String(event_id.to_hex())))
+    }
+
+    async fn handle_send_group_message_inner(
+        &self,
+        bot_id: &str,
+        group_id: &str,
+        content: String,
+        handler_id: Option<&str>,
+    ) -> Result<EventId, DaemonError> {
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendGroupMessages")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+
+        let now = Instant::now();
+        if !self.rate_limiter.check(hid, bot_id, now).await {
+            self.diagnostics.record_rate_limited();
+            return Err(DaemonError::RateLimited);
+        }
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let mls_engine = bot
+            .mls
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+        let group_id_bytes = hex::decode(group_id)
+            .map_err(|e| DaemonError::Config(format!("invalid group_id hex: {e}")))?;
+        let event_id = cm
+            .nostr_client
+            .send_group_message(mls_engine, &bot.signer, group_id_bytes, content)
+            .await?;
+        Ok(event_id)
+    }
+
+    async fn handle_publish_key_package(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params.ok_or_else(|| {
+            DaemonError::Config("agent.publish_key_package missing params".into())
+        })?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DaemonError::Config("agent.publish_key_package missing bot_id".into())
+            })?;
+
+        let event_id = self
+            .handle_publish_key_package_inner(bot_id, handler_id)
+            .await?;
+        Ok(Some(Value::String(event_id.to_hex())))
+    }
+
+    async fn handle_publish_key_package_inner(
+        &self,
+        bot_id: &str,
+        handler_id: Option<&str>,
+    ) -> Result<EventId, DaemonError> {
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendGroupMessages")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+
+        let now = Instant::now();
+        if !self.rate_limiter.check(hid, bot_id, now).await {
+            self.diagnostics.record_rate_limited();
+            return Err(DaemonError::RateLimited);
+        }
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let mls_engine = bot
+            .mls
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+        let relays = bot.config.relays.clone();
+        let event_id = cm
+            .nostr_client
+            .publish_key_package(mls_engine, &bot.signer, relays)
+            .await?;
+        Ok(event_id)
+    }
 
     /// Spawn a background task that removes disconnected handlers that have
     /// been stale longer than `stale_timeout`.
@@ -1155,6 +1285,7 @@ fn message_params(msg: &JsonRpcMessage) -> Option<&Value> {
 fn event_type_name(event_type: &EventType) -> String {
     match event_type {
         EventType::DmReceived => "dm_received".to_string(),
+        EventType::MlsWelcomeReceived => "mls_welcome_received".to_string(),
     }
 }
 

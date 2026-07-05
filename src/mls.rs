@@ -2,18 +2,17 @@
 //!
 //! The `mdk_core::MDK<MdkSqliteStorage>` engine is `Send` but not `Sync` because
 //! `rusqlite::Connection` contains `RefCell` state. To share the engine across
-//! Tokio tasks while keeping every engine call on a blocking thread, the handle
-//! wraps it in `std::sync::Mutex` and invokes it via `tokio::task::spawn_blocking`.
-//!
-//! The engine is never held across an `.await` point: the `Arc<Mutex<MDK>>` is
-//! cloned into the blocking closure, the mutex is locked, the synchronous engine
-//! call runs, the lock is dropped, and the result is returned to the async caller.
+//! Tokio tasks, the handle runs the engine on a dedicated single-threaded worker
+//! thread. All engine calls are serialized through an mpsc channel, eliminating
+//! any possibility of lock contention or ordering issues.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
+use mdk_storage_traits::GroupId;
+use nostr::{Event, PublicKey, RelayUrl};
+use tokio::sync::{mpsc, oneshot};
 
 /// Errors that can occur when interacting with the MLS engine.
 #[derive(Debug, thiserror::Error)]
@@ -31,7 +30,7 @@ pub enum MlsError {
     Rusqlite(#[from] rusqlite::Error),
 
     /// Generic engine failure; the message must not contain key material.
-    #[error("MLS engine error")]
+    #[error("MLS engine error: {0}")]
     Engine(String),
 
     /// The requested group does not exist in the engine's storage.
@@ -49,15 +48,59 @@ pub enum MlsError {
     /// A cryptographic operation failed; the message must not leak secrets.
     #[error("MLS crypto error")]
     CryptoError,
+
+    /// Channel communication error with the MLS worker thread.
+    #[error("MLS worker communication error")]
+    WorkerDisconnected,
+}
+
+impl From<mdk_core::Error> for MlsError {
+    fn from(err: mdk_core::Error) -> Self {
+        let msg = err.to_string();
+        // Map specific MDK errors to our typed variants
+        if msg.contains("group not found") || msg.contains("unknown group") {
+            MlsError::GroupNotFound
+        } else if msg.contains("not initialized") || msg.contains("no group") {
+            MlsError::NotInitialized
+        } else if msg.contains("poison") || msg.contains("corrupt") {
+            MlsError::GroupPoisoned
+        } else if msg.contains("crypto") || msg.contains("signature") {
+            MlsError::CryptoError
+        } else {
+            MlsError::Engine(msg)
+        }
+    }
+}
+
+/// Internal commands sent to the MLS worker thread.
+enum MlsCommand {
+    CreateKeyPackage {
+        pubkey: PublicKey,
+        relays: Vec<RelayUrl>,
+        tx: oneshot::Sender<Result<(String, Vec<nostr::Tag>), MlsError>>,
+    },
+    ProcessWelcome {
+        event_id: nostr::EventId,
+        welcome_rumor: nostr::Event,
+        tx: oneshot::Sender<Result<(), MlsError>>,
+    },
+    AcceptPendingWelcome {
+        tx: oneshot::Sender<Result<GroupInfo, MlsError>>,
+    },
+    CreateGroupMessage {
+        group_id: Vec<u8>,
+        rumor: nostr::UnsignedEvent,
+        tx: oneshot::Sender<Result<Event, MlsError>>,
+    },
 }
 
 /// Cloneable handle to the per-bot MLS engine.
 ///
-/// Cloning is cheap: it clones the inner `Arc`, not the engine itself. The
-/// engine is protected by a `std::sync::Mutex` so it can be shared across Tokio
-/// tasks while remaining `Send` and `Sync`.
+/// Cloning is cheap: it clones the sender channel, not the engine itself.
+/// All engine calls are serialized through a dedicated worker thread.
+#[derive(Clone)]
 pub struct MlsEngineHandle {
-    engine: Arc<Mutex<MDK<MdkSqliteStorage>>>,
+    tx: mpsc::Sender<MlsCommand>,
     db_path: PathBuf,
 }
 
@@ -68,31 +111,19 @@ impl std::fmt::Debug for MlsEngineHandle {
             .finish_non_exhaustive()
     }
 }
-
-impl Clone for MlsEngineHandle {
-    fn clone(&self) -> Self {
-        Self {
-            engine: Arc::clone(&self.engine),
-            db_path: self.db_path.clone(),
-        }
-    }
-}
-
 const _: () = {
-    // Verify that the wrapped handle type is `Send + Sync`, which is what
-    // actually moves across Tokio task boundaries. `MDK<MdkSqliteStorage>` is
-    // `Send` but not `Sync`, so the mutex is required.
+    // Verify that the handle is Send + Sync, which is required for sharing
+    // across Tokio tasks.
     fn assert_send_sync<T: Send + Sync>() {}
-    let _ = assert_send_sync::<Arc<Mutex<MDK<MdkSqliteStorage>>>>;
+    let _ = assert_send_sync::<MlsEngineHandle>;
 };
 
 impl MlsEngineHandle {
     /// Create a persistent MLS engine backed by `vector-mls.db` at `db_path`.
     ///
-    /// The parent directory is created before the database is opened. WAL mode
-    /// is enabled before `MdkSqliteStorage` opens its own connections so that
-    /// the `-wal` and `-shm` sidecars are created and can be permissioned at
-    /// initialization time.
+    /// This spawns a dedicated worker thread that owns the `MDK<MdkSqliteStorage>`
+    /// engine. All engine calls are serialized through this thread via an mpsc
+    /// channel, eliminating any possibility of lock contention.
     pub fn new_persistent<P: AsRef<Path>>(db_path: P) -> Result<Self, MlsError> {
         let db_path = db_path.as_ref().to_path_buf();
 
@@ -117,29 +148,173 @@ impl MlsEngineHandle {
         set_db_permissions(&db_path)?;
 
         let engine = MDK::new(storage);
-        let handle = Self {
-            engine: Arc::new(Mutex::new(engine)),
-            db_path,
-        };
+
+        // Spawn the worker thread that owns the engine
+        let (tx, mut rx) = mpsc::channel::<MlsCommand>(32);
+
+        std::thread::spawn(move || {
+            // Worker thread: own the engine and process commands serially
+            let engine = engine;
+
+            while let Some(cmd) = rx.blocking_recv() {
+                match cmd {
+                    MlsCommand::CreateKeyPackage { pubkey, relays, tx } => {
+                        let result: Result<(String, Vec<nostr::Tag>), MlsError> = (|| {
+                            let (encoded, tags) =
+                                engine.create_key_package_for_event(&pubkey, relays)?;
+                            Ok((encoded, tags.to_vec()))
+                        })(
+                        );
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::ProcessWelcome {
+                        event_id,
+                        welcome_rumor,
+                        tx,
+                    } => {
+                        let result: Result<(), MlsError> = (|| {
+                            // Convert nostr::Event to UnsignedEvent for process_welcome
+                            let unsigned = nostr::UnsignedEvent {
+                                id: Some(welcome_rumor.id),
+                                pubkey: welcome_rumor.pubkey,
+                                created_at: welcome_rumor.created_at,
+                                kind: welcome_rumor.kind,
+                                tags: welcome_rumor.tags.clone(),
+                                content: welcome_rumor.content.clone(),
+                            };
+                            engine.process_welcome(&event_id, &unsigned)?;
+                            Ok(())
+                        })();
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::AcceptPendingWelcome { tx } => {
+                        let result: Result<GroupInfo, MlsError> = (|| {
+                            let welcomes = engine.get_pending_welcomes()?;
+                            let welcome = welcomes.first().ok_or(MlsError::NotInitialized)?;
+                            engine.accept_welcome(welcome)?;
+
+                            // Get the group info for the accepted group
+                            let groups = engine.get_groups()?;
+                            let group = groups.first().ok_or(MlsError::NotInitialized)?;
+                            Ok(GroupInfo {
+                                mls_group_id: group.mls_group_id.as_slice().to_vec(),
+                                nostr_group_id: group.nostr_group_id.to_vec(),
+                                name: group.name.clone(),
+                            })
+                        })();
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::CreateGroupMessage {
+                        group_id,
+                        rumor,
+                        tx,
+                    } => {
+                        let result: Result<Event, MlsError> = (|| {
+                            let group_id = GroupId::from_slice(&group_id);
+                            let event = engine.create_message(&group_id, rumor)?;
+                            Ok(event)
+                        })();
+                        let _ = tx.send(result);
+                    }
+                }
+            }
+
+            // Channel closed, worker shutting down
+            drop(engine);
+        });
 
         // The engine's own connections keep WAL active; the temporary connection
         // can now be safely dropped.
         drop(wal_conn);
-        Ok(handle)
+
+        Ok(Self { tx, db_path })
     }
 
-    /// Clone the inner engine Arc for use inside a `spawn_blocking` closure.
+    /// Create a key package for the bot and return the encoded content and tags.
     ///
-    /// Callers must lock the mutex, use the engine synchronously, and drop the
-    /// lock before returning to the async runtime.
-    pub(crate) fn engine(&self) -> Arc<Mutex<MDK<MdkSqliteStorage>>> {
-        Arc::clone(&self.engine)
+    /// The returned event content should be published as a kind:443 event.
+    pub async fn publish_key_package(
+        &self,
+        pubkey: &PublicKey,
+        relays: Vec<RelayUrl>,
+    ) -> Result<(String, Vec<nostr::Tag>), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::CreateKeyPackage {
+                pubkey: *pubkey,
+                relays,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Process a received Welcome message.
+    ///
+    /// This decrypts and validates the Welcome, persisting the group state.
+    pub async fn process_welcome(
+        &self,
+        event_id: nostr::EventId,
+        welcome_rumor: nostr::Event,
+    ) -> Result<(), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::ProcessWelcome {
+                event_id,
+                welcome_rumor,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Accept any pending Welcome messages.
+    ///
+    /// Returns the group info for the accepted group, or `NotInitialized` if
+    /// there are no pending welcomes.
+    pub async fn accept_pending_welcome(&self) -> Result<GroupInfo, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::AcceptPendingWelcome { tx })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Create an MLS group message.
+    ///
+    /// Returns the wrapper event (kind:445) ready to be published.
+    pub async fn create_group_message(
+        &self,
+        group_id: Vec<u8>,
+        rumor: nostr::UnsignedEvent,
+    ) -> Result<Event, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::CreateGroupMessage {
+                group_id,
+                rumor,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
 
     /// Return the path to the underlying `vector-mls.db` file.
     pub fn db_path(&self) -> &Path {
         &self.db_path
     }
+}
+
+/// Group information returned after accepting a Welcome.
+#[derive(Debug, Clone)]
+pub struct GroupInfo {
+    pub mls_group_id: Vec<u8>,
+    pub nostr_group_id: Vec<u8>,
+    pub name: String,
 }
 
 /// Enforce `0o600` on the SQLite database and its WAL/SHM sidecars if present.
@@ -177,11 +352,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp.path().join("vector-mls.db");
 
-        let handle = MlsEngineHandle::new_persistent(&db_path).expect("new_persistent");
+        let _handle = MlsEngineHandle::new_persistent(&db_path).expect("new_persistent");
         assert!(db_path.exists());
         assert!(db_path.with_extension("db-wal").exists());
         assert!(db_path.with_extension("db-shm").exists());
-        assert!(Arc::strong_count(&handle.engine) >= 1);
 
         let meta = std::fs::metadata(&db_path).expect("metadata");
         #[cfg(unix)]
@@ -204,7 +378,7 @@ mod tests {
                     .expect("shm metadata")
                     .permissions()
                     .mode()
-                & 0o777,
+                    & 0o777,
                 0o600
             );
         }

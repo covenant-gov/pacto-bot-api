@@ -452,6 +452,8 @@ fn is_mutating_method(method: Option<Method>) -> bool {
             | Some(Method::AgentError)
             | Some(Method::AgentListHandlers)
             | Some(Method::AgentUnregisterHandler)
+            | Some(Method::AgentSendGroupMessage)
+            | Some(Method::AgentPublishKeyPackage)
     )
 }
 

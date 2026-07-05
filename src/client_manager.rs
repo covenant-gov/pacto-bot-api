@@ -56,8 +56,11 @@ impl ClientManager {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    tokio::fs::set_permissions(&bot_data_dir, std::fs::Permissions::from_mode(0o700))
-                        .await?;
+                    tokio::fs::set_permissions(
+                        &bot_data_dir,
+                        std::fs::Permissions::from_mode(0o700),
+                    )
+                    .await?;
                 }
                 let mls_db_path = bot_data_dir.join("vector-mls.db");
                 BotState::new_with_mls(bot_config, mls_db_path)?
@@ -278,9 +281,13 @@ mod tests {
             bots: vec![mls_bot, dm_only_bot],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap()
+            ClientManager::new(
+                _temp.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap()
         });
 
         let mls_state = manager.get_bot_by_id("mls-bot").unwrap();
@@ -305,9 +312,13 @@ mod tests {
             bots: vec![bot_a, bot_b],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap()
+            ClientManager::new(
+                _temp.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap()
         });
 
         let path_a = manager
@@ -341,9 +352,13 @@ mod tests {
             bots: vec![bot],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            ClientManager::new(_temp.path(), config, NostrClient::new(vec![]).await.unwrap())
-                .await
-                .unwrap()
+            ClientManager::new(
+                _temp.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap()
         });
 
         let state = manager.get_bot_by_id("mls-perm").unwrap();

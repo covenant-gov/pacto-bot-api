@@ -63,7 +63,8 @@ pub enum DaemonError {
     #[error("MLS engine error: {0}")]
     Mls(#[from] crate::mls::MlsError),
 
-    #[error("unknown bot: {0}")]    UnknownBot(String),
+    #[error("unknown bot: {0}")]
+    UnknownBot(String),
 
     #[error("handler not registered")]
     HandlerNotRegistered,

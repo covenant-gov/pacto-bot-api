@@ -331,10 +331,12 @@
       "summary": "The daemon persists event cursors, handler registrations, and bot configuration in a SQLite database (`agent.db`) using WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`). The ...",
       "tests": [
         "tests/daemon_shutdown.rs",
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/mls_send_only.rs"
       ],
       "parsed_tests": [
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/mls_send_only.rs"
       ],
       "sources": [
         "src/db.rs"
@@ -347,10 +349,12 @@
       "summary": "The daemon recovers state on restart: validates that stored npub values match the config, resets cursors for mismatched identities, and resumes event subscriptions from the last persisted cursor. C...",
       "tests": [
         "tests/daemon_startup.rs",
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/mls_send_only.rs"
       ],
       "parsed_tests": [
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_send_only.rs"
       ],
       "sources": [
         "src/db.rs",

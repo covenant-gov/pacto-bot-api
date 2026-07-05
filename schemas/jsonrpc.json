@@ -435,6 +435,66 @@
       }
     },
     {
+      "name": "agent.send_group_message",
+      "summary": "Send an encrypted MLS group message as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will send the message."
+              },
+              "group_id": {
+                "type": "string",
+                "description": "Hex-encoded MLS group ID."
+              },
+              "content": {
+                "type": "string",
+                "description": "Plaintext message body to encrypt."
+              }
+            },
+            "required": ["bot_id", "group_id", "content"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": {
+          "type": "string",
+          "description": "Hex id of the published kind:445 MLS group message event."
+        }
+      }
+    },
+    {
+      "name": "agent.publish_key_package",
+      "summary": "Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will publish the KeyPackage."
+              }
+            },
+            "required": ["bot_id"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": {
+          "type": "string",
+          "description": "Hex id of the published kind:443 KeyPackage event."
+        }
+      }
+    },
+    {
       "name": "admin.send_test_dm",
       "summary": "Send a test DM as the specified bot (admin-only).",
       "params": [
