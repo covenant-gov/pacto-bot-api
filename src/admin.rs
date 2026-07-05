@@ -41,6 +41,7 @@ use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
+use rpassword::read_password;
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write as IoWrite};
@@ -1236,7 +1237,9 @@ fn prompt_uri_with_label(backend: &str) -> Result<String, DaemonError> {
         _ => "bunker URI",
     };
     loop {
-        let uri = prompt_nonempty(&format!("Enter {label}: "))?;
+        let uri = prompt_secret(&format!("Enter {label}: "))?
+            .trim_end()
+            .to_string();
         if uri.is_empty() {
             println!("A bunker URI is required for this backend.");
             continue;
@@ -1338,13 +1341,19 @@ fn prompt_nonempty(prompt: &str) -> Result<String, DaemonError> {
         return Ok(trimmed.to_string());
     }
 }
-
 fn prompt_line(prompt: &str) -> Result<String, DaemonError> {
     print!("{prompt}");
     io::stdout().flush().map_err(DaemonError::Io)?;
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).map_err(DaemonError::Io)?;
     Ok(buf)
+}
+
+/// Prompt for a secret value (e.g., bunker URI) without echoing to terminal.
+fn prompt_secret(prompt: &str) -> Result<String, DaemonError> {
+    print!("{prompt}");
+    io::stdout().flush().map_err(DaemonError::Io)?;
+    read_password().map_err(DaemonError::Io)
 }
 
 async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), DaemonError> {

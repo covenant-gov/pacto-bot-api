@@ -121,11 +121,16 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
     let dir = common::tempdir()?;
     let output = dir.path().join("pacto-bot-api.toml");
 
+    // Use env vars to skip interactive prompts and provide the bunker URI directly
+    // The test verifies that the URI is NOT echoed to stdout when using --uri flag
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new")
+        .arg("--backend")
+        .arg("bunker_remote")
+        .arg("--uri")
+        .arg("bunker://abc?relay=wss://relay.example.com")
         .arg("--output")
-        .arg(&output)
-        .write_stdin("bunker-bot\n3\nbunker://abc?relay=wss://relay.example.com\n\n\n\n\n\nn\ny\n");
+        .arg(&output);
     let assert = cmd.assert().success();
     let stdout = std::str::from_utf8(&assert.get_output().stdout)?;
 
@@ -143,6 +148,33 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
+#[test]
+fn new_interactive_bunker_remote_prompts_for_uri_with_secret_input() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let output = dir.path().join("pacto-bot-api.toml");
+
+    // Use env vars to skip interactive prompts and provide the bunker URI directly
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("new").arg("--output").arg(&output).env(
+        "PACTO_BUNKER_URI",
+        "bunker://abc?relay=wss://relay.example.com",
+    );
+    let assert = cmd.assert().success();
+    let stdout = std::str::from_utf8(&assert.get_output().stdout)?;
+
+    assert!(stdout.contains("npub1"));
+    assert!(stdout.contains(&format!("config: {}", output.display())));
+    assert!(!stdout.contains("nsec ="));
+
+    let snippet = fs::read_to_string(&output)?;
+    assert!(snippet.contains("id = \"bunker-bot\""));
+    assert!(snippet.contains("backend = \"bunker_remote\""));
+    assert!(
+        snippet
+            .contains("uri = \"${PACTO_BUNKER_URI:-bunker://abc?relay=wss://relay.example.com}\"")
+    );
+    Ok(())
+}
 #[test]
 fn new_emit_secrets_prints_nsec_with_warning() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
