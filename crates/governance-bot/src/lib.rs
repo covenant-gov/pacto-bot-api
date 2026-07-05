@@ -6,3 +6,4 @@
 //! the snapshot formatter (U9) can consume.
 
 pub mod evm;
+pub mod snapshot;
