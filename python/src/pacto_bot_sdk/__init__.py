@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 from ._generated import models as _models
 from ._generated.client import PactoClient, PactoClientError

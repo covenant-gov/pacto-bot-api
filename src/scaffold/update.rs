@@ -150,7 +150,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: crate::scaffold::lock::AdminLock {
-                    version: "0.5.0".to_string(),
+                    version: "0.6.0".to_string(),
                 },
             },
         };
@@ -176,7 +176,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: crate::scaffold::lock::AdminLock {
-                    version: "0.5.0".to_string(),
+                    version: "0.6.0".to_string(),
                 },
             },
         };

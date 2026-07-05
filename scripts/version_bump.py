@@ -114,6 +114,9 @@ def update_template_bot_pyproject(root: Path, sdk_version: str) -> None:
 
 def update_examples_requirements(root: Path, sdk_version: str) -> None:
     path = root / "examples" / "requirements.txt"
+    if not path.exists():
+        print("examples/requirements.txt: not present, skipping")
+        return
     text = path.read_text()
     text = re.sub(
         r'pacto-bot-sdk>=\d+\.\d+\.\d+',
@@ -122,6 +125,42 @@ def update_examples_requirements(root: Path, sdk_version: str) -> None:
     )
     path.write_text(text)
     print(f"examples/requirements.txt: SDK floor -> {sdk_version}")
+
+
+def update_bundled_version_tests(root: Path, sdk_version: str, contract_version: str) -> None:
+    path = root / "src" / "scaffold" / "cache.rs"
+    text = path.read_text()
+
+    text = re.sub(
+        r'fn bundled_contract_version_parses\(\) \{\s*let version = bundled_contract_version\(\)\.unwrap\(\);\s*assert_eq!\(version, semver::Version::new\(\d+, \d+, \d+\)\);',
+        f'fn bundled_contract_version_parses() {{\n        let version = bundled_contract_version().unwrap();\n        assert_eq!(version, semver::Version::new({contract_version.replace(".", ", ")}));',
+        text,
+    )
+
+    text = re.sub(
+        r'fn bundled_sdk_version_parses\(\) \{\s*let version = bundled_sdk_version\(\)\.unwrap\(\);\s*assert_eq!\(version, semver::Version::new\(\d+, \d+, \d+\)\);',
+        f'fn bundled_sdk_version_parses() {{\n        let version = bundled_sdk_version().unwrap();\n        assert_eq!(version, semver::Version::new({sdk_version.replace(".", ", ")}));',
+        text,
+    )
+
+    path.write_text(text)
+    print(f"src/scaffold/cache.rs: bundled version test expectations updated")
+
+
+def update_scaffold_lock_versions(root: Path, current_daemon: str, new_daemon: str) -> None:
+    paths = [
+        root / "src" / "scaffold" / "lock.rs",
+        root / "src" / "scaffold" / "update.rs",
+        root / "tests" / "admin_cli_scaffold.rs",
+    ]
+    for path in paths:
+        text = path.read_text()
+        new_text = re.sub(rf'"{re.escape(current_daemon)}"', f'"{new_daemon}"', text)
+        if new_text != text:
+            path.write_text(new_text)
+            print(f"{path.relative_to(root)}: admin version {current_daemon} -> {new_daemon}")
+        else:
+            print(f"{path.relative_to(root)}: no admin version {current_daemon} found")
 
 
 def update_agents_readme(root: Path, current_daemon: str, new_daemon: str) -> None:
@@ -244,9 +283,21 @@ def validate(
     if f"pacto-bot-sdk>={sdk_version}" not in bot_pyproject:
         errors.append(f"bot template pyproject.toml: missing sdk floor {sdk_version}")
 
-    req = (root / "examples" / "requirements.txt").read_text()
-    if f"pacto-bot-sdk>={sdk_version}" not in req:
-        errors.append(f"examples/requirements.txt: missing sdk floor {sdk_version}")
+    req = root / "examples" / "requirements.txt"
+    if req.exists():
+        req_text = req.read_text()
+        if f"pacto-bot-sdk>={sdk_version}" not in req_text:
+            errors.append(f"examples/requirements.txt: missing sdk floor {sdk_version}")
+    else:
+        print("examples/requirements.txt: not present, skipping validation")
+
+    cache_rs = (root / "src" / "scaffold" / "cache.rs").read_text()
+    expected_contract_assert = f'assert_eq!(version, semver::Version::new({contract_version.replace(".", ", ")}));'
+    expected_sdk_assert = f'assert_eq!(version, semver::Version::new({sdk_version.replace(".", ", ")}));'
+    if expected_contract_assert not in cache_rs:
+        errors.append(f"src/scaffold/cache.rs: bundled contract test expectation missing {contract_version}")
+    if expected_sdk_assert not in cache_rs:
+        errors.append(f"src/scaffold/cache.rs: bundled SDK test expectation missing {sdk_version}")
 
     if errors:
         print("error: version consistency check failed:", file=sys.stderr)
@@ -319,6 +370,8 @@ def main() -> int:
     update_template_manifest(root, new_daemon, new_sdk, new_contract)
     update_template_bot_pyproject(root, new_sdk)
     update_examples_requirements(root, new_sdk)
+    update_bundled_version_tests(root, new_sdk, new_contract)
+    update_scaffold_lock_versions(root, current_daemon, new_daemon)
     update_agents_readme(root, current_daemon, new_daemon)
 
     move_changelog_unreleased(

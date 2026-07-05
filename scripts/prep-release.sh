@@ -112,7 +112,7 @@ echo "==> Running make validate"
 make validate
 
 echo "==> Running Python SDK tests"
-python -m pip install -e python/ >/dev/null 2>&1 || python3 -m pip install -e python/ >/dev/null 2>&1
+python -m pip install -e 'python/[dev]' >/dev/null 2>&1 || python3 -m pip install -e 'python/[dev]' >/dev/null 2>&1
 python -m pytest python/tests/ -q || python3 -m pytest python/tests/ -q
 
 echo "==> Running cargo test --all-targets --all-features"

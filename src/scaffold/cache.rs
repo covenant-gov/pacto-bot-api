@@ -452,12 +452,12 @@ mod tests {
     #[test]
     fn bundled_contract_version_parses() {
         let version = bundled_contract_version().unwrap();
-        assert_eq!(version, semver::Version::new(0, 1, 0));
+        assert_eq!(version, semver::Version::new(0, 6, 0));
     }
 
     #[test]
     fn bundled_sdk_version_parses() {
         let version = bundled_sdk_version().unwrap();
-        assert_eq!(version, semver::Version::new(0, 2, 2));
+        assert_eq!(version, semver::Version::new(0, 3, 0));
     }
 }

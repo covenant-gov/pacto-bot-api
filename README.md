@@ -34,7 +34,7 @@ You can customize the installation with environment variables:
 curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
 
 # Install a specific version instead of latest
-curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.5.0 bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.6.0 bash
 ```
 
 #### Build from source
