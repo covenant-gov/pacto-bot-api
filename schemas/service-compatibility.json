@@ -3,19 +3,28 @@
   "title": "pacto-bot-api service compatibility windows",
   "type": "object",
   "properties": {
-    "relay": { "$ref": "#/definitions/versionWindow" },
-    "evm": { "$ref": "#/definitions/versionWindow" },
-    "nostra": { "$ref": "#/definitions/versionWindow" },
-    "aztec": { "$ref": "#/definitions/versionWindow" },
-    "bunker": { "$ref": "#/definitions/versionWindow" }
+    "relay": {
+      "$ref": "#/definitions/versionWindow",
+      "default": { "min_version": "0.0.0", "max_version": "99.99.99" }
+    },
+    "evm": {
+      "$ref": "#/definitions/versionWindow",
+      "default": { "min_version": "0.0.0", "max_version": "99.99.99" }
+    },
+    "nostra": {
+      "$ref": "#/definitions/versionWindow",
+      "default": { "min_version": "0.0.0", "max_version": "99.99.99" }
+    },
+    "aztec": {
+      "$ref": "#/definitions/versionWindow",
+      "default": { "min_version": "0.0.0", "max_version": "99.99.99" }
+    },
+    "bunker": {
+      "$ref": "#/definitions/versionWindow",
+      "default": { "min_version": "0.0.0", "max_version": "99.99.99" }
+    }
   },
   "required": ["relay", "evm", "nostra", "aztec"],
-  "additionalProperties": false,
-  "relay": { "min_version": "0.0.0", "max_version": "99.99.99" },
-  "evm": { "min_version": "0.0.0", "max_version": "99.99.99" },
-  "nostra": { "min_version": "0.0.0", "max_version": "99.99.99" },
-  "aztec": { "min_version": "0.0.0", "max_version": "99.99.99" },
-  "bunker": { "min_version": "0.0.0", "max_version": "99.99.99" },
   "definitions": {
     "versionWindow": {
       "type": "object",
