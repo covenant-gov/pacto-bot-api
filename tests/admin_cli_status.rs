@@ -13,8 +13,8 @@ async fn status_reports_live_daemon_metrics() -> Result<(), Box<dyn Error>> {
 
     let child = common::spawn_daemon_until_ready(&config).await?;
 
-    // Give the daemon a moment to finish startup and populate BotHealth.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait until the daemon reports ready via the admin CLI.
+    wait_until_status_ready(&config, Duration::from_secs(10)).await?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args(["--config", &config.to_string_lossy(), "status"]);
@@ -57,7 +57,7 @@ async fn status_json_format_reports_expected_fields() -> Result<(), Box<dyn Erro
     let config = common::make_config(&dir, vec![bot])?;
 
     let child = common::spawn_daemon_until_ready(&config).await?;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_status_ready(&config, Duration::from_secs(10)).await?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.args([
@@ -107,7 +107,7 @@ async fn status_reads_latest_report_when_daemon_stopped() -> Result<(), Box<dyn 
     let config = common::make_config(&dir, vec![bot])?;
 
     let child = common::spawn_daemon_until_ready(&config).await?;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    wait_until_status_ready(&config, Duration::from_secs(10)).await?;
     common::shutdown_daemon(child).await?;
 
     let latest_path = dir.path().join("reports").join("latest.json");
@@ -130,4 +130,43 @@ async fn status_reads_latest_report_when_daemon_stopped() -> Result<(), Box<dyn 
         "expected bot id from latest.json, got:\n{stdout}"
     );
     Ok(())
+}
+
+/// Poll the admin CLI until the daemon reports `daemon_status: ready`.
+async fn wait_until_status_ready(
+    config: &std::path::Path,
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let config = config.to_path_buf();
+    loop {
+        let ready = tokio::task::spawn_blocking({
+            let config = config.clone();
+            move || -> Result<bool, Box<dyn Error + Send + Sync>> {
+                let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+                cmd.args([
+                    "--config",
+                    &config.to_string_lossy(),
+                    "status",
+                    "--format",
+                    "json",
+                ]);
+                let output = cmd.output()?;
+                if !output.status.success() {
+                    return Ok(false);
+                }
+                let stdout = std::str::from_utf8(&output.stdout)?;
+                let report: serde_json::Value = serde_json::from_str(stdout.trim())?;
+                Ok(report["daemon_status"].as_str() == Some("ready"))
+            }
+        })
+        .await;
+        if let Ok(Ok(true)) = ready {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timeout waiting for daemon status ready".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
