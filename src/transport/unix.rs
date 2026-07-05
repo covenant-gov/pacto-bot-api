@@ -2,8 +2,9 @@ use crate::errors::DaemonError;
 use crate::handlers::ConnectionHandle;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
-    JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message,
+    JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message, validate_params,
 };
+use serde_json::Value;
 use async_trait::async_trait;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -336,6 +337,14 @@ async fn handle_connection(
                     Ok(msg) => {
                         let id = msg.id().cloned();
                         let current_handler_id = handler_id_for_message.lock().await.clone();
+
+                        // Runtime OpenRPC schema validation of incoming params.
+                        if let Some(name) = msg.method() {
+                            if let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null)) {
+                                return id.map(|id| JsonRpcMessage::error(id, e.into()));
+                            }
+                        }
+
                         match handler(msg, connection, current_handler_id).await {
                             Ok(resp) => resp,
                             Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),

@@ -1,7 +1,79 @@
+static METHOD_PARAMS_SCHEMA: LazyLock<HashMap<String, serde_json::Value>> = LazyLock::new(|| {
+    let json_str = include_str!("../../schemas/jsonrpc.json");
+    let openrpc: serde_json::Value = serde_json::from_str(json_str)
+        .map_err(|e| panic!("failed to parse OpenRPC schema: {e}"))
+        .unwrap();
+
+    let methods = openrpc
+        .get("methods")
+        .and_then(|v| v.as_array())
+        .expect("OpenRPC schema missing methods array");
+    let mut map = HashMap::new();
+
+    for method in methods {
+        let name = method
+            .get("name")
+            .and_then(|v| v.as_str())
+            .expect("method missing name");
+        let params = method
+            .get("params")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first());
+        if let Some(param) = params {
+            let schema = param
+                .get("schema")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+            map.insert(name.to_string(), schema);
+        } else {
+            map.insert(name.to_string(), serde_json::Value::Array(Vec::new()));
+        }
+    }
+
+    map
+});
+
+/// Runtime JSON schema validator for JSON-RPC params.
+///
+/// Loads the OpenRPC schema from `schemas/jsonrpc.json` and validates
+/// the `params` field of incoming JSON-RPC requests against the method's
+/// declared schema. Returns `Ok(())` if validation passes, or `Err` with
+/// a descriptive message if validation fails.
+pub fn validate_params(method: &str, params: &serde_json::Value) -> Result<(), DaemonError> {
+    // Get the params schema for this method
+    let schema = METHOD_PARAMS_SCHEMA
+        .get(method)
+        .ok_or_else(|| DaemonError::Config(format!("unknown method {method}")))?;
+
+    // If params is null or the schema is empty array, validation passes
+    if params.is_null()
+        || (schema.is_array() && schema.as_array().map(|a| a.is_empty()).unwrap_or(false))
+    {
+        return Ok(());
+    }
+
+    // Build validator from schema
+    let validator = jsonschema::Validator::new(schema)
+        .map_err(|e| DaemonError::Config(format!("invalid schema for method {method}: {e}")))?;
+
+    // Validate params against schema
+    if let Err(e) = validator.validate(params) {
+        let error_str = format!("{}", e);
+        return Err(DaemonError::Config(format!(
+            "invalid params for method {method}: {}",
+            error_str
+        )));
+    }
+    Ok(())
+}
+
+/// Known JSON-RPC methods in the daemon catalog.
 use crate::errors::{DaemonError, JsonRpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 /// Maximum size of a single newline-delimited JSON frame (1 MiB).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
@@ -104,6 +176,14 @@ impl JsonRpcMessage {
     pub fn method(&self) -> Option<&str> {
         match self {
             Self::Request { method, .. } | Self::Notification { method, .. } => Some(method),
+            Self::Response { .. } | Self::Error { .. } => None,
+        }
+    }
+
+    /// Return the params value, if this is a request or notification.
+    pub fn params(&self) -> Option<&Value> {
+        match self {
+            Self::Request { params, .. } | Self::Notification { params, .. } => params.as_ref(),
             Self::Response { .. } | Self::Error { .. } => None,
         }
     }

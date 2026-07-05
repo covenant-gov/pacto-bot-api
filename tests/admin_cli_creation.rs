@@ -125,6 +125,7 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
     // The test verifies that the URI is NOT echoed to stdout when using --uri flag
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
     cmd.arg("new")
+        .arg("bunker-bot")
         .arg("--backend")
         .arg("bunker_remote")
         .arg("--uri")
@@ -155,10 +156,18 @@ fn new_interactive_bunker_remote_prompts_for_uri_with_secret_input() -> Result<(
 
     // Use env vars to skip interactive prompts and provide the bunker URI directly
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
-    cmd.arg("new").arg("--output").arg(&output).env(
-        "PACTO_BUNKER_URI",
-        "bunker://abc?relay=wss://relay.example.com",
-    );
+    cmd.arg("new")
+        .arg("bunker-bot")
+        .arg("--backend")
+        .arg("bunker_remote")
+        .arg("--uri")
+        .arg("bunker://abc?relay=wss://relay.example.com")
+        .arg("--output")
+        .arg(&output)
+        .env(
+            "PACTO_BUNKER_URI",
+            "bunker://abc?relay=wss://relay.example.com",
+        );
     let assert = cmd.assert().success();
     let stdout = std::str::from_utf8(&assert.get_output().stdout)?;
 
