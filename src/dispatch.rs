@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -97,6 +97,7 @@ impl HandlerAction {
 #[derive(Debug)]
 struct PendingDispatch {
     sender: mpsc::UnboundedSender<(String, HandlerAction)>,
+    handler_ids: HashSet<String>,
 }
 
 /// Token bucket for rate limiting.
@@ -299,6 +300,7 @@ impl Dispatch {
         let expected = handlers.len();
         let event_id = event.event_id.clone();
         let (response_tx, mut response_rx) = mpsc::unbounded_channel();
+        let handler_ids: HashSet<String> = handlers.iter().map(|h| h.id.clone()).collect();
 
         {
             let mut pending = self.pending.lock().await;
@@ -306,6 +308,7 @@ impl Dispatch {
                 event_id.clone(),
                 PendingDispatch {
                     sender: response_tx,
+                    handler_ids,
                 },
             );
         }
@@ -899,9 +902,18 @@ impl Dispatch {
 
         let pending = self.pending.lock().await;
         if let Some(dispatch) = pending.get(event_id) {
+            let response_handler_id = handler_id.unwrap_or("unknown");
+            if !dispatch.handler_ids.contains(response_handler_id) {
+                warn!(
+                    handler_id = %response_handler_id,
+                    event_id = %event_id,
+                    "handler.response from handler not dispatched this event"
+                );
+                return Err(DaemonError::HandlerNotDispatched);
+            }
             let _ = dispatch
                 .sender
-                .send((handler_id.unwrap_or("unknown").to_string(), action));
+                .send((response_handler_id.to_string(), action));
         } else {
             warn!(
                 handler_id = handler_id.unwrap_or("unknown"),
@@ -1589,6 +1601,177 @@ mod tests {
 
         let cm = cm.read().await;
         assert!(cm.handler_registry.get_handler(&handler_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn handler_response_from_dispatched_handler_is_accepted() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let (tx_a, mut rx_a) = mpsc::channel(1);
+        let handler_a = {
+            let bot_config_for_register = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+            };
+            let mut registry = HandlerRegistry::new();
+            let id = registry
+                .register(
+                    ConnectionHandle::new(tx_a),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config_for_register],
+                )
+                .unwrap()
+                .handler_id;
+            {
+                let mut cm = cm.write().await;
+                cm.handler_registry = registry;
+            }
+            id
+        };
+
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-1".into(),
+            event_type: EventType::DmReceived,
+            chat_id: None,
+            content: "hello".into(),
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+        };
+
+        let dispatch = Arc::new(dispatch);
+        let dispatch_clone = Arc::clone(&dispatch);
+        let dispatch_task = tokio::spawn(async move {
+            dispatch_clone.dispatch_event(event).await.unwrap();
+        });
+
+        let received = rx_a.recv().await.unwrap();
+        let agent_event: AgentEvent = match received {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert_eq!(agent_event.event_id, "evt-1");
+
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "handler.response",
+            Some(serde_json::json!({
+                "event_id": "evt-1",
+                "action": "ack",
+            })),
+        );
+        dispatch
+            .handle_message(req, Some(&handler_a), None)
+            .await
+            .unwrap();
+
+        dispatch_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handler_response_from_undispatched_handler_is_rejected() {
+        let keys = test_keys();
+        let other_keys = test_keys();
+        let (dispatch, cm) = dispatch_with_bots(vec![
+            bot_config("echo-bot", &keys, &["ReadMessages"]),
+            bot_config("other-bot", &other_keys, &["ReadMessages"]),
+        ])
+        .await;
+
+        let (tx_a, mut rx_a) = mpsc::channel(1);
+        let (tx_b, _rx_b) = mpsc::channel(1);
+        let (handler_a, handler_b) = {
+            let bot_config_for_a = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("echo-bot").unwrap().config.clone()
+            };
+            let bot_config_for_b = {
+                let cm = cm.read().await;
+                cm.get_bot_by_id("other-bot").unwrap().config.clone()
+            };
+            let mut registry = HandlerRegistry::new();
+            let id_a = registry
+                .register(
+                    ConnectionHandle::new(tx_a),
+                    vec!["echo-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config_for_a],
+                )
+                .unwrap()
+                .handler_id;
+            let id_b = registry
+                .register(
+                    ConnectionHandle::new(tx_b),
+                    vec!["other-bot".to_string()],
+                    vec!["dm_received".to_string()],
+                    vec!["ReadMessages".to_string()],
+                    &[bot_config_for_b],
+                )
+                .unwrap()
+                .handler_id;
+            {
+                let mut cm = cm.write().await;
+                cm.handler_registry = registry;
+            }
+            (id_a, id_b)
+        };
+
+        let mut dispatch = dispatch;
+        dispatch.set_dispatch_timeout(Duration::from_millis(100));
+
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-1".into(),
+            event_type: EventType::DmReceived,
+            chat_id: None,
+            content: "hello".into(),
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+        };
+
+        let dispatch = Arc::new(dispatch);
+        let dispatch_clone = Arc::clone(&dispatch);
+        let dispatch_task = tokio::spawn(async move {
+            dispatch_clone.dispatch_event(event).await.unwrap();
+        });
+
+        let received = rx_a.recv().await.unwrap();
+        let agent_event: AgentEvent = match received {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert_eq!(agent_event.event_id, "evt-1");
+
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "handler.response",
+            Some(serde_json::json!({
+                "event_id": "evt-1",
+                "action": "ack",
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_b), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32010);
+
+        dispatch_task.await.unwrap();
     }
 
     #[tokio::test]
