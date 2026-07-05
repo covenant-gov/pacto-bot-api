@@ -406,6 +406,32 @@ impl NostrClient {
     }
 }
 
+/// Trait for the subset of Nostr client operations needed by
+/// [`ClientManager`](crate::client_manager::ClientManager) to subscribe bots
+/// to their gift-wrap filters. It is intentionally narrow so tests can provide
+/// a lightweight mock instead of a live relay pool.
+#[async_trait::async_trait]
+pub trait NostrSubscribe: Send + Sync {
+    /// Subscribe to kind 1059 gift wraps addressed to `npub`, optionally
+    /// restricted to events with `created_at` >= `since`.
+    async fn subscribe_bot_with_since(
+        &self,
+        npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError>;
+}
+
+#[async_trait::async_trait]
+impl NostrSubscribe for NostrClient {
+    async fn subscribe_bot_with_since(
+        &self,
+        npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError> {
+        self.subscribe_bot_with_since(npub, since).await
+    }
+}
+
 /// Sign an unsigned event using the daemon [`Signer`] trait.
 async fn sign_unsigned_event(
     signer: &dyn Signer,

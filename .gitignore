@@ -30,3 +30,5 @@ pacto-bot-api.toml
 # macOS
 .DS_Store
 python/dist/
+# Git worktrees
+.worktrees/
