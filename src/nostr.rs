@@ -292,11 +292,13 @@ impl NostrClient {
     ) -> Result<EventId, DaemonError> {
         let bot_pubkey = signer.public_key();
 
-        // Build the rumor event for the group message
+        // Build the plaintext inner rumor event. The inner kind must differ from
+        // the kind:445 MLS wrapper so that decrypted group content is not mistaken
+        // for the wire-format wrapper itself.
         let rumor = UnsignedEvent::new(
             bot_pubkey,
             Timestamp::now(),
-            Kind::MlsGroupMessage,
+            Kind::TextNote,
             Vec::new(),
             content,
         );
@@ -306,7 +308,19 @@ impl NostrClient {
             .await
             .map_err(|e| DaemonError::Nostr(format!("MLS group message creation failed: {e}")))?;
 
-        let output = self.client.send_event(&wrapper).await.map_err(|e| {
+        // The wrapper returned by the MLS engine is signed with an ephemeral group
+        // exporter key. Re-sign it with the bot's key so relays attribute the event
+        // to the bot and the signature is valid for the bot's public key.
+        let unsigned = UnsignedEvent::new(
+            bot_pubkey,
+            wrapper.created_at,
+            wrapper.kind,
+            wrapper.tags.to_vec(),
+            wrapper.content,
+        );
+        let signed_wrapper = sign_unsigned_event(signer, unsigned).await?;
+
+        let output = self.client.send_event(&signed_wrapper).await.map_err(|e| {
             error!(
                 bot_npub = %bot_pubkey.to_bech32().unwrap_or_else(|_| bot_pubkey.to_hex()),
                 error = %e,

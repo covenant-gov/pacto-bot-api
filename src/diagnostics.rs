@@ -571,14 +571,29 @@ fn redact_secrets(input: &str) -> String {
 fn redact_mls_paths(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
+    const FILENAME: &str = "vector-mls.db";
 
-    while let Some(pos) = rest.find("vector-mls.db") {
-        result.push_str(&rest[..pos]);
-        result.push_str("[REDACTED]/vector-mls.db");
-        rest = &rest[pos + "vector-mls.db".len()..];
+    while let Some(pos) = rest.find(FILENAME) {
+        // Find the beginning of the filesystem path by scanning backward over
+        // path characters. This redacts the entire per-bot directory
+        // (data_dir/<bot_id>/) rather than just the filename.
+        let path_start = rest[..pos]
+            .rfind(|c: char| !is_path_char(c))
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+
+        result.push_str(&rest[..path_start]);
+        result.push_str("[REDACTED]/");
+        result.push_str(FILENAME);
+        rest = &rest[pos + FILENAME.len()..];
     }
     result.push_str(rest);
     result
+}
+
+/// Return true for characters that can appear in a filesystem path component.
+fn is_path_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '\\' | '_' | '-' | '~' | '%')
 }
 
 /// Redact a contiguous alphanumeric token that starts with `prefix`.
@@ -850,6 +865,10 @@ mod tests {
         let input = "storage error for /data/bots/squad/vector-mls.db";
         let out = redact_secrets(input);
         assert!(
+            !out.contains("/data/bots/squad/"),
+            "redacted output still contains per-bot directory: {out}"
+        );
+        assert!(
             !out.contains("/data/bots/squad/vector-mls.db"),
             "redacted output still contains mls db path: {out}"
         );
@@ -857,6 +876,7 @@ mod tests {
             out.contains("[REDACTED]/vector-mls.db"),
             "missing redaction marker: {out}"
         );
+        assert_eq!(out, "storage error for [REDACTED]/vector-mls.db");
     }
 
     #[test]

@@ -328,6 +328,7 @@ fn generate_reconnect_token() -> Result<SecretString, DaemonError> {
 fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
     match event_type {
         "dm_received" => Ok(EventType::DmReceived),
+        "mls_welcome_received" => Ok(EventType::MlsWelcomeReceived),
         _ => Err(DaemonError::InvalidEventType(event_type.to_string())),
     }
 }

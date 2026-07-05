@@ -159,12 +159,10 @@ impl MlsEngineHandle {
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
                     MlsCommand::CreateKeyPackage { pubkey, relays, tx } => {
-                        let result: Result<(String, Vec<nostr::Tag>), MlsError> = (|| {
-                            let (encoded, tags) =
-                                engine.create_key_package_for_event(&pubkey, relays)?;
-                            Ok((encoded, tags.to_vec()))
-                        })(
-                        );
+                        let result: Result<(String, Vec<nostr::Tag>), MlsError> = engine
+                            .create_key_package_for_event(&pubkey, relays)
+                            .map_err(MlsError::from)
+                            .map(|(encoded, tags)| (encoded, tags.to_vec()));
                         let _ = tx.send(result);
                     }
                     MlsCommand::ProcessWelcome {

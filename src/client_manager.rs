@@ -1,5 +1,5 @@
 use crate::bot_state::BotState;
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, validate_bot_id};
 use crate::db::Db;
 use crate::diagnostics::{BotHealth, Diagnostics};
 use crate::errors::DaemonError;
@@ -39,6 +39,7 @@ impl ClientManager {
 
         for bot_config in config.bots {
             let bot_id = bot_config.id.clone();
+            validate_bot_id(&bot_id)?;
             if bot_id_to_pubkey.contains_key(&bot_id) {
                 return Err(DaemonError::Config(format!("duplicate bot_id: {bot_id}")));
             }
@@ -396,6 +397,30 @@ mod tests {
         });
         assert!(matches!(err, DaemonError::Config(_)));
         assert!(err.to_string().contains("duplicate bot_id"));
+    }
+
+    #[test]
+    fn unsafe_bot_id_is_rejected() {
+        let keys = nostr::Keys::generate();
+        let mut bad_bot = bot_config("..", &keys);
+        bad_bot.capabilities.push("SendGroupMessages".into());
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![bad_bot],
+        };
+
+        let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let data_dir = tempfile::tempdir().unwrap();
+            ClientManager::new(
+                data_dir.path(),
+                config,
+                NostrClient::new(vec![]).await.unwrap(),
+            )
+            .await
+            .unwrap_err()
+        });
+        assert!(matches!(err, DaemonError::Config(_)));
+        assert!(err.to_string().contains("bot_id must not be '..'"));
     }
 
     #[test]
