@@ -8,11 +8,8 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 #[cfg(unix)]
 use nix::unistd::Pid;
-use nostr::event::tag::Tag;
 use nostr::key::Keys;
-use nostr::secp256k1::schnorr::Signature;
-use nostr::{Event, Kind, PublicKey, Timestamp, ToBech32, UnsignedEvent};
-use nostr_sdk::Client;
+use nostr::{PublicKey, ToBech32};
 use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig, validate_bot_id};
 use pacto_bot_api::diagnostics::{
     BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
@@ -20,8 +17,9 @@ use pacto_bot_api::diagnostics::{
 };
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::nip46;
+use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::secrecy::ExposeSecret;
-use pacto_bot_api::signer::{Signer, SignerBackend};
+use pacto_bot_api::signer::SignerBackend;
 #[cfg(not(unix))]
 use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
@@ -34,7 +32,6 @@ use rusqlite::Connection;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use serde_json::json;
 use tokio::io::AsyncReadExt;
 #[cfg(not(unix))]
 use tokio::io::AsyncWriteExt;
@@ -49,7 +46,6 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process;
-use std::str::FromStr;
 use std::time::Duration;
 
 use pacto_bot_api::guide;
@@ -1297,7 +1293,7 @@ fn prompt_line(prompt: &str) -> Result<String, DaemonError> {
 async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), DaemonError> {
     let config = DaemonConfig::load(config_path)?;
     let bot = find_bot(&config.bots, bot_id)?;
-    let event = build_profile_event(bot).await?;
+    let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
 
     let relays: Vec<String> = bot
         .relays
@@ -1307,25 +1303,15 @@ async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), Dae
         .collect();
 
     if relays.is_empty() {
+        let event = pacto_bot_api::nostr::build_bot_profile_event(bot, &signer).await?;
         eprintln!("warning: no relays configured; event signed but not published");
         println!("{}", event.id.to_hex());
         return Ok(());
     }
 
-    let client = Client::default();
-    for relay in &relays {
-        client
-            .add_relay(relay)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("failed to add relay {relay}: {e}")))?;
-    }
-    client.connect().await;
-
-    let output = client
-        .send_event(&event)
-        .await
-        .map_err(|e| DaemonError::Nostr(format!("failed to publish event: {e}")))?;
-    println!("{}", output.id().to_hex());
+    let client = NostrClient::new(relays).await?;
+    let event_id = client.publish_bot_profile(bot, &signer).await?;
+    println!("{}", event_id.to_hex());
 
     Ok(())
 }
@@ -2872,62 +2858,6 @@ fn signing_backend_label(signing: &SigningConfig) -> String {
     }
 }
 
-async fn build_profile_event(bot: &BotConfig) -> Result<Event, DaemonError> {
-    let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
-    build_profile_event_with_signer(bot, &signer).await
-}
-
-async fn build_profile_event_with_signer(
-    bot: &BotConfig,
-    signer: &dyn Signer,
-) -> Result<Event, DaemonError> {
-    let name = bot.display_name.as_deref().unwrap_or(&bot.id);
-    let mut profile = json!({
-        "name": name,
-        "bot": true,
-        "capabilities": bot.capabilities,
-    });
-    if let Some(about) = &bot.about {
-        profile["about"] = about.clone().into();
-    }
-    if let Some(picture) = &bot.picture {
-        profile["picture"] = picture.clone().into();
-    }
-    let content = serde_json::to_string(&profile)?;
-
-    let pubkey = signer.public_key();
-    let created_at = Timestamp::now();
-    let kind = Kind::Metadata;
-    let tags: Vec<Tag> = Vec::new();
-
-    let mut unsigned = UnsignedEvent::new(pubkey, created_at, kind, tags.clone(), content.clone());
-    unsigned.ensure_id();
-    let event_id = unsigned
-        .id
-        .ok_or_else(|| DaemonError::Nostr("failed to compute event id".into()))?;
-
-    let payload = event_signing_bytes(&unsigned)?;
-    let sig_hex = signer.sign_event(&payload).await?;
-    let signature = Signature::from_str(&sig_hex)
-        .map_err(|e| DaemonError::Nostr(format!("invalid signature: {e}")))?;
-
-    Ok(Event::new(
-        event_id, pubkey, created_at, kind, tags, content, signature,
-    ))
-}
-
-fn event_signing_bytes(unsigned: &UnsignedEvent) -> Result<Vec<u8>, DaemonError> {
-    serde_json::to_vec(&json!([
-        0,
-        unsigned.pubkey,
-        unsigned.created_at,
-        unsigned.kind,
-        unsigned.tags,
-        unsigned.content
-    ]))
-    .map_err(DaemonError::Json)
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ExportState {
     metadata: ExportMetadata,
@@ -3478,6 +3408,8 @@ fn print_status_text(report: &StatusReport) -> Result<(), DaemonError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::Kind;
+    use pacto_bot_api::nostr::build_bot_profile_event;
     use pacto_bot_api::signer::LocalKey;
 
     fn nsec_signer() -> Result<(LocalKey, String, String), DaemonError> {
@@ -3705,7 +3637,7 @@ mod tests {
     async fn build_profile_event_is_kind_metadata() -> Result<(), DaemonError> {
         let (signer, nsec, npub) = nsec_signer()?;
         let bot = dummy_bot("profile-bot", &npub, &nsec);
-        let event = build_profile_event_with_signer(&bot, &signer).await?;
+        let event = build_bot_profile_event(&bot, &signer).await?;
 
         assert_eq!(event.kind, Kind::Metadata);
         assert!(event.verify_signature());
@@ -3728,7 +3660,7 @@ mod tests {
         bot.display_name = Some("Profile Bot".to_string());
         bot.about = Some("A test bot".to_string());
         bot.picture = Some("https://example.com/bot.png".to_string());
-        let event = build_profile_event_with_signer(&bot, &signer).await?;
+        let event = build_bot_profile_event(&bot, &signer).await?;
 
         let parsed: serde_json::Value = serde_json::from_str(&event.content)?;
         assert_eq!(parsed["name"], "Profile Bot");

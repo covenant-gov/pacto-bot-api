@@ -24,6 +24,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tracing::{error, info};
 
+use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType};
@@ -386,6 +387,31 @@ impl NostrClient {
         Ok(*output.id())
     }
 
+    /// Publish a kind:0 metadata event for the bot using the admin CLI profile
+    /// format.
+    ///
+    /// The metadata JSON includes `bot: true`, the bot's capabilities, and any
+    /// configured optional fields (`about`, `picture`). This is the
+    /// implementation behind `pacto-bot-admin publish-profile`.
+    pub async fn publish_bot_profile(
+        &self,
+        bot: &BotConfig,
+        signer: &dyn Signer,
+    ) -> Result<EventId, DaemonError> {
+        let event = build_bot_profile_event(bot, signer).await?;
+
+        let output = self.client.send_event(&event).await.map_err(|e| {
+            error!(
+                bot_id = %bot.id,
+                error = %e,
+                "failed to publish profile event"
+            );
+            DaemonError::Nostr(format!("failed to publish event: {e}"))
+        })?;
+
+        Ok(*output.id())
+    }
+
     /// Decrypt a single incoming gift-wrap event using the registered bot signer.
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
@@ -566,6 +592,38 @@ async fn sign_unsigned_event(
         unsigned.content,
         sig,
     ))
+}
+
+/// Build the kind:0 profile event used by `pacto-bot-admin publish-profile`.
+///
+/// The metadata JSON includes `bot: true`, the bot's capabilities, and any
+/// configured optional fields (`about`, `picture`).
+pub async fn build_bot_profile_event(
+    bot: &BotConfig,
+    signer: &dyn Signer,
+) -> Result<Event, DaemonError> {
+    let name = bot.display_name.as_deref().unwrap_or(&bot.id);
+    let mut profile = json!({
+        "name": name,
+        "bot": true,
+        "capabilities": bot.capabilities,
+    });
+    if let Some(about) = &bot.about {
+        profile["about"] = about.clone().into();
+    }
+    if let Some(picture) = &bot.picture {
+        profile["picture"] = picture.clone().into();
+    }
+    let content = serde_json::to_string(&profile).map_err(DaemonError::Json)?;
+
+    let unsigned = UnsignedEvent::new(
+        signer.public_key(),
+        Timestamp::now(),
+        Kind::Metadata,
+        Vec::new(),
+        content,
+    );
+    sign_unsigned_event(signer, unsigned).await
 }
 
 /// Serialize the canonical event-id preimage for signing.
