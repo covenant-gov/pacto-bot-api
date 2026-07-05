@@ -20,7 +20,6 @@ fn jsonrpc_version() -> String {
 pub enum JsonRpcMessage {
     /// A JSON-RPC request that expects a response.
     Request {
-        #[serde(default = "jsonrpc_version")]
         jsonrpc: String,
         id: Value,
         method: String,
@@ -33,14 +32,12 @@ pub enum JsonRpcMessage {
     /// `error` over the optional `result` field when both could match.
     #[serde(rename = "error")]
     Error {
-        #[serde(default = "jsonrpc_version")]
         jsonrpc: String,
         id: Value,
         error: JsonRpcError,
     },
     /// A JSON-RPC response carrying a successful result.
     Response {
-        #[serde(default = "jsonrpc_version")]
         jsonrpc: String,
         id: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -48,7 +45,6 @@ pub enum JsonRpcMessage {
     },
     /// A JSON-RPC notification (no `id`).
     Notification {
-        #[serde(default = "jsonrpc_version")]
         jsonrpc: String,
         method: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,8 +111,28 @@ impl JsonRpcMessage {
 
 /// Parse a newline-delimited JSON frame into a [`JsonRpcMessage`].
 pub fn parse_message(line: &str) -> Result<JsonRpcMessage, DaemonError> {
-    let msg: JsonRpcMessage = serde_json::from_str(line)?;
-    Ok(msg)
+    let value: Value =
+        serde_json::from_str(line).map_err(|e| DaemonError::JsonRpcParse(e.to_string()))?;
+
+    let obj = value
+        .as_object()
+        .ok_or_else(|| DaemonError::InvalidJsonRpcRequest("message is not a JSON object".into()))?;
+
+    match obj.get("jsonrpc") {
+        Some(Value::String(s)) if s == "2.0" => {}
+        Some(v) => {
+            return Err(DaemonError::InvalidJsonRpcRequest(format!(
+                "jsonrpc field must be exactly '2.0', got {v}"
+            )));
+        }
+        None => {
+            return Err(DaemonError::InvalidJsonRpcRequest(
+                "jsonrpc field is missing".into(),
+            ));
+        }
+    }
+
+    serde_json::from_value(value).map_err(|e| DaemonError::InvalidJsonRpcRequest(e.to_string()))
 }
 
 /// Validate that `size` does not exceed the maximum frame size.
@@ -514,5 +530,36 @@ mod tests {
         assert!(minimal_json.get("capabilities").is_none());
 
         Ok(())
+    }
+
+    #[test]
+    fn invalid_json_returns_parse_error() {
+        let err = parse_message("not valid json").unwrap_err();
+        let rpc: JsonRpcError = err.into();
+        assert_eq!(rpc.code, -32700);
+    }
+
+    #[test]
+    fn missing_jsonrpc_field_is_rejected() {
+        let err = parse_message(r#"{"id":1,"method":"agent.version"}"#).unwrap_err();
+        let rpc: JsonRpcError = err.into();
+        assert_eq!(rpc.code, -32600);
+        assert!(rpc.message.to_lowercase().contains("jsonrpc"));
+    }
+
+    #[test]
+    fn wrong_jsonrpc_value_is_rejected() {
+        let err =
+            parse_message(r#"{"jsonrpc":"1.0","id":1,"method":"agent.version"}"#).unwrap_err();
+        let rpc: JsonRpcError = err.into();
+        assert_eq!(rpc.code, -32600);
+        assert!(rpc.message.to_lowercase().contains("jsonrpc"));
+    }
+
+    #[test]
+    fn valid_jsonrpc_field_is_accepted() {
+        let msg = parse_message(r#"{"jsonrpc":"2.0","id":1,"method":"agent.version"}"#).unwrap();
+        assert_eq!(msg.id(), Some(&Value::from(1)));
+        assert_eq!(msg.method(), Some("agent.version"));
     }
 }
