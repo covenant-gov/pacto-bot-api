@@ -68,7 +68,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 jsonschema = "0.46"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["aclapi", "accctrl", "winnt", "winbase", "winerror"] }
+winapi = { version = "0.3", features = ["winnt", "fileapi", "handleapi", "processthreadsapi", "securitybaseapi"] }
 
 [dev-dependencies]
 schemars = "0.8"

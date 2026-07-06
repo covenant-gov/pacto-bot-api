@@ -2904,12 +2904,17 @@ fn write_token_atomic(dir: &Path, token: &str) -> Result<(), DaemonError> {
     let tmp = dir.join(format!("{}.tmp", BOT_SECRET_TOKEN_FILE));
     let dest = dir.join(BOT_SECRET_TOKEN_FILE);
 
-    let mut file = create_restricted_file(&tmp)?;
-    file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
-    drop(file);
+    let result = (|| -> Result<(), DaemonError> {
+        let mut file = create_restricted_file(&tmp)?;
+        file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
+        drop(file);
+        fs::rename(&tmp, &dest).map_err(DaemonError::Io)
+    })();
 
-    fs::rename(&tmp, &dest).map_err(DaemonError::Io)?;
-    Ok(())
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Create a file with permissions restricted to the owner only.
@@ -2927,95 +2932,129 @@ fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
 
 /// Create a file with permissions restricted to the owner only.
 ///
-/// On Windows, the default inherited ACL is replaced by a protected DACL that
-/// grants full control only to the file's owner.
+/// On Windows, the file is created with a protected DACL that grants full
+/// control only to the current process owner, so there is no window where the
+/// file inherits a permissive default ACL.
 #[cfg(windows)]
 #[allow(unsafe_code)]
 fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
     use std::ptr;
-    use winapi::shared::winerror::ERROR_SUCCESS;
-    use winapi::um::accctrl::{
-        EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_INHERITANCE, NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_SID,
-        TRUSTEE_IS_USER, TRUSTEE_W,
+    use winapi::um::fileapi::{CREATE_ALWAYS, CreateFileW};
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
+    use winapi::um::securitybaseapi::{
+        AddAccessAllowedAce, GetSidLengthRequired, GetSidSubAuthorityCount, GetTokenInformation,
+        InitializeAcl, InitializeSecurityDescriptor, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl,
     };
-    use winapi::um::aclapi::{GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW};
-    use winapi::um::winbase::LocalFree;
     use winapi::um::winnt::{
-        DACL_SECURITY_INFORMATION, FILE_ALL_ACCESS, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_FILE_OBJECT,
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+        GENERIC_WRITE, HANDLE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_REVISION, TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
     };
 
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(path)
-        .map_err(DaemonError::Io)?;
+    // Get the owner SID from the current process token.
+    let mut token: HANDLE = ptr::null_mut();
+    let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+
+    let mut size_needed: u32 = 0;
+    unsafe {
+        GetTokenInformation(token, TokenOwner, ptr::null_mut(), 0, &mut size_needed);
+    }
+    let mut owner_buffer = vec![0u8; size_needed as usize];
+    let owner_info = owner_buffer.as_mut_ptr() as *mut TOKEN_OWNER;
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenOwner,
+            owner_buffer.as_mut_ptr() as *mut _,
+            size_needed,
+            &mut size_needed,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let owner_sid: PSID = unsafe { (*owner_info).Owner };
+
+    // Build an owner-only DACL.
+    let sub_authority_count = unsafe { *GetSidSubAuthorityCount(owner_sid) };
+    let sid_length = unsafe { GetSidLengthRequired(sub_authority_count) };
+    let acl_size = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        - std::mem::size_of::<u32>()
+        + sid_length as usize;
+    let mut acl_buffer = vec![0u8; acl_size];
+    let acl = acl_buffer.as_mut_ptr() as *mut ACL;
+    let ok = unsafe { InitializeAcl(acl, acl_size as u32, ACL_REVISION) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, owner_sid) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+
+    // Build a security descriptor with the owner-only DACL.
+    let mut sd: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        InitializeSecurityDescriptor(
+            &mut sd as PSECURITY_DESCRIPTOR,
+            SECURITY_DESCRIPTOR_REVISION,
+        )
+    };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe { SetSecurityDescriptorDacl(&mut sd as PSECURITY_DESCRIPTOR, 1, acl, 0) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe {
+        SetSecurityDescriptorControl(
+            &mut sd as PSECURITY_DESCRIPTOR,
+            SE_DACL_PROTECTED,
+            SE_DACL_PROTECTED,
+        )
+    };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+
+    // Create the file with the restrictive DACL already in place.
+    let mut sa: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
+    sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
+    sa.lpSecurityDescriptor = &mut sd as PSECURITY_DESCRIPTOR as *mut _;
+    sa.bInheritHandle = 0;
 
     let path_wide: Vec<u16> = OsStr::new(path)
         .encode_wide()
         .chain(std::iter::once(0))
         .collect();
 
-    let mut owner_sid: PSID = ptr::null_mut();
-    let mut sd: PSECURITY_DESCRIPTOR = ptr::null_mut();
-    let result = unsafe {
-        GetNamedSecurityInfoW(
+    let handle = unsafe {
+        CreateFileW(
             path_wide.as_ptr(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION,
-            &mut owner_sid,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut sd,
-        )
-    };
-    if result != ERROR_SUCCESS as i32 {
-        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
-    }
-
-    let mut trustee: TRUSTEE_W = unsafe { std::mem::zeroed() };
-    trustee.pMultipleTrustee = ptr::null_mut();
-    trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE;
-    trustee.TrusteeForm = TRUSTEE_IS_SID;
-    trustee.TrusteeType = TRUSTEE_IS_USER;
-    trustee.ptstrName = owner_sid as *mut _;
-
-    let mut explicit_access: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
-    explicit_access.grfAccessPermissions = FILE_ALL_ACCESS;
-    explicit_access.grfAccessMode = GRANT_ACCESS;
-    explicit_access.grfInheritance = NO_INHERITANCE;
-    explicit_access.Trustee = trustee;
-
-    let mut new_acl: *mut winapi::um::winnt::ACL = ptr::null_mut();
-    let result = unsafe { SetEntriesInAclW(1, &explicit_access, ptr::null_mut(), &mut new_acl) };
-    if result != ERROR_SUCCESS as i32 {
-        unsafe { LocalFree(sd as *mut _) };
-        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
-    }
-
-    let result = unsafe {
-        SetNamedSecurityInfoW(
-            path_wide.as_ptr() as *mut _,
-            SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            new_acl as *mut _,
+            GENERIC_WRITE,
+            0,
+            &mut sa,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
             ptr::null_mut(),
         )
     };
-
-    unsafe { LocalFree(new_acl as *mut _) };
-    unsafe { LocalFree(sd as *mut _) };
-
-    if result != ERROR_SUCCESS as i32 {
-        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
     }
 
+    // SAFETY: handle is valid and ownership is transferred to File.
+    let file = unsafe { fs::File::from_raw_handle(handle as *mut _) };
     Ok(file)
 }
 

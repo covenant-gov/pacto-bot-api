@@ -187,7 +187,7 @@ async fn http_rejects_oversized_payload_with_413() -> Result<(), Box<dyn std::er
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
     let parsed: Value = serde_json::from_str(body)?;
     assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32003);
+    assert_eq!(parsed["error"]["code"], -32012);
     assert!(
         parsed["error"]["message"]
             .as_str()
@@ -226,7 +226,7 @@ async fn http_rejects_oversized_json_rpc_frame_with_413() -> Result<(), Box<dyn 
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
     let parsed: Value = serde_json::from_str(body)?;
     assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32003);
+    assert_eq!(parsed["error"]["code"], -32012);
     assert!(
         parsed["error"]["message"]
             .as_str()
