@@ -1,12 +1,13 @@
 use crate::config::{BotConfig, SigningConfig, redact_bunker_uri};
 use crate::errors::DaemonError;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, LazyLock, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio_tungstenite::connect_async;
@@ -411,8 +412,40 @@ impl Diagnostics {
         let final_path = reports_dir.join("latest.json");
 
         let json = serde_json::to_string_pretty(&snapshot)?;
-        tokio::fs::write(&tmp_path, json).await?;
+
+        // Open the temp file with owner-only permissions *before* writing any
+        // diagnostic data. On Unix this sets the mode directly, so a permissive
+        // umask cannot expose the report during the write.
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .await?;
+
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&tmp_path, Permissions::from_mode(0o600)).await?;
+        }
+
+        use tokio::io::AsyncWriteExt;
+        file.write_all(json.as_bytes()).await?;
+        file.shutdown().await?;
+        drop(file.into_std().await);
+
         tokio::fs::rename(&tmp_path, &final_path).await?;
+
+        // Defensive: ensure the final path is also owner-only, in case the
+        // rename crossed a mount point or the temp file's permissions were
+        // altered.
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&final_path, Permissions::from_mode(0o600)).await?;
+        }
 
         Ok(())
     }
@@ -556,6 +589,74 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
     }
 }
 
+/// Precompiled redaction regexes, built once per process.
+///
+/// The patterns are static constants; failures here are a programming bug, not
+/// a runtime condition, so we intentionally fail fast during initialization.
+static NSEC1_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)\bnsec1[A-Za-z0-9]*").expect("nsec1 regex is valid")
+    }
+});
+
+static HEX_SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"[0-9a-fA-F]{64}").expect("hex secret regex is valid")
+    }
+});
+
+static QUERY_PARAM_REGEXES: LazyLock<HashMap<&'static str, Regex>> = LazyLock::new(|| {
+    const VALUE: &str = r"(?:[^&\s%]|%([013-9A-Fa-f][0-9A-Fa-f]|2[0-57A-Fa-f]))*";
+    const KEYS: &[&str] = &[
+        "secret",
+        "token",
+        "api_key",
+        "password",
+        "priv_key",
+        "api_secret",
+        "private_key",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "secret_key",
+    ];
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        KEYS.iter()
+            .map(|key| {
+                let pattern = format!(
+                    r"(?i)(?P<pre>^|&|%26|[^A-Za-z0-9_])(?P<key>{})(?P<sep>=|%3D)(?P<value>{})",
+                    regex::escape(key),
+                    VALUE
+                );
+                (
+                    *key,
+                    Regex::new(&pattern).expect("query param regex is valid"),
+                )
+            })
+            .collect()
+    }
+});
+
+static BEARER_TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)(^|[^A-Za-z0-9_])(bearer)([ \t]+)([^\s]+)")
+            .expect("bearer token regex is valid")
+    }
+});
+
+static AUTHORIZATION_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)(^|[^A-Za-z0-9_])(authorization)([ \t]*:)(?:[ \t]*)([^\r\n]*)")
+            .expect("authorization header regex is valid")
+    }
+});
+
 /// Redact likely secret material from a diagnostic message.
 ///
 /// This is a best-effort filter; application code should avoid logging
@@ -563,12 +664,12 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
 fn redact_secrets(input: &str) -> String {
     let mut out = redact_word_prefix(input, "nsec1");
     out = redact_hex_secret(&out);
-    out = redact_query_param(&out, "secret");
-    out = redact_query_param(&out, "token");
-    out = redact_query_param(&out, "api_key");
-    out = redact_query_param(&out, "password");
-    out = redact_query_param(&out, "priv_key");
     for key in &[
+        "secret",
+        "token",
+        "api_key",
+        "password",
+        "priv_key",
         "api_secret",
         "private_key",
         "auth_token",
@@ -616,151 +717,46 @@ fn is_path_char(c: char) -> bool {
 
 /// Redact a contiguous alphanumeric token that starts with `prefix`.
 fn redact_word_prefix(input: &str, prefix: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = rest.find(prefix) {
-        result.push_str(&rest[..pos]);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        let consumed = after
-            .chars()
-            .take_while(|&c| c.is_ascii_alphanumeric())
-            .count();
-        rest = &after[consumed..];
+    if prefix == "nsec1" {
+        return NSEC1_REGEX.replace_all(input, "[REDACTED]").into_owned();
     }
-    result.push_str(rest);
-    result
+    let Ok(re) = Regex::new(&format!(r"(?i)\b{}[A-Za-z0-9]*", regex::escape(prefix))) else {
+        return input.to_string();
+    };
+    re.replace_all(input, "[REDACTED]").into_owned()
 }
 
 /// Redact the value of a URL-style query parameter `key=`.
+///
+/// Handles case-insensitive keys and percent-encoded separators (`%3D`)
+/// and delimiters (`%26`).
 fn redact_query_param(input: &str, key: &str) -> String {
-    let pattern = format!("{key}=");
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = rest.find(&pattern) {
-        result.push_str(&rest[..pos]);
-        result.push_str(&pattern);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + pattern.len()..];
-        let end = match after.find(|c: char| c == '&' || c.is_whitespace()) {
-            Some(idx) => idx,
-            None => after.len(),
-        };
-        rest = &after[end..];
-    }
-    result.push_str(rest);
-    result
+    let Some(re) = QUERY_PARAM_REGEXES.get(key) else {
+        return input.to_string();
+    };
+    re.replace_all(input, "${pre}${key}${sep}[REDACTED]")
+        .into_owned()
 }
 
 /// Redact 64-character hexadecimal sequences (raw secp256k1 private keys).
 fn redact_hex_secret(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(start) = find_hex_run(rest, 64) {
-        result.push_str(&rest[..start]);
-        result.push_str("[REDACTED]");
-        rest = &rest[start + 64..];
-    }
-    result.push_str(rest);
-    result
-}
-
-/// Find the starting index of a run of `len` ASCII hexadecimal digits.
-fn find_hex_run(input: &str, len: usize) -> Option<usize> {
-    if input.len() < len {
-        return None;
-    }
-    let mut count = 0;
-    let mut start = 0;
-    for (idx, c) in input.char_indices() {
-        if c.is_ascii_hexdigit() {
-            if count == 0 {
-                start = idx;
-            }
-            count += 1;
-            if count == len {
-                return Some(start);
-            }
-        } else {
-            count = 0;
-        }
-    }
-    None
-}
-
-/// Find `needle` in `haystack` case-insensitively.
-///
-/// This assumes `needle` is ASCII. It compares ASCII bytes only, so the
-/// returned index is always a valid byte position in the original `haystack`
-/// and no allocation is required.
-fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let needle_len = needle.len();
-    if haystack.len() < needle_len {
-        return None;
-    }
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    haystack_bytes.windows(needle_len).position(|window| {
-        window
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(h, n)| h.eq_ignore_ascii_case(n))
-    })
+    HEX_SECRET_REGEX
+        .replace_all(input, "[REDACTED]")
+        .into_owned()
 }
 
 /// Redact a `bearer <token>` token, case-insensitively.
 fn redact_bearer_token(input: &str) -> String {
-    let prefix = "bearer ";
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = find_case_insensitive(rest, prefix) {
-        let original_prefix = &rest[pos..pos + prefix.len()];
-        result.push_str(&rest[..pos]);
-        result.push_str(original_prefix);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        let end = after
-            .find(|c: char| c.is_whitespace())
-            .unwrap_or(after.len());
-        rest = &after[end..];
-    }
-    result.push_str(rest);
-    result
+    BEARER_TOKEN_REGEX
+        .replace_all(input, "${1}${2}${3}[REDACTED]")
+        .into_owned()
 }
 
 /// Redact an `authorization: <value>` header, case-insensitively.
 fn redact_authorization_header(input: &str) -> String {
-    let prefix = "authorization:";
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = find_case_insensitive(rest, prefix) {
-        let original_prefix = &rest[pos..pos + prefix.len()];
-        result.push_str(&rest[..pos]);
-        result.push_str(original_prefix);
-        result.push_str(" [REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        // Skip leading whitespace after the colon.
-        let skip = after.chars().take_while(|&c| c == ' ' || c == '\t').count();
-        let after_ws = &after[skip..];
-        let end = after_ws
-            .find(|c: char| ['\n', '\r'].contains(&c))
-            .unwrap_or(after_ws.len());
-        rest = &after_ws[end..];
-    }
-    result.push_str(rest);
-    result
+    AUTHORIZATION_HEADER_REGEX
+        .replace_all(input, "${1}${2}${3} [REDACTED]")
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -914,6 +910,18 @@ mod tests {
         diag.flush_report(tmp.path()).await?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = tokio::fs::metadata(&report_path)
+                .await?
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "latest.json should be owner-only");
+        }
+
         let contents = tokio::fs::read_to_string(&report_path).await?;
         let parsed: HealthSnapshot = serde_json::from_str(&contents)?;
         assert_eq!(parsed.status, DaemonStatus::Ready);
@@ -1033,6 +1041,40 @@ mod tests {
         let out = redact_secrets("Authorization: Bearer abc123");
         assert!(!out.contains("abc123"));
         assert!(out.contains("Authorization: [REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_case_insensitive_query_params() {
+        let out = redact_secrets("Secret=supersecret&Api_Key=keyvalue TOKEN=tokvalue");
+        assert!(!out.contains("supersecret"));
+        assert!(!out.contains("keyvalue"));
+        assert!(!out.contains("tokvalue"));
+        assert!(out.contains("Secret=[REDACTED]"));
+        assert!(out.contains("Api_Key=[REDACTED]"));
+        assert!(out.contains("TOKEN=[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_url_encoded_query_params() {
+        let out = redact_secrets("secret%3Dsupersecret%26token%3Dabc123");
+        assert!(!out.contains("supersecret"));
+        assert!(!out.contains("abc123"));
+        assert!(out.contains("secret%3D[REDACTED]"));
+        assert!(out.contains("token%3D[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_json_escaped_nsec() {
+        let input = r#"{"key":"nsec1deadbeef1234"}"#;
+        let out = redact_secrets(input);
+        assert!(!out.contains("nsec1deadbeef1234"));
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_does_not_over_redact_innocuous_substrings() {
+        assert_eq!(redact_secrets("mysecret=foo"), "mysecret=foo");
+        assert_eq!(redact_secrets("npub1public"), "npub1public");
     }
 
     #[test]

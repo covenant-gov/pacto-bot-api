@@ -3,8 +3,27 @@ use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use secrecy::{ExposeSecret, SecretString};
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
+
+/// Set file permissions to owner-read/write only (`0o600`).
+///
+/// No-op on non-Unix platforms.
+#[cfg(unix)]
+pub(crate) fn set_owner_only_permissions(path: &Path) -> Result<(), DaemonError> {
+    use std::fs::Permissions;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn set_owner_only_permissions(_path: &Path) -> Result<(), DaemonError> {
+    Ok(())
+}
 
 /// SQLite persistence handle for cursors and handler registrations.
 #[derive(Debug)]
@@ -16,7 +35,28 @@ impl Database {
     /// Open (or create) the SQLite database at `path`, enable WAL mode, set
     /// synchronous=NORMAL, and run idempotent migrations.
     pub fn open(path: &Path) -> Result<Self, DaemonError> {
+        // Create the database file atomically with owner-only permissions if it
+        // does not already exist. SQLite will then open the existing file and
+        // initialize its schema; we then enforce the permission bits regardless
+        // of the process umask or any existing file.
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+            {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         let conn = Connection::open(path)?;
+        set_owner_only_permissions(path)?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;",
@@ -442,6 +482,13 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("agent.db");
         let db = Database::open(&path)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "agent.db should be owner-only");
+        }
 
         let journal_mode: String = db
             .conn

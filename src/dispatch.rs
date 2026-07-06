@@ -36,6 +36,11 @@ const BOT_RATE: f64 = 20.0;
 /// Default per-bot aggregate burst: 40 ops.
 const BOT_BURST: f64 = 40.0;
 
+/// Default time after which an unused rate-limit bucket is considered stale.
+const BUCKET_STALE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Maximum number of buckets to retain per map.
+const MAX_BUCKETS: usize = 10_000;
+
 /// Production default per-handler rate, exposed for tests.
 pub const DEFAULT_HANDLER_RATE: f64 = HANDLER_RATE;
 /// Production default per-handler burst, exposed for tests.
@@ -134,28 +139,80 @@ impl Bucket {
     }
 }
 
+/// Collection of token buckets with opportunistic stale-bucket cleanup.
+#[derive(Debug)]
+struct BucketMap {
+    map: HashMap<String, Bucket>,
+    last_sweep: Instant,
+}
+
+impl BucketMap {
+    fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+            last_sweep: Instant::now(),
+        }
+    }
+
+    fn needs_sweep(&self, now: Instant, max_buckets: usize, stale_after: Duration) -> bool {
+        self.map.len() > max_buckets
+            || now.saturating_duration_since(self.last_sweep) >= stale_after
+    }
+
+    fn sweep(&mut self, now: Instant, max_buckets: usize, stale_after: Duration) {
+        self.last_sweep = now;
+        self.map.retain(|_, bucket| {
+            now.saturating_duration_since(bucket.last_replenished) <= stale_after
+        });
+
+        while self.map.len() > max_buckets {
+            let oldest = self
+                .map
+                .iter()
+                .min_by_key(|(_, bucket)| bucket.last_replenished)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => {
+                    self.map.remove(&id);
+                }
+                None => break,
+            }
+        }
+    }
+}
+
 /// Rate limiter enforcing per-handler and per-bot token buckets.
 #[derive(Debug)]
 pub struct RateLimiter {
-    handlers: TokioMutex<HashMap<String, Bucket>>,
-    bots: TokioMutex<HashMap<String, Bucket>>,
+    handlers: TokioMutex<BucketMap>,
+    bots: TokioMutex<BucketMap>,
     handler_rate: f64,
     handler_burst: f64,
     bot_rate: f64,
     bot_burst: f64,
+    stale_after: Duration,
+    max_buckets: usize,
 }
 
 impl RateLimiter {
     /// Create a rate limiter with the given per-handler and per-bot limits.
     pub fn new(handler_rate: f64, handler_burst: f64, bot_rate: f64, bot_burst: f64) -> Self {
         Self {
-            handlers: TokioMutex::new(HashMap::new()),
-            bots: TokioMutex::new(HashMap::new()),
+            handlers: TokioMutex::new(BucketMap::new()),
+            bots: TokioMutex::new(BucketMap::new()),
             handler_rate,
             handler_burst,
             bot_rate,
             bot_burst,
+            stale_after: BUCKET_STALE_TIMEOUT,
+            max_buckets: MAX_BUCKETS,
         }
+    }
+
+    /// Remove the per-handler bucket for `handler_id`.
+    pub async fn remove_handler(&self, handler_id: &str) {
+        let mut handlers = self.handlers.lock().await;
+        handlers.map.remove(handler_id);
     }
 
     /// Check whether `handler_id` may perform a mutating operation on `bot_id`
@@ -163,7 +220,11 @@ impl RateLimiter {
     pub async fn check(&self, handler_id: &str, bot_id: &str, now: Instant) -> bool {
         // Check bot aggregate limit first.
         let mut bots = self.bots.lock().await;
+        if bots.needs_sweep(now, self.max_buckets, self.stale_after) {
+            bots.sweep(now, self.max_buckets, self.stale_after);
+        }
         let bot_bucket = bots
+            .map
             .entry(bot_id.to_string())
             .or_insert_with(|| Bucket::new(self.bot_rate, self.bot_burst));
         if !bot_bucket.check(now) {
@@ -172,7 +233,11 @@ impl RateLimiter {
         drop(bots);
 
         let mut handlers = self.handlers.lock().await;
+        if handlers.needs_sweep(now, self.max_buckets, self.stale_after) {
+            handlers.sweep(now, self.max_buckets, self.stale_after);
+        }
         let handler_bucket = handlers
+            .map
             .entry(handler_id.to_string())
             .or_insert_with(|| Bucket::new(self.handler_rate, self.handler_burst));
         handler_bucket.check(now)
@@ -282,6 +347,8 @@ impl Dispatch {
             let mut cm = self.client_manager.write().await;
             cm.handler_registry.unregister(handler_id)?;
         }
+
+        self.rate_limiter.remove_handler(handler_id).await;
 
         self.db.delete_handler(handler_id).await?;
 
@@ -1462,6 +1529,49 @@ mod tests {
     }
 
     #[test]
+    fn rate_limiter_removes_handler_bucket_on_unregister() {
+        let limiter = RateLimiter::new(1.0, 2.0, 10.0, 20.0);
+        let now = Instant::now();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert!(limiter.check("h1", "b1", now).await);
+            assert!(limiter.check("h1", "b1", now).await);
+            assert!(!limiter.check("h1", "b1", now).await);
+
+            limiter.remove_handler("h1").await;
+            assert!(!limiter.handlers.lock().await.map.contains_key("h1"));
+
+            // A fresh bucket is created on the next request, restoring the burst.
+            assert!(limiter.check("h1", "b1", now).await);
+            assert!(limiter.check("h1", "b1", now).await);
+            assert!(!limiter.check("h1", "b1", now).await);
+        });
+    }
+
+    #[test]
+    fn rate_limiter_reclaims_stale_buckets() {
+        let limiter = RateLimiter::new(1.0, 2.0, 10.0, 20.0);
+        let now = Instant::now();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            assert!(limiter.check("h1", "b1", now).await);
+            assert_eq!(limiter.handlers.lock().await.map.len(), 1);
+            assert_eq!(limiter.bots.lock().await.map.len(), 1);
+
+            let later = now + BUCKET_STALE_TIMEOUT + Duration::from_secs(1);
+            assert!(limiter.check("h2", "b2", later).await);
+            assert!(!limiter.handlers.lock().await.map.contains_key("h1"));
+            assert!(!limiter.bots.lock().await.map.contains_key("b1"));
+            assert_eq!(limiter.handlers.lock().await.map.len(), 1);
+            assert_eq!(limiter.bots.lock().await.map.len(), 1);
+        });
+    }
+
+    #[test]
     fn handler_action_parsing() {
         let ack = serde_json::json!({"action": "ack"});
         assert_eq!(HandlerAction::from_value(&ack).unwrap(), HandlerAction::Ack);
@@ -1773,6 +1883,15 @@ mod tests {
 
         let cm = cm.read().await;
         assert!(cm.handler_registry.get_handler(&handler_id).is_none());
+        assert!(
+            !dispatch
+                .rate_limiter
+                .handlers
+                .lock()
+                .await
+                .map
+                .contains_key(&handler_id)
+        );
     }
 
     #[tokio::test]

@@ -293,6 +293,35 @@ async fn unix_transport_removes_stale_socket() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test]
+async fn unix_transport_rejects_live_socket() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = test_socket_dir()?;
+    let path = dir.join("live.sock");
+
+    // Pre-bind a live Unix socket at the daemon's target path.
+    let _existing = tokio::net::UnixListener::bind(&path)?;
+
+    let transport = UnixTransport::new(&path).with_limits(1024, Duration::from_secs(1), 10);
+    let (_shutdown_tx, shutdown_rx) = oneshot::channel();
+    let handle = tokio::spawn(async move {
+        transport
+            .run(echo_handler(), dummy_disconnect_sender(), shutdown_rx)
+            .await
+    });
+
+    let result = handle.await?;
+    assert!(
+        result.is_err(),
+        "UnixTransport::run should fail when the socket path is already in use"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().to_lowercase().contains("already in use"),
+        "expected an 'already in use' error, got: {err}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn unix_transport_rejects_oversized_frames() -> Result<(), Box<dyn std::error::Error>> {
     let dir = test_socket_dir()?;
     let path = dir.join("frame.sock");

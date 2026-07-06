@@ -21,7 +21,6 @@ pub fn run(contract_source: Option<&str>) -> Result<()> {
 
     generate_config(&schemas_dir, &root)?;
     generate_protocol(&schemas_dir, &root)?;
-    generate_metrics(&schemas_dir, &root)?;
     generate_service_compatibility(&schemas_dir, &root)?;
     generate_python(&root, contract_source)?;
 
@@ -126,33 +125,6 @@ fn generate_protocol(schemas_dir: &Path, root: &Path) -> Result<()> {
 
     let out = out.trim_end().to_string() + "\n";
     fs::write(root.join("src/transport/protocol_generated.rs"), out)?;
-    Ok(())
-}
-
-fn generate_metrics(schemas_dir: &Path, root: &Path) -> Result<()> {
-    let schema: Value = read_schema(schemas_dir, "metrics.json")?;
-    let mut out = String::new();
-    out.push_str("//! Generated from schemas/metrics.json — do not edit manually.\n");
-    out.push_str("//! Run `cargo xtask codegen` to regenerate.\n\n");
-    out.push_str("use serde::{Deserialize, Serialize};\n\n");
-
-    // Emit any named definitions referenced by $ref first.
-    if let Some(defs) = schema["definitions"].as_object() {
-        for (def_name, def_schema) in defs {
-            let rust_name = format!("{}Generated", to_pascal_case(def_name));
-            out.push_str(&format!(
-                "/// Generated from `#/definitions/{}`.\n",
-                def_name
-            ));
-            emit_struct(&mut out, &rust_name, def_schema)?;
-        }
-    }
-
-    out.push_str("/// Metrics payload generated from schemas/metrics.json.\n");
-    emit_struct(&mut out, "MetricsPayloadGenerated", &schema)?;
-
-    let out = out.trim_end().to_string() + "\n";
-    fs::write(root.join("src/metrics_generated.rs"), out)?;
     Ok(())
 }
 

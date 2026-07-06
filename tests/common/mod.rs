@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use chrono::Utc;
 use fs2::FileExt;
 use futures::{SinkExt, StreamExt};
@@ -32,6 +30,7 @@ use tokio::time::{Duration, timeout};
 /// (`~/.pacto-test`) rather than the system temp directory or the project
 /// tree. This avoids group/world-writable `/tmp` parent issues and keeps the
 /// path short enough for Unix domain sockets on macOS.
+#[allow(dead_code)]
 pub fn tempdir() -> io::Result<tempfile::TempDir> {
     let root = project_temp_root();
     fs::create_dir_all(&root)?;
@@ -53,6 +52,7 @@ pub fn tempdir() -> io::Result<tempfile::TempDir> {
     Ok(dir)
 }
 
+#[allow(dead_code)]
 fn project_temp_root() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -65,6 +65,7 @@ fn project_temp_root() -> PathBuf {
     home.join(".pacto-test")
 }
 
+#[allow(dead_code)]
 pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>> {
     let keys = nostr::Keys::generate();
     let nsec = keys.secret_key().to_bech32()?;
@@ -86,6 +87,7 @@ pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>
 ///
 /// `match_npub` controls whether the bunker URI declares the configured bot
 /// pubkey (`true`) or a different one (`false`).
+#[allow(dead_code)]
 pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<dyn Error>> {
     let keys = nostr::Keys::generate();
     let npub = keys.public_key().to_bech32()?;
@@ -115,6 +117,7 @@ pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<
 ///
 /// `match_npub` controls whether the configured bot npub matches the bunker
 /// keys (`true`) or a different generated key (`false`).
+#[allow(dead_code)]
 pub fn generate_bunker_bot_with_keys(
     id: &str,
     match_npub: bool,
@@ -144,6 +147,7 @@ pub fn generate_bunker_bot_with_keys(
 }
 
 /// Replace the bunker URI on a bot config.
+#[allow(dead_code)]
 pub fn set_bunker_uri(bot: &mut BotConfig, new_uri: &str) {
     match &mut bot.signing {
         SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } => {
@@ -154,6 +158,7 @@ pub fn set_bunker_uri(bot: &mut BotConfig, new_uri: &str) {
 }
 
 /// Write a `pacto-bot-api.toml` into `dir` and return its path.
+#[allow(dead_code)]
 pub fn make_config(
     dir: &tempfile::TempDir,
     bots: Vec<BotConfig>,
@@ -217,6 +222,7 @@ pub fn make_config(
 /// Writes the current process's PID into the file and acquires an exclusive
 /// advisory lock. The returned `File` must be kept alive for the duration of
 /// the test so the lock remains held.
+#[allow(dead_code)]
 pub fn hold_daemon_lock(dir: &tempfile::TempDir) -> Result<std::fs::File, Box<dyn Error>> {
     let path = dir.path().join("daemon.lock");
     let mut file = OpenOptions::new()
@@ -232,6 +238,7 @@ pub fn hold_daemon_lock(dir: &tempfile::TempDir) -> Result<std::fs::File, Box<dy
 }
 
 /// Create a disconnected handler reference for tests.
+#[allow(dead_code)]
 pub fn handler_ref(
     id: &str,
     bot_ids: &[&str],
@@ -254,6 +261,7 @@ pub fn handler_ref(
 }
 
 /// Populate `agent.db` in `dir` with a cursor and handlers for `bot_id`.
+#[allow(dead_code)]
 pub fn populate_db(
     dir: &tempfile::TempDir,
     bot_id: &str,
@@ -271,6 +279,7 @@ pub fn populate_db(
 }
 
 /// Write an invalid config file with loose permissions for negative tests.
+#[allow(dead_code)]
 pub fn write_loose_config(path: &Path, content: &str) -> Result<(), Box<dyn Error>> {
     fs::write(path, content)?;
     #[cfg(unix)]
@@ -284,6 +293,7 @@ pub fn write_loose_config(path: &Path, content: &str) -> Result<(), Box<dyn Erro
 }
 
 /// Path to the daemon binary for integration tests.
+#[allow(dead_code)]
 pub fn daemon_bin_path() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_pacto-bot-api") {
         return Ok(PathBuf::from(path));
@@ -296,12 +306,14 @@ pub fn daemon_bin_path() -> Result<PathBuf, Box<dyn Error>> {
 /// which indicates the transport layer is bound and the daemon is ready.
 ///
 /// The caller is responsible for killing the returned child.
+#[allow(dead_code)]
 pub async fn spawn_daemon_until_ready(config: &Path) -> Result<Child, Box<dyn std::error::Error>> {
     spawn_daemon_until_ready_with_log(config, None).await
 }
 
 /// Spawn the daemon, optionally redirecting stderr to `log_path`, and wait
 /// until its Unix socket appears.
+#[allow(dead_code)]
 pub async fn spawn_daemon_until_ready_with_log(
     config: &Path,
     log_path: Option<&Path>,
@@ -350,6 +362,7 @@ pub async fn spawn_daemon_until_ready_with_log(
 /// Send SIGINT to a daemon child and wait for it to exit cleanly.
 ///
 /// This allows coverage data and shutdown hooks to flush, unlike SIGKILL.
+#[allow(dead_code)]
 pub async fn shutdown_daemon(mut child: Child) -> Result<(), Box<dyn std::error::Error>> {
     let pid = child.id();
     nix::sys::signal::kill(
@@ -369,6 +382,7 @@ pub async fn shutdown_daemon(mut child: Child) -> Result<(), Box<dyn std::error:
 // ---------------------------------------------------------------------------
 
 /// True when the `PACTO_DEV_ENV` environment variable is set to `1`.
+#[allow(dead_code)]
 pub fn dev_env_enabled() -> bool {
     std::env::var("PACTO_DEV_ENV").as_deref() == Ok("1")
 }
@@ -382,6 +396,7 @@ pub fn dev_env_enabled() -> bool {
 /// ```ignore
 /// if !common::skip_unless_dev_env() { return Ok(()); }
 /// ```
+#[allow(dead_code)]
 pub fn skip_unless_dev_env() -> bool {
     if !dev_env_enabled() {
         eprintln!("PACTO_DEV_ENV=1 is required; skipping dev-env test");
@@ -392,11 +407,13 @@ pub fn skip_unless_dev_env() -> bool {
 }
 
 /// Default Nostr relay URL provided by `pacto-dev-env`.
+#[allow(dead_code)]
 pub const fn dev_relay_url() -> &'static str {
     "ws://localhost:7000"
 }
 
 /// Default EVM RPC URL provided by `pacto-dev-env`.
+#[allow(dead_code)]
 pub const fn dev_evm_url() -> &'static str {
     "http://localhost:8545"
 }
@@ -406,6 +423,7 @@ pub const fn dev_evm_url() -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Connect to `path` and retry until the socket accepts or `deadline` passes.
+#[allow(dead_code)]
 pub async fn wait_for_socket(
     path: &Path,
     deadline: Duration,
@@ -424,6 +442,7 @@ pub async fn wait_for_socket(
 ///
 /// Maintains a persistent connection, matches responses by JSON-RPC id, and
 /// delivers daemon notifications on a dedicated channel.
+#[allow(dead_code)]
 pub struct HandlerClient {
     outgoing_tx: mpsc::UnboundedSender<JsonRpcMessage>,
     notification_rx: mpsc::UnboundedReceiver<JsonRpcMessage>,
@@ -432,6 +451,7 @@ pub struct HandlerClient {
     reconnect_token: String,
 }
 
+#[allow(dead_code)]
 impl HandlerClient {
     async fn connect(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         wait_for_socket(path, Duration::from_secs(10)).await?;
@@ -698,6 +718,7 @@ impl HandlerClient {
     }
 }
 /// Build a kind:1059 gift wrap from `sender` to `recipient_npub`.
+#[allow(dead_code)]
 pub async fn build_gift_wrap(
     sender: &Keys,
     recipient_npub: &str,
@@ -713,6 +734,7 @@ pub async fn build_gift_wrap(
 /// The normal [`EventBuilder::private_msg`] randomizes the gift-wrap
 /// timestamp for privacy; this helper is useful when a test needs a
 /// deterministic timestamp for `since` filter assertions.
+#[allow(dead_code)]
 pub async fn build_gift_wrap_with_timestamp(
     sender: &Keys,
     recipient_npub: &str,
@@ -752,12 +774,14 @@ pub async fn build_gift_wrap_with_timestamp(
 /// Implemented directly over `tokio_tungstenite` so dev-env tests have full
 /// control over REQ/EVENT timing and can subscribe before a fast reply is
 /// published by the daemon.
+#[allow(dead_code)]
 pub struct DevRelayClient {
     write: tokio::sync::mpsc::UnboundedSender<nostr::Event>,
     notifications: tokio::sync::mpsc::UnboundedReceiver<nostr::Event>,
     sub_id: String,
 }
 
+#[allow(dead_code)]
 impl DevRelayClient {
     /// Connect to `relay_url`, start a reader/writer loop, and subscribe to
     /// kind:1059 gift wraps addressed to `recipient`.

@@ -10,7 +10,9 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use nostr::key::Keys;
 use nostr::{PublicKey, ToBech32};
-use pacto_bot_api::config::{BotConfig, DaemonConfig, SigningConfig, validate_bot_id};
+use pacto_bot_api::config::{
+    BotConfig, DaemonConfig, SigningConfig, enforce_config_permissions, validate_bot_id,
+};
 use pacto_bot_api::diagnostics::{
     BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
     check_relay_connectivity,
@@ -941,7 +943,7 @@ async fn cmd_scaffold(
     } else {
         config_path.to_path_buf()
     };
-    let config = DaemonConfig::load(&config_path)?;
+    let config = load_admin_config(&config_path)?;
     let bot = find_bot(&config.bots, bot_id)?;
 
     scaffold::generate::run_scaffold(scaffold::generate::ScaffoldRequest {
@@ -1204,6 +1206,15 @@ fn validate_capability(cap: &str) -> Result<(), DaemonError> {
     }
 }
 
+/// Load daemon config after verifying the file has strict permissions.
+///
+/// This mirrors the permission check performed by the daemon so the admin
+/// CLI rejects lax config files with a clear error before using them.
+fn load_admin_config(path: &Path) -> Result<DaemonConfig, DaemonError> {
+    enforce_config_permissions(path)?;
+    DaemonConfig::load(path)
+}
+
 fn prompt_bot_id() -> Result<String, DaemonError> {
     loop {
         let input = prompt_nonempty("Bot identity name: ")?;
@@ -1366,7 +1377,7 @@ fn prompt_secret(prompt: &str) -> Result<String, DaemonError> {
 }
 
 async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let bot = find_bot(&config.bots, bot_id)?;
     let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
 
@@ -1392,7 +1403,7 @@ async fn cmd_publish_profile(config_path: &Path, bot_id: &str) -> Result<(), Dae
 }
 
 async fn cmd_test_bunker(config_path: &Path, bot_id: &str) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let bot = find_bot(&config.bots, bot_id)?;
 
     match &bot.signing {
@@ -1415,7 +1426,7 @@ fn cmd_export(
     data_dir_override: Option<PathBuf>,
     bot_id: &str,
 ) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     check_no_daemon_lock(&data_dir)?;
 
@@ -1450,7 +1461,7 @@ fn cmd_import(
     bot_id: &str,
     state_file: &str,
 ) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let _bot = find_bot(&config.bots, bot_id)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     check_no_daemon_lock(&data_dir)?;
@@ -1483,7 +1494,7 @@ fn cmd_validate_config(
 ) -> Result<(), DaemonError> {
     let mut errors = Vec::new();
 
-    let config = match DaemonConfig::load(config_path) {
+    let config = match load_admin_config(config_path) {
         Ok(c) => c,
         Err(e) => {
             errors.push(e.to_string());
@@ -1528,7 +1539,7 @@ fn cmd_rotate_http_token(
     config_path: &Path,
     data_dir_override: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     check_no_daemon_lock(&data_dir)?;
     ensure_data_dir(&data_dir)?;
@@ -1548,7 +1559,7 @@ async fn cmd_diagnose(
     data_dir_override: Option<PathBuf>,
     format: &str,
 ) -> Result<(), DaemonError> {
-    let (config_valid, config, config_error) = match DaemonConfig::load(config_path) {
+    let (config_valid, config, config_error) = match load_admin_config(config_path) {
         Ok(c) => (true, Some(c), None),
         Err(e) => (false, None, Some(e.to_string())),
     };
@@ -1719,7 +1730,7 @@ async fn cmd_doctor(
 ) -> Result<(), DaemonError> {
     let mut checks = Vec::new();
 
-    let config_result = DaemonConfig::load(config_path);
+    let config_result = load_admin_config(config_path);
     let config = match config_result {
         Ok(c) => {
             checks.push(doctor_pass("config", "configuration file is valid"));
@@ -1974,7 +1985,7 @@ async fn cmd_logs(
     data_dir_override: Option<PathBuf>,
     follow: bool,
 ) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     let log_path = data_dir.join("daemon.log");
 
@@ -2028,7 +2039,7 @@ async fn cmd_send_test_dm(
 
     #[cfg(unix)]
     {
-        let config = DaemonConfig::load(config_path)?;
+        let config = load_admin_config(config_path)?;
         let _bot = find_bot(&config.bots, bot_id)?;
         let data_dir = resolve_data_dir(&config, data_dir_override);
         let socket_path = data_dir.join("pacto-bot-api.sock");
@@ -2056,7 +2067,7 @@ async fn cmd_trace_events(
     since_minutes: i64,
     limit: usize,
 ) -> Result<(), DaemonError> {
-    let config = DaemonConfig::load(config_path)?;
+    let config = load_admin_config(config_path)?;
     let _bot = find_bot(&config.bots, bot_id)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     let db_path = data_dir.join(AGENT_DB_FILE);
@@ -2104,7 +2115,7 @@ async fn cmd_status(
     data_dir_override: Option<PathBuf>,
     format: &str,
 ) -> Result<(), DaemonError> {
-    let config = match DaemonConfig::load(config_path) {
+    let config = match load_admin_config(config_path) {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!("warning: failed to load config: {e}");
@@ -2482,7 +2493,7 @@ async fn cmd_handlers(
     data_dir_override: Option<PathBuf>,
     sub: &HandlersCommand,
 ) -> Result<(), DaemonError> {
-    let config = match DaemonConfig::load(config_path) {
+    let config = match load_admin_config(config_path) {
         Ok(c) => Some(c),
         Err(e) => {
             eprintln!("warning: failed to load config: {e}");

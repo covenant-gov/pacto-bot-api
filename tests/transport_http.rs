@@ -51,6 +51,7 @@ async fn http_rejects_missing_secret_with_401() -> Result<(), Box<dyn std::error
 
     let response = raw_http_post(port, None, None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -66,6 +67,7 @@ async fn http_rejects_wrong_secret_with_401() -> Result<(), Box<dyn std::error::
 
     let response = raw_http_post(port, Some("wrong-token"), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -83,6 +85,7 @@ async fn http_rejects_wrong_length_secret_with_401() -> Result<(), Box<dyn std::
     // Shorter than the real token.
     let response = raw_http_post(port, Some("short"), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -92,6 +95,7 @@ async fn http_rejects_wrong_length_secret_with_401() -> Result<(), Box<dyn std::
     let long_token = format!("{token}extra");
     let response = raw_http_post(port, Some(&long_token), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -109,6 +113,7 @@ async fn http_accepts_correct_secret() -> Result<(), Box<dyn std::error::Error>>
     let body = serialize_message(&JsonRpcMessage::request(7.into(), "agent.metrics", None))?;
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert_json_content_type(&response);
     assert!(
         response.contains("\"id\":7"),
         "response should echo request id"
@@ -150,6 +155,7 @@ async fn http_rejects_invalid_utf8_with_400() -> Result<(), Box<dyn std::error::
     let body = b"\x80\x81\x82";
     let response = raw_http_post_bytes(port, Some(&token), None, body).await?;
     assert!(response.starts_with("HTTP/1.1 400"), "got: {response}");
+    assert_json_content_type(&response);
 
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
     let parsed: Value = serde_json::from_str(body)?;
@@ -161,6 +167,33 @@ async fn http_rejects_invalid_utf8_with_400() -> Result<(), Box<dyn std::error::
             .unwrap_or("")
             .contains("UTF-8"),
         "expected UTF-8 error message, got: {parsed}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_rejects_oversized_payload_with_413() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    // Body exceeds the 1024-byte max_frame_size configured in start_server.
+    let body = "x".repeat(2048);
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 413"), "got: {response}");
+    assert_json_content_type(&response);
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body)?;
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["error"]["code"], -32000);
+    assert!(
+        parsed["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("payload too large"),
+        "expected payload too large error message, got: {parsed}"
     );
 
     let _ = shutdown_tx.send(());
@@ -956,6 +989,25 @@ async fn raw_events_get(
         .map_err(|_| "timed out reading HTTP response")??;
     buf.truncate(n);
     Ok(String::from_utf8_lossy(&buf).to_string())
+}
+
+fn assert_json_content_type(response: &str) {
+    const EXPECTED: &str = "application/json; charset=utf-8";
+    let content_type = response
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("content-type") {
+                Some(value.trim())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
+    assert!(
+        content_type.eq_ignore_ascii_case(EXPECTED),
+        "expected Content-Type: {EXPECTED}, got: {content_type}"
+    );
 }
 
 fn extract_handler_id(response: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
