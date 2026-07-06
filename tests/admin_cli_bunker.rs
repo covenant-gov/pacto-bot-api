@@ -12,6 +12,7 @@ use pacto_bot_api::config::{BotConfig, SigningConfig};
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::secrecy::SecretString;
 use pacto_bot_api::signer::{BunkerConnection, BunkerKind, Signer, SignerBackend};
+use predicates::prelude::*;
 use serde_json::json;
 use support::mock_bunker::MockBunker;
 use support::mock_relay::MockRelay;
@@ -108,16 +109,11 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
 #[tokio::test]
 async fn test_bunker_unreachable_or_invalid() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
-    let bot = pacto_bot_api::config::BotConfig {
-        id: "echo-bot".to_string(),
-        npub: "npub1invalid".to_string(),
-        signing: pacto_bot_api::config::SigningConfig::BunkerLocal {
-            uri: pacto_bot_api::secrecy::SecretString::new("not-a-bunker-uri".into()),
-        },
-        relays: vec![],
-        capabilities: vec![],
-        ..Default::default()
-    };
+    let mut bot = common::generate_bunker_bot("echo-bot", true)?;
+    // Use a malformed bunker URI so the failure is deterministic and comes
+    // from the bunker verification path, not an unrelated config parse error.
+    common::set_bunker_uri(&mut bot, "not-a-bunker-uri");
+
     let config = common::make_config(&dir, vec![bot])?;
 
     let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
@@ -127,7 +123,9 @@ async fn test_bunker_unreachable_or_invalid() -> Result<(), Box<dyn Error>> {
         "test-bunker",
         "echo-bot",
     ]);
-    cmd.assert().failure();
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid bunker URI"));
     Ok(())
 }
 
