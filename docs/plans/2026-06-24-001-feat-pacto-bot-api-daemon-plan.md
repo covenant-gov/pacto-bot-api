@@ -376,6 +376,12 @@ Handlers respond to `agent.event` by sending a `handler.response` notification c
 | `-32004` | Relay error — the Nostr relay returned an error |
 | `-32005` | Rate limited — the handler exceeded the per-connection rate limit |
 | `-32006` | Unauthorized bot_id — the handler is not authorized to act as the specified bot |
+| `-32007` | Handler already connected — a handler with this id is already connected |
+| `-32008` | Invalid reconnect token — the reconnect token is invalid or expired |
+| `-32009` | Method not supported — the method is not supported over this transport |
+| `-32010` | Handler not dispatched — the handler was not dispatched this event |
+| `-32011` | Handler backpressure — the handler's outbound channel is full |
+| `-32012` | HTTP payload too large — the request body exceeded the configured max frame size |
 | `-32600` | Invalid request — the JSON-RPC request is malformed |
 | `-32601` | Method not found — the method is not recognized |
 | `-32602` | Invalid params — the params are malformed or missing required fields |

@@ -45,6 +45,11 @@ use tracing::info;
 const SECRET_HEADER: HeaderName = HeaderName::from_static("x-pacto-bot-secret");
 const HANDLER_ID_HEADER: HeaderName = HeaderName::from_static("x-pacto-handler-id");
 
+/// JSON-RPC error code for HTTP requests whose body exceeds `max_frame_size`.
+/// Chosen from the next unused Pacto-specific server-error slot to avoid
+/// colliding with the existing Bunker error code (`-32003`).
+const HTTP_PAYLOAD_TOO_LARGE_CODE: i32 = -32012;
+
 /// Shared, runtime-reloadable HTTP secret token.
 pub type HttpToken = Arc<RwLock<SecretString>>;
 
@@ -250,8 +255,10 @@ async fn http_handler(
     }
 
     if body.len() > state.max_frame_size {
-        let err =
-            JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32012, "payload too large"));
+        let err = JsonRpcMessage::error(
+            Value::Null,
+            JsonRpcError::new(HTTP_PAYLOAD_TOO_LARGE_CODE, "payload too large"),
+        );
         let mut body = serialize_message(&err).unwrap_or_default();
         body.push('\n');
         return (
