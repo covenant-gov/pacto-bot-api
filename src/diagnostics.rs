@@ -1,6 +1,7 @@
 use crate::config::{BotConfig, SigningConfig, redact_bunker_uri};
 use crate::errors::DaemonError;
 use chrono::{DateTime, Utc};
+use regex::Regex;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -570,12 +571,12 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
 fn redact_secrets(input: &str) -> String {
     let mut out = redact_word_prefix(input, "nsec1");
     out = redact_hex_secret(&out);
-    out = redact_query_param(&out, "secret");
-    out = redact_query_param(&out, "token");
-    out = redact_query_param(&out, "api_key");
-    out = redact_query_param(&out, "password");
-    out = redact_query_param(&out, "priv_key");
     for key in &[
+        "secret",
+        "token",
+        "api_key",
+        "password",
+        "priv_key",
         "api_secret",
         "private_key",
         "auth_token",
@@ -623,151 +624,54 @@ fn is_path_char(c: char) -> bool {
 
 /// Redact a contiguous alphanumeric token that starts with `prefix`.
 fn redact_word_prefix(input: &str, prefix: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = rest.find(prefix) {
-        result.push_str(&rest[..pos]);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        let consumed = after
-            .chars()
-            .take_while(|&c| c.is_ascii_alphanumeric())
-            .count();
-        rest = &after[consumed..];
-    }
-    result.push_str(rest);
-    result
+    let Ok(re) = Regex::new(&format!(r"(?i)\b{}[A-Za-z0-9]*", regex::escape(prefix))) else {
+        return input.to_string();
+    };
+    re.replace_all(input, "[REDACTED]").into_owned()
 }
 
 /// Redact the value of a URL-style query parameter `key=`.
+///
+/// Handles case-insensitive keys and percent-encoded separators (`%3D`)
+/// and delimiters (`%26`).
 fn redact_query_param(input: &str, key: &str) -> String {
-    let pattern = format!("{key}=");
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = rest.find(&pattern) {
-        result.push_str(&rest[..pos]);
-        result.push_str(&pattern);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + pattern.len()..];
-        let end = match after.find(|c: char| c == '&' || c.is_whitespace()) {
-            Some(idx) => idx,
-            None => after.len(),
-        };
-        rest = &after[end..];
-    }
-    result.push_str(rest);
-    result
+    const VALUE: &str = r"(?:[^&\s%]|%([013-9A-Fa-f][0-9A-Fa-f]|2[0-57A-Fa-f]))*";
+    let pattern = format!(
+        r"(?i)(?P<pre>^|&|%26|[^A-Za-z0-9_])(?P<key>{})(?P<sep>=|%3D)(?P<value>{})",
+        regex::escape(key),
+        VALUE
+    );
+    let Ok(re) = Regex::new(&pattern) else {
+        return input.to_string();
+    };
+    re.replace_all(input, "${pre}${key}${sep}[REDACTED]")
+        .into_owned()
 }
 
 /// Redact 64-character hexadecimal sequences (raw secp256k1 private keys).
 fn redact_hex_secret(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(start) = find_hex_run(rest, 64) {
-        result.push_str(&rest[..start]);
-        result.push_str("[REDACTED]");
-        rest = &rest[start + 64..];
-    }
-    result.push_str(rest);
-    result
-}
-
-/// Find the starting index of a run of `len` ASCII hexadecimal digits.
-fn find_hex_run(input: &str, len: usize) -> Option<usize> {
-    if input.len() < len {
-        return None;
-    }
-    let mut count = 0;
-    let mut start = 0;
-    for (idx, c) in input.char_indices() {
-        if c.is_ascii_hexdigit() {
-            if count == 0 {
-                start = idx;
-            }
-            count += 1;
-            if count == len {
-                return Some(start);
-            }
-        } else {
-            count = 0;
-        }
-    }
-    None
-}
-
-/// Find `needle` in `haystack` case-insensitively.
-///
-/// This assumes `needle` is ASCII. It compares ASCII bytes only, so the
-/// returned index is always a valid byte position in the original `haystack`
-/// and no allocation is required.
-fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let needle_len = needle.len();
-    if haystack.len() < needle_len {
-        return None;
-    }
-    let haystack_bytes = haystack.as_bytes();
-    let needle_bytes = needle.as_bytes();
-    haystack_bytes.windows(needle_len).position(|window| {
-        window
-            .iter()
-            .zip(needle_bytes.iter())
-            .all(|(h, n)| h.eq_ignore_ascii_case(n))
-    })
+    let Ok(re) = Regex::new(r"[0-9a-fA-F]{64}") else {
+        return input.to_string();
+    };
+    re.replace_all(input, "[REDACTED]").into_owned()
 }
 
 /// Redact a `bearer <token>` token, case-insensitively.
 fn redact_bearer_token(input: &str) -> String {
-    let prefix = "bearer ";
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = find_case_insensitive(rest, prefix) {
-        let original_prefix = &rest[pos..pos + prefix.len()];
-        result.push_str(&rest[..pos]);
-        result.push_str(original_prefix);
-        result.push_str("[REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        let end = after
-            .find(|c: char| c.is_whitespace())
-            .unwrap_or(after.len());
-        rest = &after[end..];
-    }
-    result.push_str(rest);
-    result
+    let Ok(re) = Regex::new(r"(?i)(^|[^A-Za-z0-9_])(bearer)([ \t]+)([^\s]+)") else {
+        return input.to_string();
+    };
+    re.replace_all(input, "${1}${2}${3}[REDACTED]").into_owned()
 }
 
 /// Redact an `authorization: <value>` header, case-insensitively.
 fn redact_authorization_header(input: &str) -> String {
-    let prefix = "authorization:";
-    let mut result = String::with_capacity(input.len());
-    let mut rest = input;
-
-    while let Some(pos) = find_case_insensitive(rest, prefix) {
-        let original_prefix = &rest[pos..pos + prefix.len()];
-        result.push_str(&rest[..pos]);
-        result.push_str(original_prefix);
-        result.push_str(" [REDACTED]");
-
-        let after = &rest[pos + prefix.len()..];
-        // Skip leading whitespace after the colon.
-        let skip = after.chars().take_while(|&c| c == ' ' || c == '\t').count();
-        let after_ws = &after[skip..];
-        let end = after_ws
-            .find(|c: char| ['\n', '\r'].contains(&c))
-            .unwrap_or(after_ws.len());
-        rest = &after_ws[end..];
-    }
-    result.push_str(rest);
-    result
+    let Ok(re) = Regex::new(r"(?i)(^|[^A-Za-z0-9_])(authorization)([ \t]*:)(?:[ \t]*)([^\r\n]*)")
+    else {
+        return input.to_string();
+    };
+    re.replace_all(input, "${1}${2}${3} [REDACTED]")
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -1052,6 +956,40 @@ mod tests {
         let out = redact_secrets("Authorization: Bearer abc123");
         assert!(!out.contains("abc123"));
         assert!(out.contains("Authorization: [REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_case_insensitive_query_params() {
+        let out = redact_secrets("Secret=supersecret&Api_Key=keyvalue TOKEN=tokvalue");
+        assert!(!out.contains("supersecret"));
+        assert!(!out.contains("keyvalue"));
+        assert!(!out.contains("tokvalue"));
+        assert!(out.contains("Secret=[REDACTED]"));
+        assert!(out.contains("Api_Key=[REDACTED]"));
+        assert!(out.contains("TOKEN=[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_url_encoded_query_params() {
+        let out = redact_secrets("secret%3Dsupersecret%26token%3Dabc123");
+        assert!(!out.contains("supersecret"));
+        assert!(!out.contains("abc123"));
+        assert!(out.contains("secret%3D[REDACTED]"));
+        assert!(out.contains("token%3D[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_handles_json_escaped_nsec() {
+        let input = r#"{"key":"nsec1deadbeef1234"}"#;
+        let out = redact_secrets(input);
+        assert!(!out.contains("nsec1deadbeef1234"));
+        assert!(out.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_does_not_over_redact_innocuous_substrings() {
+        assert_eq!(redact_secrets("mysecret=foo"), "mysecret=foo");
+        assert_eq!(redact_secrets("npub1public"), "npub1public");
     }
 
     #[test]
