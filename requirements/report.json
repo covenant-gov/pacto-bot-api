@@ -558,7 +558,6 @@
       "sources": [
         "schemas/",
         "src/config_generated.rs",
-        "src/metrics_generated.rs",
         "src/transport/protocol_generated.rs"
       ],
       "justification": null,
@@ -613,8 +612,7 @@
       ],
       "sources": [
         "src/diagnostics.rs",
-        "src/admin.rs",
-        "src/metrics_generated.rs"
+        "src/admin.rs"
       ],
       "justification": null,
       "covered": true

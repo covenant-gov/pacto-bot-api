@@ -129,7 +129,7 @@
   },
   "R32": {
     "tests": ["tests/schema_sync.rs"],
-    "sources": ["schemas/", "src/config_generated.rs", "src/metrics_generated.rs", "src/transport/protocol_generated.rs"]
+    "sources": ["schemas/", "src/config_generated.rs", "src/transport/protocol_generated.rs"]
   },
   "R33": {
     "tests": ["tests/support/mock_relay.rs", "tests/support/mock_bunker.rs", "tests/integration_test.rs"],
@@ -141,7 +141,7 @@
   },
   "R35": {
     "tests": ["tests/diagnostics.rs", "tests/admin_cli_migration.rs"],
-    "sources": ["src/diagnostics.rs", "src/admin.rs", "src/metrics_generated.rs"]
+    "sources": ["src/diagnostics.rs", "src/admin.rs"]
   },
   "R36": {
     "tests": ["tests/dev_env_probe.rs"],

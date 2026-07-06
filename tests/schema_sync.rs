@@ -22,7 +22,6 @@ fn workspace_root() -> PathBuf {
 /// Files produced by `cargo xtask codegen` from `schemas/`.
 const TRACKED_GENERATED_FILES: &[&str] = &[
     "src/config_generated.rs",
-    "src/metrics_generated.rs",
     "src/service_compatibility_generated.rs",
     "src/transport/protocol_generated.rs",
 ];
@@ -37,6 +36,10 @@ const TRACKED_GENERATED_PYTHON_FILES: &[&str] = &[
 /// module, with a short justification. Every other file in `schemas/` must
 /// either be generated or appear here.
 const EXEMPT_SCHEMAS: &[(&str, &str)] = &[
+    (
+        "metrics.json",
+        "response shape tracked by handwritten MetricsResponse in src/transport/protocol.rs",
+    ),
     (
         "version.json",
         "response shape tracked by handwritten AgentVersionResponse in src/transport/protocol.rs",
@@ -450,13 +453,6 @@ const SCHEMA_GENERATION_MAP: &[SchemaGenerationMapping] = &[
                 rust_type: "BotConfigGenerated",
             },
         ],
-    },
-    SchemaGenerationMapping {
-        schema_file: "metrics.json",
-        structs: &[StructMapping {
-            schema_selector: &[],
-            rust_type: "MetricsPayloadGenerated",
-        }],
     },
     SchemaGenerationMapping {
         schema_file: "service-compatibility.json",
