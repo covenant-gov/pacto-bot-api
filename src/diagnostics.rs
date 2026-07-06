@@ -1,6 +1,7 @@
 use crate::config::{BotConfig, SigningConfig, redact_bunker_uri};
 use crate::errors::DaemonError;
 use chrono::{DateTime, Utc};
+use percent_encoding::percent_decode_str;
 use regex::Regex;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -566,13 +567,24 @@ pub fn parse_bunker_relay(uri: &str) -> Result<String, DaemonError> {
         DaemonError::Config(format!("bunker uri missing relay param: {redacted}"))
     })?;
     let relay_start = idx + "?relay=".len();
-    let relay = after_scheme[relay_start..].split('&').next().unwrap_or("");
+    let encoded_relay = after_scheme[relay_start..].split('&').next().unwrap_or("");
+    if encoded_relay.is_empty() {
+        return Err(DaemonError::Config(
+            "bunker uri relay param is empty".into(),
+        ));
+    }
+    let relay = percent_decode_str(encoded_relay)
+        .decode_utf8()
+        .map_err(|e| {
+            DaemonError::Config(format!("bunker uri relay param is not valid UTF-8: {e}"))
+        })?
+        .to_string();
     if relay.is_empty() {
         return Err(DaemonError::Config(
             "bunker uri relay param is empty".into(),
         ));
     }
-    Ok(relay.to_string())
+    Ok(relay)
 }
 
 fn write_guard<'a, T>(lock: &'a RwLock<T>) -> RwLockWriteGuard<'a, T> {
@@ -1111,6 +1123,12 @@ mod tests {
     fn parse_bunker_relay_extracts_relay_url() {
         let uri = "bunker://deadbeef?relay=ws://127.0.0.1:4848&secret=shh";
         assert_eq!(parse_bunker_relay(uri).unwrap(), "ws://127.0.0.1:4848");
+    }
+
+    #[test]
+    fn parse_bunker_relay_url_decodes_relay_param() {
+        let uri = "bunker://deadbeef?relay=wss%3A%2F%2Frelay.nsec.app&secret=shh";
+        assert_eq!(parse_bunker_relay(uri).unwrap(), "wss://relay.nsec.app");
     }
 
     #[test]
