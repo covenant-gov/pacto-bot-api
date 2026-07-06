@@ -179,7 +179,7 @@ impl DaemonConfig {
     }
 }
 
-fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
+pub fn enforce_config_permissions(path: &Path) -> Result<(), DaemonError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
