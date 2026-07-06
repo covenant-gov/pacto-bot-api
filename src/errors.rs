@@ -75,6 +75,9 @@ pub enum DaemonError {
     #[error("handler not registered")]
     HandlerNotRegistered,
 
+    #[error("handler backpressure")]
+    HandlerBackpressure,
+
     #[error("invalid event type: {0}")]
     InvalidEventType(String),
 
@@ -112,6 +115,7 @@ impl DaemonError {
         match self {
             DaemonError::UnknownBot(_) => -32000,
             DaemonError::HandlerNotRegistered => -32001,
+            DaemonError::HandlerBackpressure => -32011,
             DaemonError::InvalidEventType(_) => -32002,
             DaemonError::Bunker(_) => -32003,
             DaemonError::Nostr(_) => -32004,
@@ -157,6 +161,7 @@ mod tests {
             -32000
         );
         assert_eq!(DaemonError::HandlerNotRegistered.to_json_rpc_code(), -32001);
+        assert_eq!(DaemonError::HandlerBackpressure.to_json_rpc_code(), -32011);
         assert_eq!(
             DaemonError::InvalidEventType("x".into()).to_json_rpc_code(),
             -32002
