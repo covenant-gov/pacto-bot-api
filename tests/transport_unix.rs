@@ -341,6 +341,24 @@ async fn unix_transport_rejects_oversized_frames() -> Result<(), Box<dyn std::er
 
     let mut buf = Vec::new();
     let n = stream.read_until(b'\n', &mut buf).await?;
+    assert_ne!(
+        n, 0,
+        "expected an error response before the connection closed"
+    );
+
+    let response: JsonRpcMessage = serde_json::from_slice(&buf)?;
+    let error = response
+        .as_error()
+        .ok_or("expected a JSON-RPC error response")?;
+    assert_eq!(error.code, -32600);
+    assert!(
+        error.message.contains("frame size") && error.message.contains("exceeds maximum"),
+        "unexpected error message: {}",
+        error.message
+    );
+
+    buf.clear();
+    let n = stream.read_until(b'\n', &mut buf).await?;
     assert_eq!(n, 0, "connection should be closed after oversized frame");
 
     let _ = shutdown_tx.send(());

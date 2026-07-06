@@ -175,6 +175,14 @@ impl JsonRpcMessage {
         }
     }
 
+    /// Return the error object, if this is an error response.
+    pub fn as_error(&self) -> Option<&JsonRpcError> {
+        match self {
+            Self::Error { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+
     /// Return the method name, if this is a request or notification.
     pub fn method(&self) -> Option<&str> {
         match self {
