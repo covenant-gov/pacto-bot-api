@@ -4387,6 +4387,7 @@ dependencies = [
  "nostr-relay-pool",
  "nostr-sdk",
  "parking_lot",
+ "percent-encoding",
  "predicates",
  "proptest",
  "quote",
@@ -4414,6 +4415,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "winapi",
  "zeroize",
 ]
 

@@ -435,6 +435,13 @@ mod tests {
         // Create a restricted temp directory so the parent-directory permission
         // check passes on CI runners where /tmp is world-writable.
         let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o700);
+            fs::set_permissions(dir.path(), perms).unwrap();
+        }
         let mut file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         file.write_all(content.as_bytes()).unwrap();
         let path = file.path().to_path_buf();

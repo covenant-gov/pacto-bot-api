@@ -187,7 +187,46 @@ async fn http_rejects_oversized_payload_with_413() -> Result<(), Box<dyn std::er
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
     let parsed: Value = serde_json::from_str(body)?;
     assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32000);
+    assert_eq!(parsed["error"]["code"], -32012);
+    assert!(
+        parsed["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("payload too large"),
+        "expected payload too large error message, got: {parsed}"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_rejects_oversized_json_rpc_frame_with_413() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    // A single valid JSON-RPC frame that exceeds the 1024-byte max_frame_size configured in
+    // start_server.
+    let padding = "x".repeat(2048);
+    let body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "agent.metrics",
+        Some(serde_json::json!({ "padding": padding })),
+    ))?;
+    assert!(
+        body.len() > 1024,
+        "test frame must be larger than max_frame_size"
+    );
+
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 413"), "got: {response}");
+    assert_json_content_type(&response);
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body)?;
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["error"]["code"], -32012);
     assert!(
         parsed["error"]["message"]
             .as_str()

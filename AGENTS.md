@@ -51,6 +51,7 @@ Key pattern: **daemon manages runtime, admin CLI manages lifecycle**. The daemon
 | `tests/` | In-process integration tests, mock relay/bunker support, fixtures, and contract tests. |
 | `tests/support/` | Shared mock relay, mock bunker, secret scanner, and test helpers. |
 | `schemas/` | Canonical JSON Schema/OpenRPC contracts; source of truth for generated types. |
+| `docs/solutions/` | Documented solutions to recurring problems and review patterns (searchable via YAML frontmatter). |
 | `xtask/` | Build/task runner (`codegen`, `docs`, `coverage`, `secret-lint`, `dev-env-probe`). |
 | `tests/fixtures/templates/` | Local cargo-generate fixture template used by the integration tests. |
 | `skills/` | Installable skill files for `npx skills` (project-local skills such as `kind-lookup` and `nip-lookup`; `python-pacto-bot` is provided by the `pacto-bot-templates` repository). |
@@ -149,6 +150,17 @@ docker compose --profile bunker up -d --build
 ### Capability & authorization
 - Handlers register for specific bot identities and capabilities.
 - Every mutating call (`agent.send_dm`, `agent.set_profile`, `agent.error`) is authorized against the registration, not just at connection time.
+
+### Common review feedback patterns
+
+The following patterns recur in PR review and should be applied proactively so that security, performance, and protocol-compliance issues are caught before review:
+
+- **Secure file creation.** Files containing sensitive data (diagnostics, secrets, DB, etc.) must be created with explicit owner-only permissions. Do not rely on umask or apply permissions after a rename. Prefer `tokio::fs::OpenOptions::new().write(true).create(true).mode(0o600)` on Unix, or create an empty file, set permissions, then write. See `src/diagnostics.rs` (`flush_report`) for a working example.
+- **Regex compilation in hot paths.** Do not compile `regex::Regex` inside functions that are called repeatedly (including error paths). Cache compiled regexes with `std::sync::LazyLock` (or `OnceLock`/`once_cell`) so they are built once per process. See `src/diagnostics.rs` (`redact_secrets`) for a working example.
+- **Amortize cleanup in hot paths.** Avoid O(n) scans or full-map cleanup on every request. Gate sweeps on a size threshold or a time-based cadence tracked in the data structure. See `src/dispatch.rs` (`RateLimiter`/`BucketMap`) for a working example.
+- **Exact test assertions for exact contracts.** When the protocol or API specifies an exact value (e.g., `Content-Type: application/json; charset=utf-8`), assert the exact value rather than a prefix or substring. Prefix/substring checks are only appropriate when the contract is intentionally loose. See `tests/transport_http.rs` (`assert_json_content_type`) for a working example.
+
+See also `docs/solutions/` for documented solutions and patterns in these areas.
 
 ### Generated code workflow
 - `schemas/` is the source of truth. Run `cargo xtask codegen` to regenerate `src/*_generated.rs`.

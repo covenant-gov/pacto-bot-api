@@ -251,7 +251,7 @@ async fn http_handler(
 
     if body.len() > state.max_frame_size {
         let err =
-            JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32000, "payload too large"));
+            JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32012, "payload too large"));
         let mut body = serialize_message(&err).unwrap_or_default();
         body.push('\n');
         return (

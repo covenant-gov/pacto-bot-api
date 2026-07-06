@@ -1,4 +1,4 @@
-use crate::errors::DaemonError;
+use crate::errors::{DaemonError, JsonRpcError};
 use crate::handlers::ConnectionHandle;
 use crate::transport::BoxFuture;
 use crate::transport::MessageHandler;
@@ -239,6 +239,7 @@ async fn handle_connection(
 ) -> Result<(), DaemonError> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
+    let shared_writer = Arc::new(Mutex::new(writer));
     let mut buf = Vec::new();
 
     // Bounded outbound buffer: responses await room (backpressure on a slow
@@ -251,10 +252,14 @@ async fn handle_connection(
     let connection = ConnectionHandle::with_transport(out_tx.clone(), "unix");
     let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
+    let writer_for_task = Arc::clone(&shared_writer);
     let writer_handle = tokio::spawn(async move {
-        let mut writer = writer;
+        let writer = writer_for_task;
         while let Some(msg) = out_rx.recv().await {
-            if write_message(&mut writer, &msg).await.is_err() {
+            if write_message(&mut *writer.lock().await, &msg)
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -308,7 +313,25 @@ async fn handle_connection(
             }
 
             if buf.len() > max_frame_size {
-                // Oversized frame: drop the connection per R3.
+                // Oversized frame: tell the peer why the connection is being
+                // dropped, then close per R3.
+                let error = JsonRpcError::new(
+                    -32600,
+                    format!(
+                        "frame size {} exceeds maximum allowed {} bytes",
+                        buf.len(),
+                        max_frame_size
+                    ),
+                );
+                tracing::warn!(
+                    error = %error,
+                    "oversized frame received on Unix socket; closing connection"
+                );
+                let _ = write_message(
+                    &mut *shared_writer.lock().await,
+                    &JsonRpcMessage::error(Value::Null, error),
+                )
+                .await;
                 return Ok(());
             }
 

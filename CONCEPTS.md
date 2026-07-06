@@ -35,6 +35,10 @@ Daemon-side routing table. Maps active handler connections to their registered b
 
 Fan-out logic that sends an incoming event to every handler whose registration matches the event type and bot identity. Waits for terminal handler responses or a dispatch timeout before advancing cursors.
 
+### Rate limiter
+
+Per-handler and per-bot token-bucket rate limiter that gates handler mutating calls. Stale buckets are cleaned up opportunistically — by size threshold or time cadence — to avoid scanning the full map on every request.
+
 ## Transports
 
 ### Unix socket transport
@@ -64,7 +68,7 @@ Encrypted Nostr event envelope used for sealed DMs. The daemon receives gift wra
 Authorization claims requested by a handler at registration. The daemon enforces them on every mutating call. Examples include:
 - `ReadMessages` — receive incoming DMs;
 - `SendMessages` — send outgoing DMs;
-- `SetProfile` — publish kind:0 profile metadata.
+- `ManageProfile` — publish kind:0 profile metadata.
 
 ## Persistence
 
@@ -80,7 +84,7 @@ Cursor advancement waits for terminal handler responses so events are not lost a
 
 ### Reports
 
-Periodic JSON dumps of runtime metrics and diagnostics to `$DATA_DIR/reports/latest.json`. Used by `pacto-bot-admin diagnose` and `status`.
+Periodic JSON dumps of runtime metrics and diagnostics to `$DATA_DIR/reports/latest.json`. Used by `pacto-bot-admin diagnose` and `status`. Reports must be created with owner-only permissions; see `docs/solutions/best-practices/secure-file-creation.md`.
 
 ## Admin CLI
 
@@ -130,6 +134,10 @@ Secrets (`nsec`, bunker URI, HTTP token) are represented with `secrecy::SecretSt
 ### Docker-free default tests
 
 The default `cargo test` suite runs in-process against mock relay and mock bunker implementations in `tests/support/`. Integration tests against real Docker services are gated with `#[ignore]` and require `PACTO_DEV_ENV=1`.
+
+### Review-pattern docs
+
+Recurring review feedback is captured in `docs/solutions/` (searchable by `tags` frontmatter). Check there before implementing in a documented area.
 
 ## Glossary
 

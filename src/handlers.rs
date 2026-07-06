@@ -41,13 +41,16 @@ impl ConnectionHandle {
 
     /// Send a JSON-RPC notification to the connected handler.
     ///
-    /// Notifications are best-effort: if the outbound buffer is full because
-    /// the peer is not reading, the notification is dropped so the dispatcher
-    /// never blocks on a slow handler.
+    /// Returns `Ok(())` if the message was accepted by the outbound channel.
+    /// If the peer has disconnected, returns `HandlerNotRegistered`. If the
+    /// outbound channel is full because the peer is not reading, returns
+    /// `HandlerBackpressure` so the caller can decide whether to drop the
+    /// notification or propagate the backpressure.
     pub fn send(&self, msg: JsonRpcMessage) -> Result<(), DaemonError> {
-        self.sender
-            .try_send(msg)
-            .map_err(|_| DaemonError::HandlerNotRegistered)
+        self.sender.try_send(msg).map_err(|e| match e {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => DaemonError::HandlerBackpressure,
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => DaemonError::HandlerNotRegistered,
+        })
     }
 
     /// Returns true if the peer side of this channel is still open.
@@ -719,6 +722,28 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let handle = ConnectionHandle::new(tx);
         assert_eq!(handle.transport(), "unknown");
+    }
+
+    #[test]
+    fn connection_handle_returns_backpressure_when_full() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let handle = ConnectionHandle::new(tx);
+        let msg = JsonRpcMessage::notification("agent.event", None);
+
+        handle.send(msg.clone()).expect("first send should fit");
+        let err = handle.send(msg).unwrap_err();
+        assert!(matches!(err, DaemonError::HandlerBackpressure));
+    }
+
+    #[test]
+    fn connection_handle_returns_not_registered_when_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let handle = ConnectionHandle::new(tx);
+        let msg = JsonRpcMessage::notification("agent.event", None);
+
+        let err = handle.send(msg).unwrap_err();
+        assert!(matches!(err, DaemonError::HandlerNotRegistered));
     }
 
     #[test]

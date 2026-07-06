@@ -1451,6 +1451,9 @@ fn cmd_export(
         split_brain_warning: true,
     };
 
+    eprintln!(
+        "warning: the following output contains operational state (keys, tokens, diagnostics); treat it as confidential"
+    );
     println!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
@@ -2901,34 +2904,169 @@ fn write_token_atomic(dir: &Path, token: &str) -> Result<(), DaemonError> {
     let tmp = dir.join(format!("{}.tmp", BOT_SECRET_TOKEN_FILE));
     let dest = dir.join(BOT_SECRET_TOKEN_FILE);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(DaemonError::Io)?;
+    let result = (|| -> Result<(), DaemonError> {
+        let mut file = create_restricted_file(&tmp)?;
         file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
         drop(file);
+        fs::rename(&tmp, &dest).map_err(DaemonError::Io)
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// Create a file with permissions restricted to the owner only.
+#[cfg(unix)]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(DaemonError::Io)
+}
+
+/// Create a file with permissions restricted to the owner only.
+///
+/// On Windows, the file is created with a protected DACL that grants full
+/// control only to the current process owner, so there is no window where the
+/// file inherits a permissive default ACL.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use std::ptr;
+    use winapi::um::fileapi::{CREATE_ALWAYS, CreateFileW};
+    use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
+    use winapi::um::securitybaseapi::{
+        AddAccessAllowedAce, GetSidLengthRequired, GetSidSubAuthorityCount, GetTokenInformation,
+        InitializeAcl, InitializeSecurityDescriptor, SetSecurityDescriptorControl,
+        SetSecurityDescriptorDacl,
+    };
+    use winapi::um::winnt::{
+        ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
+        GENERIC_WRITE, HANDLE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+        SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_REVISION, TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
+    };
+
+    // Get the owner SID from the current process token.
+    let mut token: HANDLE = ptr::null_mut();
+    let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
     }
 
-    #[cfg(not(unix))]
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(DaemonError::Io)?;
-        file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
-        drop(file);
+    let mut size_needed: u32 = 0;
+    unsafe {
+        GetTokenInformation(token, TokenOwner, ptr::null_mut(), 0, &mut size_needed);
+    }
+    let mut owner_buffer = vec![0u8; size_needed as usize];
+    let owner_info = owner_buffer.as_mut_ptr() as *mut TOKEN_OWNER;
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenOwner,
+            owner_buffer.as_mut_ptr() as *mut _,
+            size_needed,
+            &mut size_needed,
+        )
+    };
+    unsafe { CloseHandle(token) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let owner_sid: PSID = unsafe { (*owner_info).Owner };
+
+    // Build an owner-only DACL.
+    let sub_authority_count = unsafe { *GetSidSubAuthorityCount(owner_sid) };
+    let sid_length = unsafe { GetSidLengthRequired(sub_authority_count) };
+    let acl_size = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>()
+        - std::mem::size_of::<u32>()
+        + sid_length as usize;
+    let mut acl_buffer = vec![0u8; acl_size];
+    let acl = acl_buffer.as_mut_ptr() as *mut ACL;
+    let ok = unsafe { InitializeAcl(acl, acl_size as u32, ACL_REVISION) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, owner_sid) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
     }
 
-    fs::rename(&tmp, &dest).map_err(DaemonError::Io)?;
-    Ok(())
+    // Build a security descriptor with the owner-only DACL.
+    let mut sd: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
+    let ok = unsafe {
+        InitializeSecurityDescriptor(
+            &mut sd as PSECURITY_DESCRIPTOR,
+            SECURITY_DESCRIPTOR_REVISION,
+        )
+    };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe { SetSecurityDescriptorDacl(&mut sd as PSECURITY_DESCRIPTOR, 1, acl, 0) };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+    let ok = unsafe {
+        SetSecurityDescriptorControl(
+            &mut sd as PSECURITY_DESCRIPTOR,
+            SE_DACL_PROTECTED,
+            SE_DACL_PROTECTED,
+        )
+    };
+    if ok == 0 {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+
+    // Create the file with the restrictive DACL already in place.
+    let mut sa: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
+    sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
+    sa.lpSecurityDescriptor = &mut sd as PSECURITY_DESCRIPTOR as *mut _;
+    sa.bInheritHandle = 0;
+
+    let path_wide: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let handle = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            &mut sa,
+            CREATE_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(DaemonError::Io(std::io::Error::last_os_error()));
+    }
+
+    // SAFETY: handle is valid and ownership is transferred to File.
+    let file = unsafe { fs::File::from_raw_handle(handle as *mut _) };
+    Ok(file)
+}
+
+/// Fallback for platforms without an explicit owner-only permission model.
+#[cfg(not(any(unix, windows)))]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(DaemonError::Io)
 }
 
 fn format_toml_array(items: &[String]) -> String {

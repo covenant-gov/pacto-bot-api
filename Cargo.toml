@@ -59,12 +59,16 @@ nostr-connect = "0.43"
 nostr-relay-pool = "0.43"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 regex = "1"
+percent-encoding = "2"
 semver = "1"
 dirs = "6"
 colored = "2"
 nix = { version = "0.31", features = ["signal", "process"] }
     rpassword = "7.5.4"
 jsonschema = "0.46"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winnt", "fileapi", "handleapi", "processthreadsapi", "securitybaseapi"] }
 
 [dev-dependencies]
 schemars = "0.8"

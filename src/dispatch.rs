@@ -882,13 +882,15 @@ impl Dispatch {
             return Err(DaemonError::RateLimited);
         }
 
-        let cm = self.client_manager.read().await;
-        let bot = cm
-            .get_bot_by_id(bot_id)
-            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
-        let event_id = cm
-            .nostr_client
-            .send_dm(&bot.signer, recipient, content, reply_to)
+        let (signer, client) = {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+            (bot.signer.clone(), cm.nostr_client.clone())
+        };
+        let event_id = client
+            .send_dm(&signer, recipient, content, reply_to)
             .await?;
         Ok(event_id)
     }
