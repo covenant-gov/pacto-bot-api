@@ -246,7 +246,7 @@ async fn http_handler_unregister_returns_unregistered_flag()
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         2.into(),
         "handler.unregister",
-        None,
+        Some(serde_json::json!({})),
     ))?;
     let unregister_response =
         raw_http_post(port, Some(&token), Some(&handler_id), &unregister_body).await?;
@@ -298,7 +298,7 @@ async fn http_handler_unregister_without_identity_rejected()
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         2.into(),
         "handler.unregister",
-        None,
+        Some(serde_json::json!({})),
     ))?;
     let unregister_response = raw_http_post(port, Some(&token), None, &unregister_body).await?;
     assert!(
@@ -336,7 +336,7 @@ async fn http_handler_unregister_without_identity_rejected()
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         3.into(),
         "handler.unregister",
-        None,
+        Some(serde_json::json!({})),
     ))?;
     let unregister_response =
         raw_http_post(port, Some(&token), Some(&handler_id), &unregister_body).await?;
