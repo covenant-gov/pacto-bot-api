@@ -5,9 +5,9 @@ use regex::Regex;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, LazyLock, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 use tokio_tungstenite::connect_async;
@@ -412,9 +412,34 @@ impl Diagnostics {
         let final_path = reports_dir.join("latest.json");
 
         let json = serde_json::to_string_pretty(&snapshot)?;
-        tokio::fs::write(&tmp_path, json).await?;
+
+        // Open the temp file with owner-only permissions *before* writing any
+        // diagnostic data. On Unix this sets the mode directly, so a permissive
+        // umask cannot expose the report during the write.
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .await?;
+
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&tmp_path, Permissions::from_mode(0o600)).await?;
+        }
+
+        use tokio::io::AsyncWriteExt;
+        file.write_all(json.as_bytes()).await?;
+        file.shutdown().await?;
+        drop(file.into_std().await);
+
         tokio::fs::rename(&tmp_path, &final_path).await?;
 
+        // Defensive: ensure the final path is also owner-only, in case the
+        // rename crossed a mount point or the temp file's permissions were
+        // altered.
         #[cfg(unix)]
         {
             use std::fs::Permissions;
@@ -564,6 +589,74 @@ fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
     }
 }
 
+/// Precompiled redaction regexes, built once per process.
+///
+/// The patterns are static constants; failures here are a programming bug, not
+/// a runtime condition, so we intentionally fail fast during initialization.
+static NSEC1_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)\bnsec1[A-Za-z0-9]*").expect("nsec1 regex is valid")
+    }
+});
+
+static HEX_SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"[0-9a-fA-F]{64}").expect("hex secret regex is valid")
+    }
+});
+
+static QUERY_PARAM_REGEXES: LazyLock<HashMap<&'static str, Regex>> = LazyLock::new(|| {
+    const VALUE: &str = r"(?:[^&\s%]|%([013-9A-Fa-f][0-9A-Fa-f]|2[0-57A-Fa-f]))*";
+    const KEYS: &[&str] = &[
+        "secret",
+        "token",
+        "api_key",
+        "password",
+        "priv_key",
+        "api_secret",
+        "private_key",
+        "auth_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "secret_key",
+    ];
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        KEYS.iter()
+            .map(|key| {
+                let pattern = format!(
+                    r"(?i)(?P<pre>^|&|%26|[^A-Za-z0-9_])(?P<key>{})(?P<sep>=|%3D)(?P<value>{})",
+                    regex::escape(key),
+                    VALUE
+                );
+                (
+                    *key,
+                    Regex::new(&pattern).expect("query param regex is valid"),
+                )
+            })
+            .collect()
+    }
+});
+
+static BEARER_TOKEN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)(^|[^A-Za-z0-9_])(bearer)([ \t]+)([^\s]+)")
+            .expect("bearer token regex is valid")
+    }
+});
+
+static AUTHORIZATION_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        Regex::new(r"(?i)(^|[^A-Za-z0-9_])(authorization)([ \t]*:)(?:[ \t]*)([^\r\n]*)")
+            .expect("authorization header regex is valid")
+    }
+});
+
 /// Redact likely secret material from a diagnostic message.
 ///
 /// This is a best-effort filter; application code should avoid logging
@@ -624,6 +717,9 @@ fn is_path_char(c: char) -> bool {
 
 /// Redact a contiguous alphanumeric token that starts with `prefix`.
 fn redact_word_prefix(input: &str, prefix: &str) -> String {
+    if prefix == "nsec1" {
+        return NSEC1_REGEX.replace_all(input, "[REDACTED]").into_owned();
+    }
     let Ok(re) = Regex::new(&format!(r"(?i)\b{}[A-Za-z0-9]*", regex::escape(prefix))) else {
         return input.to_string();
     };
@@ -635,13 +731,7 @@ fn redact_word_prefix(input: &str, prefix: &str) -> String {
 /// Handles case-insensitive keys and percent-encoded separators (`%3D`)
 /// and delimiters (`%26`).
 fn redact_query_param(input: &str, key: &str) -> String {
-    const VALUE: &str = r"(?:[^&\s%]|%([013-9A-Fa-f][0-9A-Fa-f]|2[0-57A-Fa-f]))*";
-    let pattern = format!(
-        r"(?i)(?P<pre>^|&|%26|[^A-Za-z0-9_])(?P<key>{})(?P<sep>=|%3D)(?P<value>{})",
-        regex::escape(key),
-        VALUE
-    );
-    let Ok(re) = Regex::new(&pattern) else {
+    let Some(re) = QUERY_PARAM_REGEXES.get(key) else {
         return input.to_string();
     };
     re.replace_all(input, "${pre}${key}${sep}[REDACTED]")
@@ -650,27 +740,22 @@ fn redact_query_param(input: &str, key: &str) -> String {
 
 /// Redact 64-character hexadecimal sequences (raw secp256k1 private keys).
 fn redact_hex_secret(input: &str) -> String {
-    let Ok(re) = Regex::new(r"[0-9a-fA-F]{64}") else {
-        return input.to_string();
-    };
-    re.replace_all(input, "[REDACTED]").into_owned()
+    HEX_SECRET_REGEX
+        .replace_all(input, "[REDACTED]")
+        .into_owned()
 }
 
 /// Redact a `bearer <token>` token, case-insensitively.
 fn redact_bearer_token(input: &str) -> String {
-    let Ok(re) = Regex::new(r"(?i)(^|[^A-Za-z0-9_])(bearer)([ \t]+)([^\s]+)") else {
-        return input.to_string();
-    };
-    re.replace_all(input, "${1}${2}${3}[REDACTED]").into_owned()
+    BEARER_TOKEN_REGEX
+        .replace_all(input, "${1}${2}${3}[REDACTED]")
+        .into_owned()
 }
 
 /// Redact an `authorization: <value>` header, case-insensitively.
 fn redact_authorization_header(input: &str) -> String {
-    let Ok(re) = Regex::new(r"(?i)(^|[^A-Za-z0-9_])(authorization)([ \t]*:)(?:[ \t]*)([^\r\n]*)")
-    else {
-        return input.to_string();
-    };
-    re.replace_all(input, "${1}${2}${3} [REDACTED]")
+    AUTHORIZATION_HEADER_REGEX
+        .replace_all(input, "${1}${2}${3} [REDACTED]")
         .into_owned()
 }
 

@@ -992,11 +992,21 @@ async fn raw_events_get(
 }
 
 fn assert_json_content_type(response: &str) {
+    const EXPECTED: &str = "application/json; charset=utf-8";
+    let content_type = response
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("content-type") {
+                Some(value.trim())
+            } else {
+                None
+            }
+        })
+        .unwrap_or("");
     assert!(
-        response.lines().any(|line| line
-            .to_ascii_lowercase()
-            .starts_with("content-type: application/json")),
-        "expected application/json content type, got: {response}"
+        content_type.eq_ignore_ascii_case(EXPECTED),
+        "expected Content-Type: {EXPECTED}, got: {content_type}"
     );
 }
 
