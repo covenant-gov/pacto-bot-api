@@ -410,17 +410,7 @@ impl BunkerConnection {
     /// Query the bunker's live public key via the NIP-46 `get_public_key`
     /// handshake (`bunker_uri`).
     pub async fn get_public_key(&self) -> Result<PublicKey, DaemonError> {
-        let live_uri = self
-            .client
-            .bunker_uri()
-            .await
-            .map_err(|e| DaemonError::Bunker(format!("bunker handshake failed: {e}")))?;
-
-        let live_pubkey = live_uri
-            .remote_signer_public_key()
-            .ok_or_else(|| DaemonError::Bunker("bunker URI missing remote signer pubkey".into()))?;
-
-        Ok(*live_pubkey)
+        crate::nip46::fetch_bunker_public_key(&self.client).await
     }
 
     /// Verify that the bunker's live public key matches the configured npub.

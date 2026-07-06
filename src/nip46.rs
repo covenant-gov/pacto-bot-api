@@ -13,6 +13,25 @@ use nostr_connect::client::NostrConnect;
 
 use crate::errors::DaemonError;
 
+/// Perform the NIP-46 handshake on a `NostrConnect` client and return the
+/// bunker's reported public key.
+///
+/// This is the shared implementation used by both the standalone verification
+/// helper and the persistent `BunkerConnection` signer.
+pub(crate) async fn fetch_bunker_public_key(
+    client: &NostrConnect,
+) -> Result<PublicKey, DaemonError> {
+    let live_uri = client
+        .bunker_uri()
+        .await
+        .map_err(|e| DaemonError::Bunker(format!("bunker handshake failed: {e}")))?;
+
+    live_uri
+        .remote_signer_public_key()
+        .copied()
+        .ok_or_else(|| DaemonError::Bunker("bunker URI missing remote signer pubkey".into()))
+}
+
 /// Verify that a NIP-46 bunker returns the expected public key.
 ///
 /// Generates an ephemeral client key, connects to the relays declared in the
@@ -35,20 +54,11 @@ pub async fn verify_bunker_public_key(
     let connect = NostrConnect::new(uri, app_keys, call_timeout, None)
         .map_err(|e| DaemonError::Bunker(format!("failed to create NIP-46 client: {e}")))?;
 
-    // `bunker_uri` bootstraps the connection, sends `connect`, and returns
-    // the URI annotated with the remote signer's live public key.
-    let live_uri = connect
-        .bunker_uri()
-        .await
-        .map_err(|e| DaemonError::Bunker(format!("bunker handshake failed: {e}")))?;
+    let live_pubkey = fetch_bunker_public_key(&connect).await?;
 
     connect.shutdown().await;
 
-    let live_pubkey = live_uri
-        .remote_signer_public_key()
-        .ok_or_else(|| DaemonError::Bunker("bunker URI missing remote signer pubkey".into()))?;
-
-    if live_pubkey != expected_pubkey {
+    if live_pubkey != *expected_pubkey {
         return Err(DaemonError::Bunker(
             "bunker public key does not match configured npub".into(),
         ));
