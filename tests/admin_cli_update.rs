@@ -46,6 +46,8 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
         "ws://localhost:7000",
         "--commands",
         "echo",
+        "--http",
+        "--no-tests",
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
@@ -78,6 +80,18 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
     assert!(
         updated_lock.contains("lock_version"),
         "updated lock should remain valid TOML"
+    );
+    assert!(
+        updated_lock.contains("commands = [\"echo\"]"),
+        "updated lock should preserve original commands"
+    );
+    assert!(
+        updated_lock.contains("http = true"),
+        "updated lock should preserve original http flag"
+    );
+    assert!(
+        updated_lock.contains("with_tests = false"),
+        "updated lock should preserve original no-tests flag"
     );
     assert!(
         project_dir
