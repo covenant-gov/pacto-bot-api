@@ -30,9 +30,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Wait for the bunker to be ready before the CLI connects.
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -69,9 +67,7 @@ async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Wait for the bunker to be ready before the CLI connects.
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -94,9 +90,7 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
     let relay = support::mock_relay::MockRelay::start().await?;
     let keys = nostr::Keys::generate();
     let bunker = support::mock_bunker::MockBunker::new(keys.clone(), vec![relay.url()]).await?;
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let uri = bunker.uri(&relay.url());
     pacto_bot_api::nip46::verify_bunker_public_key(
@@ -148,9 +142,7 @@ async fn bunker_local_sign_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
 
     // Wait for the bunker to be ready before the signer connects.
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
     assert!(matches!(signer, SignerBackend::Bunker(_)));
@@ -205,9 +197,7 @@ async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
     bot.relays = vec![relay.url()];
 
     // Wait for the bunker to be ready before the CLI connects.
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -251,9 +241,7 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
     let bunker = MockBunker::new(keys.clone(), vec![relay.url()]).await?;
 
     // Wait for the bunker to be ready before the signer connects.
-    bunker
-        .wait_ready(&relay, Duration::from_secs(5))
-        .await?;
+    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
 
     let bot = BotConfig {
         id: "remote-profile-bot".to_string(),
