@@ -144,9 +144,10 @@ def _admin_bin() -> str:
     return "cargo"
 
 
-def _generate_bot_keys(bot_id: str = "echo-bot") -> dict[str, str]:
+def _generate_bot_keys(tmp_path: Path, bot_id: str = "echo-bot") -> dict[str, str]:
     """Generate an npub/nsec pair using the Rust admin CLI."""
     bin_arg = _admin_bin()
+    output_path = tmp_path / "bot.toml"
     if bin_arg == "cargo":
         cmd = [
             "cargo",
@@ -159,9 +160,19 @@ def _generate_bot_keys(bot_id: str = "echo-bot") -> dict[str, str]:
             bot_id,
             "--backend",
             "nsec",
+            "--output",
+            str(output_path),
         ]
     else:
-        cmd = [bin_arg, "new", bot_id, "--backend", "nsec"]
+        cmd = [
+            bin_arg,
+            "new",
+            bot_id,
+            "--backend",
+            "nsec",
+            "--output",
+            str(output_path),
+        ]
     result = subprocess.run(
         cmd,
         cwd=_repo_root(),
@@ -171,10 +182,13 @@ def _generate_bot_keys(bot_id: str = "echo-bot") -> dict[str, str]:
         timeout=120,
     )
     output = result.stdout + result.stderr
-    npub_match = re.search(r'npub\s*=\s*"([^"]+)"', output)
-    nsec_match = re.search(r'nsec\s*=\s*"([^"]+)"', output)
-    if not npub_match or not nsec_match:
-        raise RuntimeError(f"failed to parse admin CLI output:\n{output}")
+    npub_match = re.search(r"npub:\s*(\S+)", output)
+    if not npub_match:
+        raise RuntimeError(f"failed to parse npub from admin CLI output:\n{output}")
+    snippet = output_path.read_text()
+    nsec_match = re.search(r'nsec\s*=\s*"([^"]+)"', snippet)
+    if not nsec_match:
+        raise RuntimeError(f"failed to parse nsec from config snippet:\n{snippet}")
     return {"npub": npub_match.group(1), "nsec": nsec_match.group(1)}
 
 
@@ -186,6 +200,8 @@ def _short_tmp_dir(tmp_path: Path, suffix: str = "") -> Path:
     """
     short = Path(f"/tmp/pacto{suffix}-{uuid.uuid4().hex[:8]}")
     short.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        short.chmod(0o700)
     link = tmp_path / "short"
     if not link.exists():
         link.symlink_to(short)
@@ -326,7 +342,7 @@ async def daemon_lifecycle(
 
     Yields (process, config_path, real_socket_path).
     """
-    bot_keys = _generate_bot_keys(bot_id)
+    bot_keys = _generate_bot_keys(tmp_path, bot_id=bot_id)
     config_path, data_dir, socket_path = _write_config(
         tmp_path, bot_keys, bot_id=bot_id, relay_url=relay_url
     )
@@ -656,7 +672,7 @@ async def daemon(
     tmp_path: Path,
 ) -> AsyncGenerator[tuple[subprocess.Popen[bytes], Path], None]:
     """Spawn the Rust daemon and yield once its Unix socket is ready."""
-    bot_keys = _generate_bot_keys("echo-bot")
+    bot_keys = _generate_bot_keys(tmp_path, bot_id="echo-bot")
     config_path, data_dir, socket_path = _write_config(tmp_path, bot_keys, bot_id="echo-bot")
 
     cmd: list[str]
