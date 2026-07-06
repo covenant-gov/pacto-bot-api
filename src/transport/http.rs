@@ -239,18 +239,25 @@ async fn http_handler(
 ) -> impl IntoResponse {
     let token = state.token.read().await;
     if !verify_secret(&headers, &token) {
+        let err = JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32000, "unauthorized"));
+        let mut body = serialize_message(&err).unwrap_or_default();
+        body.push('\n');
         return (
             StatusCode::UNAUTHORIZED,
-            [(CONTENT_TYPE, "text/plain")],
-            Vec::new(),
+            [(CONTENT_TYPE, "application/json; charset=utf-8")],
+            body.into_bytes(),
         );
     }
 
     if body.len() > state.max_frame_size {
+        let err =
+            JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32000, "payload too large"));
+        let mut body = serialize_message(&err).unwrap_or_default();
+        body.push('\n');
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
-            [(CONTENT_TYPE, "text/plain")],
-            Vec::new(),
+            [(CONTENT_TYPE, "application/json; charset=utf-8")],
+            body.into_bytes(),
         );
     }
 
@@ -265,7 +272,7 @@ async fn http_handler(
             body.push('\n');
             return (
                 StatusCode::BAD_REQUEST,
-                [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+                [(CONTENT_TYPE, "application/json; charset=utf-8")],
                 body.into_bytes(),
             );
         }
@@ -297,7 +304,7 @@ async fn http_handler(
                     }
                     return (
                         StatusCode::BAD_REQUEST,
-                        [(CONTENT_TYPE, "application/json")],
+                        [(CONTENT_TYPE, "application/json; charset=utf-8")],
                         body.into_bytes(),
                     );
                 }
@@ -323,7 +330,7 @@ async fn http_handler(
                         }
                         return (
                             StatusCode::UNAUTHORIZED,
-                            [(CONTENT_TYPE, "application/json")],
+                            [(CONTENT_TYPE, "application/json; charset=utf-8")],
                             body.into_bytes(),
                         );
                     }
@@ -355,7 +362,7 @@ async fn http_handler(
 
     (
         StatusCode::OK,
-        [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(CONTENT_TYPE, "application/json; charset=utf-8")],
         body.into_bytes(),
     )
 }
