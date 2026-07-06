@@ -69,10 +69,7 @@ impl BotState {
 
     /// Produce a non-sensitive health snapshot for this bot identity.
     pub fn to_bot_health(&self) -> BotHealth {
-        let bunker_connected = matches!(
-            self.signer,
-            SignerBackend::BunkerLocal(_) | SignerBackend::BunkerRemote(_)
-        );
+        let bunker_connected = matches!(self.signer, SignerBackend::Bunker(_));
         BotHealth {
             bot_id: self.config.id.clone(),
             npub: self.config.npub.clone(),

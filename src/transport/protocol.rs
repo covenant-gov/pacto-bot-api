@@ -1,7 +1,82 @@
+static METHOD_PARAMS_SCHEMA: LazyLock<HashMap<String, serde_json::Value>> = LazyLock::new(|| {
+    // This schema is embedded at compile time; parse failures are a build/
+    // packaging bug, not a runtime condition, so we intentionally fail fast here.
+    #[allow(clippy::expect_used, clippy::panic)]
+    let parse_schema = || -> HashMap<String, serde_json::Value> {
+        let json_str = include_str!("../../schemas/jsonrpc.json");
+        let openrpc: serde_json::Value =
+            serde_json::from_str(json_str).expect("failed to parse OpenRPC schema");
+
+        let methods = openrpc
+            .get("methods")
+            .and_then(|v| v.as_array())
+            .expect("OpenRPC schema missing methods array");
+        let mut map = HashMap::new();
+
+        for method in methods {
+            let name = method
+                .get("name")
+                .and_then(|v| v.as_str())
+                .expect("method missing name");
+            let params = method
+                .get("params")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first());
+            if let Some(param) = params {
+                let schema = param
+                    .get("schema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                map.insert(name.to_string(), schema);
+            } else {
+                map.insert(name.to_string(), serde_json::Value::Array(Vec::new()));
+            }
+        }
+
+        map
+    };
+    parse_schema()
+});
+
+/// Runtime JSON schema validator for JSON-RPC params.
+///
+/// Loads the OpenRPC schema from `schemas/jsonrpc.json` and validates
+/// the `params` field of incoming JSON-RPC requests against the method's
+/// declared schema. Returns `Ok(())` if validation passes, or `Err` with
+/// a descriptive message if validation fails.
+pub fn validate_params(method: &str, params: &serde_json::Value) -> Result<(), DaemonError> {
+    // Get the params schema for this method
+    let schema = METHOD_PARAMS_SCHEMA
+        .get(method)
+        .ok_or(DaemonError::MethodNotFound)?;
+
+    // If the schema is an empty array, any params shape is accepted.
+    if schema.is_array() && schema.as_array().map(|a| a.is_empty()).unwrap_or(false) {
+        return Ok(());
+    }
+
+    // Build validator from schema
+    let validator = jsonschema::Validator::new(schema)
+        .map_err(|e| DaemonError::Config(format!("invalid schema for method {method}: {e}")))?;
+
+    // Validate params against schema
+    if let Err(e) = validator.validate(params) {
+        let error_str = format!("{}", e);
+        return Err(DaemonError::Config(format!(
+            "invalid params for method {method}: {}",
+            error_str
+        )));
+    }
+    Ok(())
+}
+
+/// Known JSON-RPC methods in the daemon catalog.
 use crate::errors::{DaemonError, JsonRpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::LazyLock;
 
 /// Maximum size of a single newline-delimited JSON frame (1 MiB).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
@@ -107,12 +182,20 @@ impl JsonRpcMessage {
             Self::Response { .. } | Self::Error { .. } => None,
         }
     }
+
+    /// Return the params value, if this is a request or notification.
+    pub fn params(&self) -> Option<&Value> {
+        match self {
+            Self::Request { params, .. } | Self::Notification { params, .. } => params.as_ref(),
+            Self::Response { .. } | Self::Error { .. } => None,
+        }
+    }
 }
 
 /// Parse a newline-delimited JSON frame into a [`JsonRpcMessage`].
 pub fn parse_message(line: &str) -> Result<JsonRpcMessage, DaemonError> {
     let value: Value =
-        serde_json::from_str(line).map_err(|e| DaemonError::JsonRpcParse(e.to_string()))?;
+        serde_json::from_str(line).map_err(|e| DaemonError::JsonRpcParseError(e.to_string()))?;
 
     let obj = value
         .as_object()
@@ -561,5 +644,25 @@ mod tests {
         let msg = parse_message(r#"{"jsonrpc":"2.0","id":1,"method":"agent.version"}"#).unwrap();
         assert_eq!(msg.id(), Some(&Value::from(1)));
         assert_eq!(msg.method(), Some("agent.version"));
+    }
+
+    #[test]
+    fn validate_params_unknown_method_is_method_not_found() {
+        let err = validate_params("not.in.catalog", &Value::Null).unwrap_err();
+        assert!(matches!(err, DaemonError::MethodNotFound));
+        assert_eq!(err.to_json_rpc_code(), -32601);
+    }
+
+    #[test]
+    fn validate_params_rejects_null_for_required_params() {
+        let err = validate_params("handler.register", &Value::Null).unwrap_err();
+        assert!(!matches!(err, DaemonError::MethodNotFound));
+        assert_eq!(err.to_json_rpc_code(), -32602);
+    }
+
+    #[test]
+    fn validate_params_accepts_null_for_empty_schema() {
+        assert!(validate_params("agent.version", &Value::Null).is_ok());
+        assert!(validate_params("agent.metrics", &Value::Null).is_ok());
     }
 }

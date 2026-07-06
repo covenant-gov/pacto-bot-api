@@ -681,6 +681,105 @@ async fn unix_handler_unregister_returns_unregistered_flag()
     Ok(())
 }
 
+#[tokio::test]
+async fn unix_transport_preserves_connection_level_ordering()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let dir = test_socket_dir()?;
+        let path = dir.join("ordering.sock");
+        let (dispatch, _db_dir) = setup_dispatch().await?;
+        let dispatch_for_handler = dispatch.clone();
+
+        let handler = message_handler(move |msg, connection, handler_id| {
+            let dispatch = dispatch_for_handler.clone();
+            async move {
+                dispatch
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
+                    .await
+            }
+        });
+
+        let transport = UnixTransport::new(&path).with_limits(4096, Duration::from_secs(2), 10);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            transport
+                .run(handler, dummy_disconnect_sender(), shutdown_rx)
+                .await
+        });
+
+        wait_for_connect(&path).await?;
+
+        let mut stream = BufStream::new(UnixStream::connect(&path).await?);
+
+        let register = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["echo-bot"],
+                "event_types": ["dm_received"],
+                "capabilities": ["ReadMessages"],
+            })),
+        );
+        let error = JsonRpcMessage::request(
+            2.into(),
+            "agent.error",
+            Some(serde_json::json!({
+                "bot_id": "echo-bot",
+                "message": "test",
+            })),
+        );
+
+        // Write both requests in arrival order before reading either response.
+        // The agent.error call requires the handler_id created by the register
+        // call; only sequential per-connection processing guarantees it is
+        // authorized rather than rejected with HandlerNotRegistered.
+        let mut line = serialize_message(&register)?;
+        stream.write_all(line.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+        line = serialize_message(&error)?;
+        stream.write_all(line.as_bytes()).await?;
+        stream.write_all(b"\n").await?;
+        stream.flush().await?;
+
+        let mut response_line = String::new();
+        stream.read_line(&mut response_line).await?;
+        let response: JsonRpcMessage = serde_json::from_str(&response_line)?;
+        match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => {
+                assert!(
+                    r.get("handler_id").and_then(|v| v.as_str()).is_some(),
+                    "register response should contain a handler_id"
+                );
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("register failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected register response".into()),
+        }
+
+        let mut response_line = String::new();
+        stream.read_line(&mut response_line).await?;
+        let response: JsonRpcMessage = serde_json::from_str(&response_line)?;
+        match response {
+            JsonRpcMessage::Response { .. } => {}
+            JsonRpcMessage::Error { error, .. } => {
+                panic!(
+                    "agent.error on the same connection should be authorized after register: {:?}",
+                    error
+                );
+            }
+            _ => panic!("unexpected agent.error response"),
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await?;
+    }
+    Ok(())
+}
+
 async fn wait_for_connect(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {

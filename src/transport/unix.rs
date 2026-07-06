@@ -1,10 +1,12 @@
 use crate::errors::DaemonError;
 use crate::handlers::ConnectionHandle;
+use crate::transport::BoxFuture;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
-    JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message,
+    JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message, validate_params,
 };
 use async_trait::async_trait;
+use serde_json::Value;
 #[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -244,10 +246,11 @@ async fn handle_connection(
     // the dispatcher never blocks on a non-reading handler.
     const OUTBOUND_BUFFER: usize = 128;
     let (out_tx, mut out_rx) = mpsc::channel::<JsonRpcMessage>(OUTBOUND_BUFFER);
+    let (pending_tx, mut pending_rx) =
+        mpsc::channel::<BoxFuture<Option<JsonRpcMessage>>>(OUTBOUND_BUFFER);
     let connection = ConnectionHandle::with_transport(out_tx.clone(), "unix");
     let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
-    // Writer task: forwards outbound messages to the socket.
     let writer_handle = tokio::spawn(async move {
         let mut writer = writer;
         while let Some(msg) = out_rx.recv().await {
@@ -256,6 +259,34 @@ async fn handle_connection(
             }
         }
     });
+    let writer_abort = writer_handle.abort_handle();
+
+    // Sequential response drainer: processes one queued response future at a
+    // time in arrival order. This preserves connection-level side effects
+    // (e.g., handler.register creating a handler_id) while the read loop can
+    // continue reading frames and queueing futures.
+    let handler_id_for_drain = Arc::clone(&handler_id);
+    let out_tx_for_drain = out_tx.clone();
+    let drain_handle = tokio::spawn(async move {
+        while let Some(fut) = pending_rx.recv().await {
+            let response = fut.await;
+
+            if let Some(JsonRpcMessage::Response {
+                result: Some(r), ..
+            }) = &response
+                && let Some(id) = r.get("handler_id").and_then(|v| v.as_str())
+            {
+                *handler_id_for_drain.lock().await = Some(id.to_string());
+            }
+
+            if let Some(resp) = response
+                && out_tx_for_drain.send(resp).await.is_err()
+            {
+                break;
+            }
+        }
+    });
+    let drain_abort = drain_handle.abort_handle();
 
     // Run the read loop in a scoped async block so `out_tx` is dropped before
     // we await the writer task. Otherwise a connection teardown can hang the
@@ -292,32 +323,33 @@ async fn handle_connection(
             let line = String::from_utf8(buf.clone())
                 .map_err(|_| DaemonError::Config("frame is not valid UTF-8".into()))?;
 
-            let response = match parse_message(&line) {
-                Ok(msg) => {
-                    let id = msg.id().cloned();
-                    let current_handler_id = handler_id_for_loop.lock().await.clone();
-                    match handler(msg, connection.clone(), current_handler_id).await {
-                        Ok(resp) => resp,
-                        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+            let handler = Arc::clone(&handler);
+            let handler_id_for_message = Arc::clone(&handler_id_for_loop);
+            let connection = connection.clone();
+            let fut = Box::pin(async move {
+                match parse_message(&line) {
+                    Ok(msg) => {
+                        let id = msg.id().cloned();
+                        let current_handler_id = handler_id_for_message.lock().await.clone();
+
+                        // Runtime OpenRPC schema validation of incoming params.
+                        if let Some(name) = msg.method()
+                            && let Err(e) =
+                                validate_params(name, msg.params().unwrap_or(&Value::Null))
+                        {
+                            return id.map(|id| JsonRpcMessage::error(id, e.into()));
+                        }
+
+                        match handler(msg, connection, current_handler_id).await {
+                            Ok(resp) => resp,
+                            Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+                        }
                     }
+                    Err(e) => Some(JsonRpcMessage::error(serde_json::Value::Null, e.into())),
                 }
-                Err(e) => Some(JsonRpcMessage::error(serde_json::Value::Null, e.into())),
-            };
+            });
 
-            if let Some(JsonRpcMessage::Response {
-                result: Some(r), ..
-            }) = &response
-            {
-                // If this is a successful handler.register response, remember the
-                // handler id so subsequent calls on this connection are authorized.
-                if let Some(id) = r.get("handler_id").and_then(|v| v.as_str()) {
-                    *handler_id_for_loop.lock().await = Some(id.to_string());
-                }
-            }
-
-            if let Some(resp) = response
-                && out_tx.send(resp).await.is_err()
-            {
+            if pending_tx.send(fut).await.is_err() {
                 return Ok(());
             }
         }
@@ -331,7 +363,12 @@ async fn handle_connection(
     let final_handler_id = handler_id.lock().await.clone();
     let _ = disconnect_tx.send(final_handler_id).await;
 
-    let _ = writer_handle.await;
+    // Abort the drain and writer tasks so the connection tears down even if
+    // the registry still holds ConnectionHandle clones that keep the outbound
+    // channel open (e.g., tests with a dropped disconnect receiver).
+    writer_abort.abort();
+    drain_abort.abort();
+    let _ = tokio::join!(drain_handle, writer_handle);
 
     result
 }
@@ -349,6 +386,7 @@ async fn write_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transport::MessageHandler;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

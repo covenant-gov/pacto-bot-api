@@ -45,6 +45,10 @@ const EXEMPT_SCHEMAS: &[(&str, &str)] = &[
         "example-manifest.json",
         "Python-facing CI manifest schema; consumed by python/tests/conftest.py, not by Rust code",
     ),
+    (
+        "service-compatibility-data.json",
+        "runtime data file consumed by ServiceCompatibility::load; not a JSON Schema",
+    ),
 ];
 
 /// Hand-written Rust response types that must match a canonical schema.

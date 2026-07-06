@@ -1,10 +1,12 @@
 //! Project generation logic for the scaffold command.
 
-use crate::scaffold::lock::{ScaffoldLock, lock_path, write_lock};
+use crate::scaffold::lock::{ScaffoldLock, ScaffoldSettings, lock_path, write_lock};
 use crate::scaffold::merge::{MergeContext, merge_rendered};
 use crate::scaffold::render::render_template;
 use crate::scaffold::resolve::{Resolver, ResolverConfig};
-use crate::scaffold::safety::{OverwritePolicy, decide_write, set_config_permissions};
+use crate::scaffold::safety::{
+    OverwritePolicy, decide_write, is_populated_config, set_config_permissions,
+};
 use pacto_bot_api::config::BotConfig;
 use pacto_bot_api::errors::DaemonError;
 use secrecy::ExposeSecret;
@@ -117,6 +119,11 @@ pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
     let lock = ScaffoldLock {
         lock_version: crate::scaffold::lock::LOCK_VERSION,
         triple,
+        scaffold: ScaffoldSettings {
+            commands: request.commands.clone(),
+            with_tests: request.with_tests,
+            http: request.http,
+        },
     };
     let lock_file = lock_path(&request.project_dir, &request.bot_id);
     write_lock(&lock_file, &lock)?;
@@ -178,6 +185,18 @@ fn append_config_entry(path: &Path, bot_config: &BotConfig) -> Result<(), Daemon
         return Ok(());
     }
 
+    if is_populated_config(path) {
+        let existing = parse_existing_config(path)?;
+        if existing.bots.iter().any(|b| b.id == bot_config.id) {
+            println!(
+                "Skipped [[bots]] entry for {}: already exists in {}",
+                bot_config.id,
+                path.display()
+            );
+            return Ok(());
+        }
+    }
+
     let mut file = fs::OpenOptions::new()
         .append(true)
         .open(path)
@@ -187,6 +206,16 @@ fn append_config_entry(path: &Path, bot_config: &BotConfig) -> Result<(), Daemon
         .map_err(DaemonError::Io)?;
     println!("Appended [[bots]] entry to {}", path.display());
     Ok(())
+}
+
+fn parse_existing_config(path: &Path) -> Result<pacto_bot_api::config::DaemonConfig, DaemonError> {
+    let raw = fs::read_to_string(path).map_err(DaemonError::Io)?;
+    toml::from_str(&raw).map_err(|e| {
+        DaemonError::Config(format!(
+            "failed to parse existing config {}: {e}",
+            path.display()
+        ))
+    })
 }
 
 fn bot_config_to_snippet(bot_config: &BotConfig) -> Result<String, DaemonError> {
@@ -312,5 +341,100 @@ mod tests {
             format_toml_array(&["a".into(), "b c".into()]),
             "[\"a\", \"b c\"]"
         );
+    }
+
+    #[test]
+    fn append_config_entry_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        let bot = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1echo".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1secret".into()),
+            },
+            ..Default::default()
+        };
+        append_config_entry(&path, &bot).unwrap();
+        assert!(path.exists());
+        let content = fs::read_to_string(&path).unwrap();
+        assert!(content.contains("[[bots]]"));
+        assert!(content.contains("id = \"echo-bot\""));
+    }
+
+    #[test]
+    fn append_config_entry_appends_different_bot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        let bot1 = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1echo".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1secret".into()),
+            },
+            ..Default::default()
+        };
+        let bot2 = BotConfig {
+            id: "help-bot".to_string(),
+            npub: "npub1help".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1other".into()),
+            },
+            ..Default::default()
+        };
+        append_config_entry(&path, &bot1).unwrap();
+        append_config_entry(&path, &bot2).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("[[bots]]").count(), 2);
+        assert!(content.contains("id = \"echo-bot\""));
+        assert!(content.contains("id = \"help-bot\""));
+    }
+
+    #[test]
+    fn append_config_entry_skips_duplicate_bot_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        let bot1 = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1echo".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1secret".into()),
+            },
+            ..Default::default()
+        };
+        let bot2 = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1different".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1different".into()),
+            },
+            ..Default::default()
+        };
+        append_config_entry(&path, &bot1).unwrap();
+        append_config_entry(&path, &bot2).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("[[bots]]").count(), 1);
+        assert!(content.contains("npub1echo"));
+        assert!(!content.contains("npub1different"));
+    }
+
+    #[test]
+    fn append_config_entry_appends_to_non_populated_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        fs::write(&path, "[daemon]\ndata_dir = \"data\"\n").unwrap();
+        let bot = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1echo".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1secret".into()),
+            },
+            ..Default::default()
+        };
+        append_config_entry(&path, &bot).unwrap();
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content.matches("[[bots]]").count(), 1);
+        assert!(content.contains("[daemon]"));
+        assert!(content.contains("id = \"echo-bot\""));
     }
 }

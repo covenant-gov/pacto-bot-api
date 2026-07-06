@@ -11,7 +11,7 @@ use nostr::{Keys, Kind, Timestamp, ToBech32, UnsignedEvent};
 use pacto_bot_api::config::{BotConfig, SigningConfig};
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::secrecy::SecretString;
-use pacto_bot_api::signer::{BunkerConnection, Signer, SignerBackend};
+use pacto_bot_api::signer::{BunkerConnection, BunkerKind, Signer, SignerBackend};
 use serde_json::json;
 use support::mock_bunker::MockBunker;
 use support::mock_relay::MockRelay;
@@ -29,8 +29,10 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
         .ok_or("mock bunker produced no URI")?;
     common::set_bunker_uri(&mut bot, &uri);
 
-    // Wait for the signer to bootstrap and subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for the bunker to be ready before the CLI connects.
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -66,8 +68,10 @@ async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
         .ok_or("mock bunker produced no URI")?;
     common::set_bunker_uri(&mut bot, &uri);
 
-    // Wait for the signer to bootstrap and subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for the bunker to be ready before the CLI connects.
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -90,7 +94,9 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
     let relay = support::mock_relay::MockRelay::start().await?;
     let keys = nostr::Keys::generate();
     let bunker = support::mock_bunker::MockBunker::new(keys.clone(), vec![relay.url()]).await?;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let uri = bunker.uri(&relay.url());
     pacto_bot_api::nip46::verify_bunker_public_key(
@@ -141,11 +147,13 @@ async fn bunker_local_sign_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
         .ok_or("mock bunker produced no URI")?;
     common::set_bunker_uri(&mut bot, &uri);
 
-    // Give the bunker time to subscribe before the signer connects.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the bunker to be ready before the signer connects.
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
-    assert!(matches!(signer, SignerBackend::BunkerLocal(_)));
+    assert!(matches!(signer, SignerBackend::Bunker(_)));
 
     // sign_event: build a kind-1 event preimage and obtain a signature.
     let mut unsigned = UnsignedEvent::new(
@@ -196,8 +204,10 @@ async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
     common::set_bunker_uri(&mut bot, &uri);
     bot.relays = vec![relay.url()];
 
-    // Give the bunker time to subscribe before the CLI connects.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the bunker to be ready before the CLI connects.
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
 
@@ -240,8 +250,10 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
     let keys = Keys::generate();
     let bunker = MockBunker::new(keys.clone(), vec![relay.url()]).await?;
 
-    // Give the mock bunker time to subscribe before the signer connects.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the bunker to be ready before the signer connects.
+    bunker
+        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .await?;
 
     let bot = BotConfig {
         id: "remote-profile-bot".to_string(),
@@ -254,10 +266,15 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
         ..Default::default()
     };
 
-    // Create a BunkerRemote signer without the wss-only enforcement so the
-    // in-process ws:// mock relay can be used for this test.
-    let conn = BunkerConnection::connect(&bunker.uri(&relay.url()), &keys.public_key(), false)?;
-    let signer = SignerBackend::BunkerRemote(conn);
+    // Create a BunkerRemote signer using the local kind so the in-process
+    // ws:// mock relay can be used for this test (the remote kind enforces
+    // wss:// only).
+    let conn = BunkerConnection::connect(
+        &bunker.uri(&relay.url()),
+        &keys.public_key(),
+        BunkerKind::Local,
+    )?;
+    let signer = SignerBackend::Bunker(conn);
 
     let client = NostrClient::new(vec![relay.url()]).await?;
     let event_id = client.publish_bot_profile(&bot, &signer).await?;
@@ -360,6 +377,39 @@ async fn local_key_send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn Erro
     );
 
     Ok(())
+}
+
+impl MockBunker {
+    /// Wait until the bunker is reachable and can answer a `get_public_key`
+    /// request, indicating the signer has subscribed to its relay.
+    pub async fn wait_ready(
+        &self,
+        relay_url: &str,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn Error>> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let uri = self.uri(relay_url);
+        let parsed = nostr::nips::nip46::NostrConnectURI::parse(&uri)?;
+        loop {
+            let app_keys = Keys::generate();
+            let connect = nostr_connect::prelude::NostrConnect::new(
+                parsed.clone(),
+                app_keys,
+                Duration::from_secs(5),
+                None,
+            )?;
+            let result =
+                tokio::time::timeout(Duration::from_millis(500), connect.bunker_uri()).await;
+            connect.shutdown().await;
+            if let Ok(Ok(_)) = result {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err("timeout waiting for bunker readiness".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
 }
 
 /// Spawn a daemon and return a guard that kills it on drop.

@@ -1,7 +1,7 @@
 //! Service-version compatibility probing for the pacto-bot-api dev environment.
 //!
 //! Compares versions reported by local backing services against the windows
-//! declared in `schemas/service-compatibility.json`.
+//! declared in `schemas/service-compatibility-data.json`.
 
 use crate::errors::DaemonError;
 use crate::service_compatibility_generated::{
@@ -35,10 +35,10 @@ pub struct ProbeResult {
 }
 
 impl ServiceCompatibility {
-    /// Load the canonical compatibility schema embedded at build time.
+    /// Load the canonical compatibility windows embedded at build time.
     pub fn load() -> Result<Self, DaemonError> {
-        const SCHEMA: &str = include_str!("../schemas/service-compatibility.json");
-        serde_json::from_str(SCHEMA).map_err(DaemonError::Json)
+        const DATA: &str = include_str!("../schemas/service-compatibility-data.json");
+        serde_json::from_str(DATA).map_err(DaemonError::Json)
     }
 }
 
@@ -96,7 +96,7 @@ pub async fn run_probe_with_endpoints(endpoints: ProbeEndpoints) -> Vec<ProbeRes
         Err(e) => {
             return vec![ProbeResult {
                 service: "schema",
-                endpoint: "schemas/service-compatibility.json".into(),
+                endpoint: "schemas/service-compatibility-data.json".into(),
                 status: ProbeStatus::ParseError(e.to_string()),
             }];
         }
@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn schema_loads() {
-        let schema = ServiceCompatibility::load().expect("schema should load");
+        let schema = ServiceCompatibility::load().expect("service compatibility data should load");
         assert!(!schema.relay.min_version.is_empty());
         assert!(!schema.relay.max_version.is_empty());
         assert!(!schema.evm.min_version.is_empty());

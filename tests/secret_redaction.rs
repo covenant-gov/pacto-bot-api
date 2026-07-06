@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use pacto_bot_api::config::DaemonConfig;
 use pacto_bot_api::errors::DaemonError;
-use pacto_bot_api::signer::{BunkerConnection, LocalKey};
+use pacto_bot_api::signer::{BunkerConnection, BunkerKind, LocalKey};
 use pacto_bot_api::transport::http::HttpTransport;
 use pacto_bot_api::transport::message_handler;
 use pacto_bot_api::transport::protocol::{JsonRpcMessage, serialize_message};
@@ -113,7 +113,8 @@ fn bunker_connection_error_does_not_leak_uri_marker() {
         fixture.bunker_uri_marker
     );
 
-    let err = BunkerConnection::connect(&uri, &expected_keys.public_key(), true).unwrap_err();
+    let err = BunkerConnection::connect(&uri, &expected_keys.public_key(), BunkerKind::Remote)
+        .unwrap_err();
 
     let msg = err.to_string();
     assert!(

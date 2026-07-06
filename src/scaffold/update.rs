@@ -44,24 +44,7 @@ pub async fn run_update(
     let manifest = bundle.manifest;
     let template_dir = bundle.template_dir;
 
-    let request = ScaffoldRequest {
-        bot_id: bot_id.to_string(),
-        language: language_from_template_path(&lock.triple.template.path),
-        kind: kind_from_template_path(&lock.triple.template.path),
-        commands: Vec::new(), // Commands are not tracked in the lock; user edits persist.
-        with_tests: true,
-        http: false,
-        force,
-        allow_hooks,
-        project_dir: project_dir.to_path_buf(),
-        template_repo: std::env::var("PACTO_TEMPLATE_REPO")
-            .unwrap_or_else(|_| "https://github.com/covenant-gov/pacto-bot-templates".into()),
-        template_ref: None,
-        refresh,
-        mode: ScaffoldMode::ExistingProject {
-            bot_config: Default::default(),
-        },
-    };
+    let request = build_update_request(&lock, bot_id, project_dir, force, allow_hooks, refresh);
 
     let rendered = render_template(&template_dir, &request, allow_hooks)?;
 
@@ -101,6 +84,7 @@ pub async fn run_update(
     let new_lock = ScaffoldLock {
         lock_version: lock.lock_version,
         triple,
+        scaffold: lock.scaffold.clone(),
     };
     write_lock(&lock_file, &new_lock)?;
 
@@ -117,6 +101,34 @@ fn resolve_template_ref_for_update(lock: &ScaffoldLock) -> Option<String> {
     }
 }
 
+fn build_update_request(
+    lock: &ScaffoldLock,
+    bot_id: &str,
+    project_dir: &Path,
+    force: bool,
+    allow_hooks: bool,
+    refresh: bool,
+) -> ScaffoldRequest {
+    ScaffoldRequest {
+        bot_id: bot_id.to_string(),
+        language: language_from_template_path(&lock.triple.template.path),
+        kind: kind_from_template_path(&lock.triple.template.path),
+        commands: lock.scaffold.commands.clone(),
+        with_tests: lock.scaffold.with_tests,
+        http: lock.scaffold.http,
+        force,
+        allow_hooks,
+        project_dir: project_dir.to_path_buf(),
+        template_repo: std::env::var("PACTO_TEMPLATE_REPO")
+            .unwrap_or_else(|_| "https://github.com/covenant-gov/pacto-bot-templates".into()),
+        template_ref: None,
+        refresh,
+        mode: ScaffoldMode::ExistingProject {
+            bot_config: Default::default(),
+        },
+    }
+}
+
 fn language_from_template_path(path: &str) -> String {
     path.split('-').next().unwrap_or("python").to_string()
 }
@@ -130,6 +142,58 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    fn sample_lock() -> ScaffoldLock {
+        ScaffoldLock {
+            lock_version: 1,
+            triple: crate::scaffold::lock::ResolvedTriple {
+                template: crate::scaffold::lock::TemplateLock {
+                    path: "python-llm".to_string(),
+                    r#ref: "v0.1.0".to_string(),
+                    resolved_commit: "abc".to_string(),
+                },
+                contract: crate::scaffold::lock::ArtifactLock {
+                    name: "pacto-contract".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                sdk: crate::scaffold::lock::ArtifactLock {
+                    name: "pacto-bot-sdk".to_string(),
+                    version: "0.2.0".to_string(),
+                },
+                admin: crate::scaffold::lock::AdminLock {
+                    version: "0.6.0".to_string(),
+                },
+            },
+            scaffold: crate::scaffold::lock::ScaffoldSettings::default(),
+        }
+    }
+
+    #[test]
+    fn update_request_preserves_scaffold_settings() {
+        let lock = ScaffoldLock {
+            scaffold: crate::scaffold::lock::ScaffoldSettings {
+                commands: vec!["ask".to_string(), "tell".to_string()],
+                with_tests: false,
+                http: true,
+            },
+            ..sample_lock()
+        };
+
+        let request = build_update_request(
+            &lock,
+            "my-bot",
+            Path::new("/tmp/project"),
+            true,
+            false,
+            false,
+        );
+
+        assert_eq!(request.commands, vec!["ask", "tell"]);
+        assert!(!request.with_tests);
+        assert!(request.http);
+        assert_eq!(request.language, "python");
+        assert_eq!(request.kind, "llm");
+    }
 
     #[test]
     fn semver_tag_ref_floats() {
@@ -153,6 +217,7 @@ mod tests {
                     version: "0.6.0".to_string(),
                 },
             },
+            scaffold: crate::scaffold::lock::ScaffoldSettings::default(),
         };
         assert_eq!(resolve_template_ref_for_update(&lock), None);
     }
@@ -179,6 +244,7 @@ mod tests {
                     version: "0.6.0".to_string(),
                 },
             },
+            scaffold: crate::scaffold::lock::ScaffoldSettings::default(),
         };
         assert_eq!(
             resolve_template_ref_for_update(&lock),

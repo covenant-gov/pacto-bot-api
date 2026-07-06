@@ -4,8 +4,7 @@
 //!
 //! * `LocalKey` — dev-only raw `nsec` in memory. Secret bytes are stored in a
 //!   [`Zeroizing`] container and cleared when the signer is dropped.
-//! * `BunkerLocal` — NIP-46 bunker on the same machine.
-//! * `BunkerRemote` — production NIP-46 bunker over `wss://`.
+//! * `Bunker` — NIP-46 bunker connection, local or remote.
 //!
 //! Sensitive values (nsec, bunker URI) are never logged.
 
@@ -50,24 +49,20 @@ pub trait Signer: Send + Sync {
 }
 
 /// Concrete signer backend selected from configuration.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
 pub enum SignerBackend {
     /// Dev-only local nsec key.
     LocalKey(LocalKey),
-    /// Local NIP-46 bunker connection.
-    BunkerLocal(BunkerConnection),
-    /// Production NIP-46 bunker connection.
-    BunkerRemote(BunkerConnection),
+    /// NIP-46 bunker connection.
+    Bunker(BunkerConnection),
 }
 
 impl std::fmt::Debug for SignerBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SignerBackend::LocalKey(_) => f.debug_struct("LocalKey").finish_non_exhaustive(),
-            SignerBackend::BunkerLocal(_) => f.debug_struct("BunkerLocal").finish_non_exhaustive(),
-            SignerBackend::BunkerRemote(_) => {
-                f.debug_struct("BunkerRemote").finish_non_exhaustive()
-            }
+            SignerBackend::Bunker(_) => f.debug_struct("Bunker").finish_non_exhaustive(),
         }
     }
 }
@@ -77,9 +72,7 @@ impl SignerBackend {
     /// npub. Local keys always pass.
     pub async fn verify_bunker_public_key(&self) -> Result<(), DaemonError> {
         match self {
-            SignerBackend::BunkerLocal(conn) | SignerBackend::BunkerRemote(conn) => {
-                conn.verify_public_key().await
-            }
+            SignerBackend::Bunker(conn) => conn.verify_public_key().await,
             SignerBackend::LocalKey(_) => Ok(()),
         }
     }
@@ -107,12 +100,20 @@ impl SignerBackend {
                 Ok(SignerBackend::LocalKey(signer))
             }
             SigningConfig::BunkerLocal { uri } => {
-                let conn = BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, false)?;
-                Ok(SignerBackend::BunkerLocal(conn))
+                let conn = BunkerConnection::connect(
+                    uri.expose_secret(),
+                    &expected_pubkey,
+                    BunkerKind::Local,
+                )?;
+                Ok(SignerBackend::Bunker(conn))
             }
             SigningConfig::BunkerRemote { uri } => {
-                let conn = BunkerConnection::connect(uri.expose_secret(), &expected_pubkey, true)?;
-                Ok(SignerBackend::BunkerRemote(conn))
+                let conn = BunkerConnection::connect(
+                    uri.expose_secret(),
+                    &expected_pubkey,
+                    BunkerKind::Remote,
+                )?;
+                Ok(SignerBackend::Bunker(conn))
             }
         }
     }
@@ -123,16 +124,14 @@ impl Signer for SignerBackend {
     fn public_key(&self) -> PublicKey {
         match self {
             SignerBackend::LocalKey(s) => s.public_key(),
-            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => s.public_key(),
+            SignerBackend::Bunker(s) => s.public_key(),
         }
     }
 
     async fn sign_event(&self, payload: &[u8]) -> Result<String, DaemonError> {
         match self {
             SignerBackend::LocalKey(s) => s.sign_event(payload).await,
-            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => {
-                s.sign_event(payload).await
-            }
+            SignerBackend::Bunker(s) => s.sign_event(payload).await,
         }
     }
 
@@ -143,9 +142,7 @@ impl Signer for SignerBackend {
     ) -> Result<String, DaemonError> {
         match self {
             SignerBackend::LocalKey(s) => s.nip44_encrypt(public_key, content).await,
-            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => {
-                s.nip44_encrypt(public_key, content).await
-            }
+            SignerBackend::Bunker(s) => s.nip44_encrypt(public_key, content).await,
         }
     }
 
@@ -156,9 +153,7 @@ impl Signer for SignerBackend {
     ) -> Result<String, DaemonError> {
         match self {
             SignerBackend::LocalKey(s) => s.nip44_decrypt(public_key, payload).await,
-            SignerBackend::BunkerLocal(s) | SignerBackend::BunkerRemote(s) => {
-                s.nip44_decrypt(public_key, payload).await
-            }
+            SignerBackend::Bunker(s) => s.nip44_decrypt(public_key, payload).await,
         }
     }
 }
@@ -287,6 +282,15 @@ impl Signer for LocalKey {
     }
 }
 
+/// Kind of NIP-46 bunker connection.
+#[derive(Debug, Clone, Copy)]
+pub enum BunkerKind {
+    /// Local bunker that may use plain `ws://` relays.
+    Local,
+    /// Remote bunker that must use `wss://` relays.
+    Remote,
+}
+
 /// NIP-46 bunker connection details.
 #[derive(Clone)]
 pub struct BunkerConnection {
@@ -297,12 +301,16 @@ pub struct BunkerConnection {
     expected_pubkey: PublicKey,
     /// Live NIP-46 client used to send signing/encryption requests.
     client: NostrConnect,
+    /// Kind of bunker connection (local or remote); used only at parse time.
+    #[allow(dead_code)]
+    kind: BunkerKind,
 }
 
 impl std::fmt::Debug for BunkerConnection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BunkerConnection")
             .field("expected_pubkey", &self.expected_pubkey.to_hex())
+            .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
 }
@@ -346,7 +354,7 @@ impl BunkerConnection {
     pub fn connect(
         uri: &str,
         expected_pubkey: &PublicKey,
-        require_wss: bool,
+        kind: BunkerKind,
     ) -> Result<Self, DaemonError> {
         if uri.is_empty() {
             return Err(DaemonError::Bunker("empty bunker URI".into()));
@@ -359,7 +367,7 @@ impl BunkerConnection {
             return Err(DaemonError::Bunker("not a bunker URI".into()));
         }
 
-        if require_wss {
+        if matches!(kind, BunkerKind::Remote) {
             let relays = parsed.relays();
             if relays.iter().any(|r| r.as_str().starts_with("ws://")) {
                 return Err(DaemonError::Bunker(
@@ -395,6 +403,7 @@ impl BunkerConnection {
             uri: parsed,
             expected_pubkey: *expected_pubkey,
             client,
+            kind,
         })
     }
 
@@ -569,7 +578,7 @@ mod tests {
             &npub,
         )
         .unwrap();
-        assert!(matches!(backend, SignerBackend::BunkerLocal(_)));
+        assert!(matches!(backend, SignerBackend::Bunker(_)));
     }
 
     #[test]
@@ -610,7 +619,7 @@ mod tests {
             &npub,
         )
         .unwrap();
-        assert!(matches!(backend, SignerBackend::BunkerRemote(_)));
+        assert!(matches!(backend, SignerBackend::Bunker(_)));
         assert_eq!(backend.public_key(), keys.public_key());
     }
 
@@ -630,7 +639,7 @@ mod tests {
             &npub,
         )
         .unwrap();
-        assert!(matches!(backend, SignerBackend::BunkerRemote(_)));
+        assert!(matches!(backend, SignerBackend::Bunker(_)));
     }
 
     #[test]
@@ -694,7 +703,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let uri = bunker.uri(&relay.url());
-        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), BunkerKind::Local).unwrap();
         let live = conn.get_public_key().await.unwrap();
         assert_eq!(live, keys.public_key());
 
@@ -712,7 +721,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let uri = bunker.uri(&relay.url());
-        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), BunkerKind::Local).unwrap();
 
         let mut unsigned = UnsignedEvent::new(
             keys.public_key(),
@@ -755,7 +764,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let uri = bunker.uri(&relay.url());
-        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), BunkerKind::Local).unwrap();
 
         let recipient = test_keys();
         let content = "hello from the bunker";
@@ -784,7 +793,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let uri = bunker.uri(&relay.url());
-        let conn = BunkerConnection::connect(&uri, &other_keys.public_key(), false).unwrap();
+        let conn =
+            BunkerConnection::connect(&uri, &other_keys.public_key(), BunkerKind::Local).unwrap();
         let err = conn.verify_public_key().await.unwrap_err();
         assert!(err.to_string().contains("does not match"));
 
@@ -801,7 +811,7 @@ mod tests {
             "bunker://{}?relay=ws://127.0.0.1:59999",
             keys.public_key().to_hex()
         );
-        let conn = BunkerConnection::connect(&uri, &keys.public_key(), false).unwrap();
+        let conn = BunkerConnection::connect(&uri, &keys.public_key(), BunkerKind::Local).unwrap();
 
         let err = conn
             .sign_event(b"not a valid event payload")
