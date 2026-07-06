@@ -414,6 +414,13 @@ impl Diagnostics {
         tokio::fs::write(&tmp_path, json).await?;
         tokio::fs::rename(&tmp_path, &final_path).await?;
 
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&final_path, Permissions::from_mode(0o600)).await?;
+        }
+
         Ok(())
     }
 
@@ -914,6 +921,18 @@ mod tests {
         diag.flush_report(tmp.path()).await?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = tokio::fs::metadata(&report_path)
+                .await?
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "latest.json should be owner-only");
+        }
+
         let contents = tokio::fs::read_to_string(&report_path).await?;
         let parsed: HealthSnapshot = serde_json::from_str(&contents)?;
         assert_eq!(parsed.status, DaemonStatus::Ready);
