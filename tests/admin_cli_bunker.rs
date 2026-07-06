@@ -31,7 +31,7 @@ async fn test_bunker_match() -> Result<(), Box<dyn Error>> {
 
     // Wait for the bunker to be ready before the CLI connects.
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
@@ -70,7 +70,7 @@ async fn test_bunker_mismatch() -> Result<(), Box<dyn Error>> {
 
     // Wait for the bunker to be ready before the CLI connects.
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
@@ -95,7 +95,7 @@ async fn verify_bunker_public_key_directly() -> Result<(), Box<dyn Error>> {
     let keys = nostr::Keys::generate();
     let bunker = support::mock_bunker::MockBunker::new(keys.clone(), vec![relay.url()]).await?;
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let uri = bunker.uri(&relay.url());
@@ -149,7 +149,7 @@ async fn bunker_local_sign_encrypt_decrypt() -> Result<(), Box<dyn Error>> {
 
     // Wait for the bunker to be ready before the signer connects.
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let signer = SignerBackend::from_config(&bot.signing, &bot.npub)?;
@@ -206,7 +206,7 @@ async fn bunker_local_publish_profile() -> Result<(), Box<dyn Error>> {
 
     // Wait for the bunker to be ready before the CLI connects.
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let config = common::make_config(&dir, vec![bot])?;
@@ -252,7 +252,7 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
 
     // Wait for the bunker to be ready before the signer connects.
     bunker
-        .wait_ready(&relay.url(), Duration::from_secs(5))
+        .wait_ready(&relay, Duration::from_secs(5))
         .await?;
 
     let bot = BotConfig {
@@ -380,35 +380,14 @@ async fn local_key_send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn Erro
 }
 
 impl MockBunker {
-    /// Wait until the bunker is reachable and can answer a `get_public_key`
-    /// request, indicating the signer has subscribed to its relay.
+    /// Wait until the signer has subscribed to the relay and is ready to
+    /// answer NIP-46 requests.
     pub async fn wait_ready(
         &self,
-        relay_url: &str,
+        relay: &MockRelay,
         timeout: Duration,
     ) -> Result<(), Box<dyn Error>> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        let uri = self.uri(relay_url);
-        let parsed = nostr::nips::nip46::NostrConnectURI::parse(&uri)?;
-        loop {
-            let app_keys = Keys::generate();
-            let connect = nostr_connect::prelude::NostrConnect::new(
-                parsed.clone(),
-                app_keys,
-                Duration::from_secs(5),
-                None,
-            )?;
-            let result =
-                tokio::time::timeout(Duration::from_millis(500), connect.bunker_uri()).await;
-            connect.shutdown().await;
-            if let Ok(Ok(_)) = result {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err("timeout waiting for bunker readiness".into());
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        relay.wait_for_subscription(timeout).await
     }
 }
 

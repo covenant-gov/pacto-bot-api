@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -33,6 +34,8 @@ struct MockRelayInner {
     shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
     connection_shutdown_tx: broadcast::Sender<()>,
     handle: Mutex<Option<JoinHandle<()>>>,
+    subscription_count: AtomicUsize,
+    subscription_tx: watch::Sender<usize>,
 }
 
 impl MockRelay {
@@ -44,6 +47,7 @@ impl MockRelay {
         let (new_event_tx, _new_event_rx) = broadcast::channel(256);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         let (connection_shutdown_tx, _connection_shutdown_rx) = broadcast::channel(1);
+        let (subscription_tx, _subscription_rx) = watch::channel(0usize);
         let inner = Arc::new(MockRelayInner {
             addr,
             events: RwLock::new(Vec::new()),
@@ -51,6 +55,8 @@ impl MockRelay {
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             connection_shutdown_tx,
             handle: Mutex::new(None),
+            subscription_count: AtomicUsize::new(0),
+            subscription_tx,
         });
 
         let relay = Self {
@@ -132,6 +138,30 @@ impl MockRelay {
         let _ = self.inner.connection_shutdown_tx.send(());
         if let Some(handle) = self.inner.handle.lock().await.take() {
             let _ = handle.await;
+        }
+    }
+
+    /// Wait until a client has established at least one REQ subscription.
+    pub async fn wait_for_subscription(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut rx = self.inner.subscription_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            if *rx.borrow() > 0 {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err("timeout waiting for relay subscription".into());
+            }
+            match tokio::time::timeout(remaining, rx.changed()).await {
+                Ok(Ok(())) => continue,
+                Ok(Err(_)) => return Err("relay subscription channel closed".into()),
+                Err(_) => return Err("timeout waiting for relay subscription".into()),
+            }
         }
     }
 
@@ -239,6 +269,10 @@ impl MockRelay {
                 };
 
                 subscriptions.insert(sub_id.clone(), filter.clone());
+
+                // Notify any readiness waiters that a client has subscribed.
+                let count = self.inner.subscription_count.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = self.inner.subscription_tx.send(count);
 
                 // Send matching stored events. Ignore `since`/`until` for
                 // stored events so that late subscribers (e.g. a NIP-46 signer
