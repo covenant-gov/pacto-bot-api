@@ -1451,6 +1451,9 @@ fn cmd_export(
         split_brain_warning: true,
     };
 
+    eprintln!(
+        "warning: the following output contains operational state (keys, tokens, diagnostics); treat it as confidential"
+    );
     println!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
