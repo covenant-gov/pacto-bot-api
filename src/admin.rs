@@ -2904,34 +2904,130 @@ fn write_token_atomic(dir: &Path, token: &str) -> Result<(), DaemonError> {
     let tmp = dir.join(format!("{}.tmp", BOT_SECRET_TOKEN_FILE));
     let dest = dir.join(BOT_SECRET_TOKEN_FILE);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(DaemonError::Io)?;
-        file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
-        drop(file);
-    }
-
-    #[cfg(not(unix))]
-    {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(DaemonError::Io)?;
-        file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
-        drop(file);
-    }
+    let mut file = create_restricted_file(&tmp)?;
+    file.write_all(token.as_bytes()).map_err(DaemonError::Io)?;
+    drop(file);
 
     fs::rename(&tmp, &dest).map_err(DaemonError::Io)?;
     Ok(())
+}
+
+/// Create a file with permissions restricted to the owner only.
+#[cfg(unix)]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(DaemonError::Io)
+}
+
+/// Create a file with permissions restricted to the owner only.
+///
+/// On Windows, the default inherited ACL is replaced by a protected DACL that
+/// grants full control only to the file's owner.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::shared::winerror::ERROR_SUCCESS;
+    use winapi::um::accctrl::{
+        EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_INHERITANCE, NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_SID,
+        TRUSTEE_IS_USER, TRUSTEE_W,
+    };
+    use winapi::um::aclapi::{GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW};
+    use winapi::um::winbase::LocalFree;
+    use winapi::um::winnt::{
+        DACL_SECURITY_INFORMATION, FILE_ALL_ACCESS, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_FILE_OBJECT,
+    };
+
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(DaemonError::Io)?;
+
+    let path_wide: Vec<u16> = OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut owner_sid: PSID = ptr::null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = ptr::null_mut();
+    let result = unsafe {
+        GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner_sid,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    if result != ERROR_SUCCESS as i32 {
+        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
+    }
+
+    let mut trustee: TRUSTEE_W = unsafe { std::mem::zeroed() };
+    trustee.pMultipleTrustee = ptr::null_mut();
+    trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE;
+    trustee.TrusteeForm = TRUSTEE_IS_SID;
+    trustee.TrusteeType = TRUSTEE_IS_USER;
+    trustee.ptstrName = owner_sid as *mut _;
+
+    let mut explicit_access: EXPLICIT_ACCESS_W = unsafe { std::mem::zeroed() };
+    explicit_access.grfAccessPermissions = FILE_ALL_ACCESS;
+    explicit_access.grfAccessMode = GRANT_ACCESS;
+    explicit_access.grfInheritance = NO_INHERITANCE;
+    explicit_access.Trustee = trustee;
+
+    let mut new_acl: *mut winapi::um::winnt::ACL = ptr::null_mut();
+    let result = unsafe { SetEntriesInAclW(1, &explicit_access, ptr::null_mut(), &mut new_acl) };
+    if result != ERROR_SUCCESS as i32 {
+        unsafe { LocalFree(sd as *mut _) };
+        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
+    }
+
+    let result = unsafe {
+        SetNamedSecurityInfoW(
+            path_wide.as_ptr() as *mut _,
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            new_acl as *mut _,
+            ptr::null_mut(),
+        )
+    };
+
+    unsafe { LocalFree(new_acl as *mut _) };
+    unsafe { LocalFree(sd as *mut _) };
+
+    if result != ERROR_SUCCESS as i32 {
+        return Err(DaemonError::Io(std::io::Error::from_raw_os_error(result)));
+    }
+
+    Ok(file)
+}
+
+/// Fallback for platforms without an explicit owner-only permission model.
+#[cfg(not(any(unix, windows)))]
+fn create_restricted_file(path: &Path) -> Result<fs::File, DaemonError> {
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(DaemonError::Io)
 }
 
 fn format_toml_array(items: &[String]) -> String {
