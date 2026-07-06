@@ -25,6 +25,7 @@
     }
   },
   "required": ["relay", "evm", "nostra", "aztec"],
+  "additionalProperties": false,
   "definitions": {
     "versionWindow": {
       "type": "object",

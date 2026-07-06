@@ -883,7 +883,7 @@ async fn cmd_new(
         let preview = if emit_secrets {
             snippet.clone()
         } else {
-            redact_snippet(&snippet, &nsec)
+            redact_snippet(&snippet, &nsec, params.uri.as_ref())
         };
         if emit_secrets {
             eprintln!("warning: --emit-secrets prints raw private keys to stdout");
@@ -1162,9 +1162,18 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
     lines.join("\n") + "\n"
 }
 
-/// Return a copy of the config snippet with the raw nsec value redacted.
-fn redact_snippet(snippet: &str, nsec: &str) -> String {
-    snippet.replace(&format!("nsec = {nsec:?}"), "nsec = \"<REDACTED>\"")
+/// Return a copy of the config snippet with the raw nsec and bunker URI default
+/// values redacted.
+fn redact_snippet(snippet: &str, nsec: &str, uri: Option<&SecretString>) -> String {
+    let mut redacted = snippet.replace(&format!("nsec = {nsec:?}"), "nsec = \"<REDACTED>\"");
+    if let Some(uri) = uri {
+        let raw = uri.expose_secret();
+        redacted = redacted.replace(
+            &format!("${{PACTO_BUNKER_URI:-{raw}}}"),
+            "${PACTO_BUNKER_URI:-<REDACTED>}",
+        );
+    }
+    redacted
 }
 
 fn validate_backend(backend: &str) -> Result<(), DaemonError> {
@@ -3541,6 +3550,42 @@ mod tests {
         let bots = vec![dummy_bot("a", "npub1a", "nsec1a")];
         let err = find_bot(&bots, "b").unwrap_err();
         assert!(matches!(err, DaemonError::UnknownBot(_)));
+    }
+
+    #[test]
+    fn redact_snippet_redacts_nsec_and_bunker_uri_default() {
+        let nsec = "nsec1secret";
+        let uri = SecretString::new("bunker://abc?relay=wss://relay.example.com".into());
+        let snippet = format!(
+            "[[bots]]\n\
+             id = \"test-bot\"\n\
+             npub = \"npub1test\"\n\
+             signing = {{ backend = \"bunker_remote\", uri = \"${{PACTO_BUNKER_URI:-{}}}}}\" }}\n\
+             nsec = {nsec:?}\n",
+            uri.expose_secret()
+        );
+
+        let redacted = redact_snippet(&snippet, nsec, Some(&uri));
+        assert!(
+            !redacted.contains(uri.expose_secret()),
+            "raw URI should be redacted"
+        );
+        assert!(!redacted.contains(nsec), "raw nsec should be redacted");
+        assert!(redacted.contains("${PACTO_BUNKER_URI:-<REDACTED>}"));
+        assert!(redacted.contains("nsec = \"<REDACTED>\""));
+        assert!(
+            snippet.contains(uri.expose_secret()),
+            "original snippet keeps raw URI"
+        );
+    }
+
+    #[test]
+    fn redact_snippet_without_uri_only_redacts_nsec() {
+        let nsec = "nsec1secret";
+        let snippet = format!("nsec = {nsec:?}\n");
+        let redacted = redact_snippet(&snippet, nsec, None);
+        assert!(!redacted.contains(nsec));
+        assert!(redacted.contains("nsec = \"<REDACTED>\""));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::errors::DaemonError;
 use crate::handlers::ConnectionHandle;
+use crate::transport::BoxFuture;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
     JsonRpcMessage, MAX_FRAME_BYTES, parse_message, serialize_message, validate_params,
@@ -246,7 +247,7 @@ async fn handle_connection(
     const OUTBOUND_BUFFER: usize = 128;
     let (out_tx, mut out_rx) = mpsc::channel::<JsonRpcMessage>(OUTBOUND_BUFFER);
     let (pending_tx, mut pending_rx) =
-        mpsc::channel::<tokio::task::JoinHandle<Option<JsonRpcMessage>>>(OUTBOUND_BUFFER);
+        mpsc::channel::<BoxFuture<Option<JsonRpcMessage>>>(OUTBOUND_BUFFER);
     let connection = ConnectionHandle::with_transport(out_tx.clone(), "unix");
     let handler_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
@@ -260,22 +261,15 @@ async fn handle_connection(
     });
     let writer_abort = writer_handle.abort_handle();
 
-    // Ordering task: awaits handler completions in request order so responses
-    // are sent to the outbound channel in the same order they were received.
-    // JSON-RPC 2.0 preserves response order for ordinary requests, and batch
-    // responses must be sorted by request order.
+    // Sequential response drainer: processes one queued response future at a
+    // time in arrival order. This preserves connection-level side effects
+    // (e.g., handler.register creating a handler_id) while the read loop can
+    // continue reading frames and queueing futures.
     let handler_id_for_drain = Arc::clone(&handler_id);
     let out_tx_for_drain = out_tx.clone();
     let drain_handle = tokio::spawn(async move {
-        while let Some(handle) = pending_rx.recv().await {
-            let response = match handle.await {
-                Ok(Some(resp)) => Some(resp),
-                Ok(None) => None,
-                Err(e) => {
-                    tracing::error!(error = ?e, "handler task failed");
-                    None
-                }
-            };
+        while let Some(fut) = pending_rx.recv().await {
+            let response = fut.await;
 
             if let Some(JsonRpcMessage::Response {
                 result: Some(r), ..
@@ -332,7 +326,7 @@ async fn handle_connection(
             let handler = Arc::clone(&handler);
             let handler_id_for_message = Arc::clone(&handler_id_for_loop);
             let connection = connection.clone();
-            let handle = tokio::spawn(async move {
+            let fut = Box::pin(async move {
                 match parse_message(&line) {
                     Ok(msg) => {
                         let id = msg.id().cloned();
@@ -355,7 +349,7 @@ async fn handle_connection(
                 }
             });
 
-            if pending_tx.send(handle).await.is_err() {
+            if pending_tx.send(fut).await.is_err() {
                 return Ok(());
             }
         }

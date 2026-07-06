@@ -695,15 +695,25 @@ fn find_hex_run(input: &str, len: usize) -> Option<usize> {
 
 /// Find `needle` in `haystack` case-insensitively.
 ///
-/// This assumes `needle` is ASCII, so its byte length is preserved under
-/// lowercasing; the returned index is valid in the original `haystack`.
+/// This assumes `needle` is ASCII. It compares ASCII bytes only, so the
+/// returned index is always a valid byte position in the original `haystack`
+/// and no allocation is required.
 fn find_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
-    let needle_lower = needle.to_lowercase();
-    let haystack_lower = haystack.to_lowercase();
-    haystack_lower.find(&needle_lower)
+    let needle_len = needle.len();
+    if haystack.len() < needle_len {
+        return None;
+    }
+    let haystack_bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    haystack_bytes.windows(needle_len).position(|window| {
+        window
+            .iter()
+            .zip(needle_bytes.iter())
+            .all(|(h, n)| h.eq_ignore_ascii_case(n))
+    })
 }
 
 /// Redact a `bearer <token>` token, case-insensitively.
@@ -1023,6 +1033,17 @@ mod tests {
         let out = redact_secrets("Authorization: Bearer abc123");
         assert!(!out.contains("abc123"));
         assert!(out.contains("Authorization: [REDACTED]"));
+    }
+
+    #[test]
+    fn redact_secrets_does_not_panic_with_non_ascii_prefix() {
+        // U+0130 (Latin capital I with dot above) lowercases to a single
+        // ASCII byte, so the old Unicode-lowercase search would return a byte
+        // index that is not a valid char boundary in the original string.
+        let input = "İBearer abc123";
+        let out = redact_secrets(input);
+        assert!(!out.contains("abc123"));
+        assert!(out.contains("[REDACTED]"));
     }
 
     #[test]

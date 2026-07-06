@@ -60,6 +60,7 @@ fn new_bunker_snippet_does_not_leak_nsec() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("npub1"));
     assert!(stdout.contains(&format!("config: {}", output.display())));
     assert!(!stdout.contains("nsec ="));
+    assert!(!stdout.contains("bunker://abc?relay=wss://relay.example.com"));
 
     let snippet = fs::read_to_string(&output)?;
     assert!(snippet.contains("backend = \"bunker_remote\""));
@@ -138,6 +139,7 @@ fn new_interactive_bunker_remote_prompts_for_uri() -> Result<(), Box<dyn Error>>
     assert!(stdout.contains("npub1"));
     assert!(stdout.contains(&format!("config: {}", output.display())));
     assert!(!stdout.contains("nsec ="));
+    assert!(!stdout.contains("bunker://abc?relay=wss://relay.example.com"));
 
     let snippet = fs::read_to_string(&output)?;
     assert!(snippet.contains("id = \"bunker-bot\""));
@@ -174,6 +176,7 @@ fn new_interactive_bunker_remote_prompts_for_uri_with_secret_input() -> Result<(
     assert!(stdout.contains("npub1"));
     assert!(stdout.contains(&format!("config: {}", output.display())));
     assert!(!stdout.contains("nsec ="));
+    assert!(!stdout.contains("bunker://abc?relay=wss://relay.example.com"));
 
     let snippet = fs::read_to_string(&output)?;
     assert!(snippet.contains("id = \"bunker-bot\""));

@@ -48,12 +48,10 @@ pub fn validate_params(method: &str, params: &serde_json::Value) -> Result<(), D
     // Get the params schema for this method
     let schema = METHOD_PARAMS_SCHEMA
         .get(method)
-        .ok_or_else(|| DaemonError::Config(format!("unknown method {method}")))?;
+        .ok_or(DaemonError::MethodNotFound)?;
 
-    // If params is null or the schema is empty array, validation passes
-    if params.is_null()
-        || (schema.is_array() && schema.as_array().map(|a| a.is_empty()).unwrap_or(false))
-    {
+    // If the schema is an empty array, any params shape is accepted.
+    if schema.is_array() && schema.as_array().map(|a| a.is_empty()).unwrap_or(false) {
         return Ok(());
     }
 
@@ -646,5 +644,25 @@ mod tests {
         let msg = parse_message(r#"{"jsonrpc":"2.0","id":1,"method":"agent.version"}"#).unwrap();
         assert_eq!(msg.id(), Some(&Value::from(1)));
         assert_eq!(msg.method(), Some("agent.version"));
+    }
+
+    #[test]
+    fn validate_params_unknown_method_is_method_not_found() {
+        let err = validate_params("not.in.catalog", &Value::Null).unwrap_err();
+        assert!(matches!(err, DaemonError::MethodNotFound));
+        assert_eq!(err.to_json_rpc_code(), -32601);
+    }
+
+    #[test]
+    fn validate_params_rejects_null_for_required_params() {
+        let err = validate_params("handler.register", &Value::Null).unwrap_err();
+        assert!(!matches!(err, DaemonError::MethodNotFound));
+        assert_eq!(err.to_json_rpc_code(), -32602);
+    }
+
+    #[test]
+    fn validate_params_accepts_null_for_empty_schema() {
+        assert!(validate_params("agent.version", &Value::Null).is_ok());
+        assert!(validate_params("agent.metrics", &Value::Null).is_ok());
     }
 }

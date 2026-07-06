@@ -289,10 +289,8 @@ async fn http_handler(
                 if let Some(name) = msg.method()
                     && let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null))
                 {
-                    let err = JsonRpcMessage::error(
-                        msg.id().cloned().unwrap_or(Value::Null),
-                        JsonRpcError::new(-32602, e.to_string()),
-                    );
+                    let err =
+                        JsonRpcMessage::error(msg.id().cloned().unwrap_or(Value::Null), e.into());
                     let mut body = serialize_message(&err).unwrap_or_default();
                     if !body.is_empty() {
                         body.push('\n');
