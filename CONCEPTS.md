@@ -68,7 +68,7 @@ Encrypted Nostr event envelope used for sealed DMs. The daemon receives gift wra
 Authorization claims requested by a handler at registration. The daemon enforces them on every mutating call. Examples include:
 - `ReadMessages` — receive incoming DMs;
 - `SendMessages` — send outgoing DMs;
-- `SetProfile` — publish kind:0 profile metadata.
+- `ManageProfile` — publish kind:0 profile metadata.
 
 ## Persistence
 
