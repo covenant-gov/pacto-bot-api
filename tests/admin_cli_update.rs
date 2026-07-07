@@ -5,6 +5,7 @@ use predicates::prelude::*;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Create the fixture cache and template repo env used by the resolver.
 fn setup_update_env(cmd: &mut Command, temp: &Path) -> Result<(), Box<dyn Error>> {
@@ -30,13 +31,11 @@ fn setup_update_env(cmd: &mut Command, temp: &Path) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-#[test]
-fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
-    let temp = common::tempdir()?;
-    let project_dir = temp.path().join("echo-bot");
-
-    let mut new_cmd = Command::cargo_bin("pacto-bot-admin")?;
-    new_cmd.args([
+/// Scaffold a fresh `echo-bot` project in an isolated temp directory.
+fn scaffold_echo_bot(temp: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let project_dir = temp.join("echo-bot");
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
         "new",
         "--scaffold",
         "echo-bot",
@@ -51,8 +50,31 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
         "--project-dir",
         &project_dir.to_string_lossy(),
     ]);
-    setup_update_env(&mut new_cmd, temp.path())?;
-    new_cmd.assert().success();
+    setup_update_env(&mut cmd, temp)?;
+    cmd.assert().success();
+    Ok(project_dir)
+}
+
+/// Set the modification time of `path` to `days` days in the past.
+fn set_mtime_in_past(path: &Path, days: u64) -> Result<(), Box<dyn Error>> {
+    let output = std::process::Command::new("touch")
+        .args(["-d", &format!("{days} days ago"), &path.to_string_lossy()])
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "failed to set mtime for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let project_dir = scaffold_echo_bot(temp.path())?;
 
     let lock_path = project_dir
         .join(".pacto")
@@ -100,6 +122,132 @@ fn update_succeeds_for_scaffolded_project() -> Result<(), Box<dyn Error>> {
             .join("echo_bot.py")
             .is_file(),
         "bot handler should still exist after update"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn update_without_force_preserves_protected_files() -> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let project_dir = scaffold_echo_bot(temp.path())?;
+
+    let bot_dir = project_dir.join("bots").join("echo-bot");
+    let handler_path = bot_dir.join("echo_bot.py");
+    let tests_path = bot_dir.join("tests").join("test_handlers.py");
+
+    fs::write(&handler_path, "# user-protected handler edit\n")?;
+    fs::create_dir_all(tests_path.parent().expect("tests path has parent"))?;
+    fs::write(&tests_path, "# user-protected test edit\n")?;
+
+    let mut update_cmd = Command::cargo_bin("pacto-bot-admin")?;
+    update_cmd.args([
+        "update",
+        "echo-bot",
+        "--project-dir",
+        &project_dir.to_string_lossy(),
+    ]);
+    setup_update_env(&mut update_cmd, temp.path())?;
+    update_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated scaffold for echo-bot"));
+
+    assert_eq!(
+        fs::read_to_string(&handler_path)?,
+        "# user-protected handler edit\n",
+        "protected bot handler must be preserved"
+    );
+    assert_eq!(
+        fs::read_to_string(&tests_path)?,
+        "# user-protected test edit\n",
+        "protected test file must be preserved"
+    );
+
+    let lock_path = project_dir
+        .join(".pacto")
+        .join("bots")
+        .join("echo-bot")
+        .join("scaffold.lock");
+    let lock_text = fs::read_to_string(&lock_path)?;
+    assert!(
+        lock_text.contains("lock_version"),
+        "lock should remain valid after update"
+    );
+    assert!(
+        lock_text.contains("commands = [\"echo\"]"),
+        "lock should preserve original commands"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn update_with_refresh_refetches_artifacts() -> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let project_dir = scaffold_echo_bot(temp.path())?;
+
+    let mut update_cmd = Command::cargo_bin("pacto-bot-admin")?;
+    update_cmd.args([
+        "update",
+        "echo-bot",
+        "--project-dir",
+        &project_dir.to_string_lossy(),
+        "--refresh",
+    ]);
+    setup_update_env(&mut update_cmd, temp.path())?;
+    update_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated scaffold for echo-bot"));
+
+    let lock_path = project_dir
+        .join(".pacto")
+        .join("bots")
+        .join("echo-bot")
+        .join("scaffold.lock");
+    let lock_text = fs::read_to_string(&lock_path)?;
+    assert!(
+        lock_text.contains("lock_version"),
+        "lock should remain valid after refresh"
+    );
+    assert!(
+        lock_text.contains("commands = [\"echo\"]"),
+        "lock should preserve original commands"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn update_with_prune_cache_removes_stale_entries() -> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let project_dir = scaffold_echo_bot(temp.path())?;
+
+    let stale_dir = temp.path().join("cache").join("contracts");
+    fs::create_dir_all(&stale_dir)?;
+    let stale_file = stale_dir.join("stale-contract-0.0.1.json");
+    fs::write(&stale_file, "{}")?;
+    set_mtime_in_past(&stale_file, 100)?;
+
+    let mut update_cmd = Command::cargo_bin("pacto-bot-admin")?;
+    update_cmd.args([
+        "update",
+        "echo-bot",
+        "--project-dir",
+        &project_dir.to_string_lossy(),
+        "--prune-cache",
+    ]);
+    setup_update_env(&mut update_cmd, temp.path())?;
+    update_cmd
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Pruned 1 stale cache entries"))
+        .stdout(predicate::str::contains("Updated scaffold for echo-bot"));
+
+    assert!(
+        !stale_file.exists(),
+        "stale cache entry should be removed by prune-cache"
     );
 
     Ok(())

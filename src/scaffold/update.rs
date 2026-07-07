@@ -51,7 +51,7 @@ pub async fn run_update(
     let policy = OverwritePolicy {
         force,
         interactive: std::io::stdin().is_terminal(),
-        skip_existing: false,
+        skip_existing: !force,
     };
 
     let mut denylist = Vec::new();
