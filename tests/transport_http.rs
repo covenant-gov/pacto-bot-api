@@ -124,6 +124,165 @@ async fn http_accepts_correct_secret() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[tokio::test]
+async fn http_batch_multiple_requests_returns_array() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let requests = vec![
+        JsonRpcMessage::request(1.into(), "agent.metrics", None),
+        JsonRpcMessage::request(2.into(), "agent.version", None),
+        JsonRpcMessage::request(3.into(), "agent.metrics", None),
+    ];
+    let body = serde_json::to_string(&requests)?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert_json_content_type(&response);
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body.trim())?;
+    let array = parsed.as_array().ok_or("expected JSON array response")?;
+    assert_eq!(array.len(), 3, "expected 3 responses, got: {parsed}");
+    assert_eq!(array[0]["id"], 1);
+    assert_eq!(array[0]["result"], "pong");
+    assert_eq!(array[1]["id"], 2);
+    assert_eq!(array[1]["result"], "pong");
+    assert_eq!(array[2]["id"], 3);
+    assert_eq!(array[2]["result"], "pong");
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_batch_omits_notifications() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let requests = vec![
+        JsonRpcMessage::request(1.into(), "agent.metrics", None),
+        JsonRpcMessage::notification("agent.metrics", None),
+        JsonRpcMessage::request(2.into(), "agent.version", None),
+    ];
+    let body = serde_json::to_string(&requests)?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body.trim())?;
+    let array = parsed.as_array().ok_or("expected JSON array response")?;
+    assert_eq!(array.len(), 2, "expected 2 responses, got: {parsed}");
+    assert_eq!(array[0]["id"], 1);
+    assert_eq!(array[1]["id"], 2);
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_batch_empty_array_returns_empty_array() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let response = raw_http_post(port, Some(&token), None, "[]").await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    assert_eq!(body.trim(), "[]", "expected empty JSON array");
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_batch_invalid_element_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let response = raw_http_post(port, Some(&token), None, r#"[1, "invalid", null]"#).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body.trim())?;
+    let array = parsed.as_array().ok_or("expected JSON array response")?;
+    assert_eq!(array.len(), 3, "expected 3 error responses, got: {parsed}");
+    for item in array {
+        assert_eq!(item["jsonrpc"], "2.0");
+        assert_eq!(item["id"], Value::Null);
+        assert_eq!(item["error"]["code"], -32600);
+    }
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_batch_mixed_with_handler_identity_error() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let requests = vec![
+        JsonRpcMessage::request(1.into(), "agent.metrics", None),
+        JsonRpcMessage::request(
+            2.into(),
+            "agent.error",
+            Some(serde_json::json!({
+                "bot_id": "echo-bot",
+                "message": "should fail without handler identity",
+            })),
+        ),
+    ];
+    let body = serde_json::to_string(&requests)?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    let parsed: Value = serde_json::from_str(body.trim())?;
+    let array = parsed.as_array().ok_or("expected JSON array response")?;
+    assert_eq!(array.len(), 2, "expected 2 responses, got: {parsed}");
+    assert_eq!(array[0]["id"], 1);
+    assert!(
+        array[0]["result"].is_object() || array[0]["result"].is_null(),
+        "expected first response to succeed, got: {}",
+        array[0]
+    );
+    assert_eq!(array[1]["id"], 2);
+    assert_eq!(array[1]["error"]["code"], -32006);
+    assert!(
+        array[1]["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("handler identity"),
+        "expected handler identity error, got: {}",
+        array[1]
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_batch_single_notification_returns_empty_array()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir) = start_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let requests = vec![JsonRpcMessage::notification("agent.metrics", None)];
+    let body = serde_json::to_string(&requests)?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+
+    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
+    assert_eq!(
+        body.trim(),
+        "[]",
+        "expected empty JSON array for notifications only"
+    );
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_token_file_is_owner_only() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     {
