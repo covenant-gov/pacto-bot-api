@@ -52,6 +52,7 @@ async fn http_rejects_missing_secret_with_401() -> Result<(), Box<dyn std::error
     let response = raw_http_post(port, None, None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
     assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &Value::Null, -32000, "unauthorized")?;
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -68,6 +69,7 @@ async fn http_rejects_wrong_secret_with_401() -> Result<(), Box<dyn std::error::
     let response = raw_http_post(port, Some("wrong-token"), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
     assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &Value::Null, -32000, "unauthorized")?;
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -86,6 +88,7 @@ async fn http_rejects_wrong_length_secret_with_401() -> Result<(), Box<dyn std::
     let response = raw_http_post(port, Some("short"), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
     assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &Value::Null, -32000, "unauthorized")?;
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -96,6 +99,7 @@ async fn http_rejects_wrong_length_secret_with_401() -> Result<(), Box<dyn std::
     let response = raw_http_post(port, Some(&long_token), None, "{}").await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
     assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &Value::Null, -32000, "unauthorized")?;
     assert!(
         !response.contains("secret"),
         "401 body must not leak the token"
@@ -114,10 +118,9 @@ async fn http_accepts_correct_secret() -> Result<(), Box<dyn std::error::Error>>
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
     assert_json_content_type(&response);
-    assert!(
-        response.contains("\"id\":7"),
-        "response should echo request id"
-    );
+    let result =
+        assert_jsonrpc_success(&response, &7.into())?.ok_or("expected result for agent.metrics")?;
+    assert_eq!(result, "pong", "echo handler should return pong");
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -142,10 +145,13 @@ async fn http_batch_multiple_requests_returns_array() -> Result<(), Box<dyn std:
     let parsed: Value = serde_json::from_str(body.trim())?;
     let array = parsed.as_array().ok_or("expected JSON array response")?;
     assert_eq!(array.len(), 3, "expected 3 responses, got: {parsed}");
+    assert_eq!(array[0]["jsonrpc"], "2.0");
     assert_eq!(array[0]["id"], 1);
     assert_eq!(array[0]["result"], "pong");
+    assert_eq!(array[1]["jsonrpc"], "2.0");
     assert_eq!(array[1]["id"], 2);
     assert_eq!(array[1]["result"], "pong");
+    assert_eq!(array[2]["jsonrpc"], "2.0");
     assert_eq!(array[2]["id"], 3);
     assert_eq!(array[2]["result"], "pong");
 
@@ -166,12 +172,16 @@ async fn http_batch_omits_notifications() -> Result<(), Box<dyn std::error::Erro
     let body = serde_json::to_string(&requests)?;
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert_json_content_type(&response);
 
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
     let parsed: Value = serde_json::from_str(body.trim())?;
     let array = parsed.as_array().ok_or("expected JSON array response")?;
     assert_eq!(array.len(), 2, "expected 2 responses, got: {parsed}");
+    assert_eq!(array[0]["jsonrpc"], "2.0");
     assert_eq!(array[0]["id"], 1);
+    assert_eq!(array[0]["result"], "pong");
+    assert_eq!(array[1]["jsonrpc"], "2.0");
     assert_eq!(array[1]["id"], 2);
 
     let _ = shutdown_tx.send(());
@@ -208,6 +218,10 @@ async fn http_batch_invalid_element_returns_error() -> Result<(), Box<dyn std::e
     for item in array {
         assert_eq!(item["jsonrpc"], "2.0");
         assert_eq!(item["id"], Value::Null);
+        assert!(
+            item["result"].is_null(),
+            "error response must not have a result"
+        );
         assert_eq!(item["error"]["code"], -32600);
     }
 
@@ -315,18 +329,7 @@ async fn http_rejects_invalid_utf8_with_400() -> Result<(), Box<dyn std::error::
     let response = raw_http_post_bytes(port, Some(&token), None, body).await?;
     assert!(response.starts_with("HTTP/1.1 400"), "got: {response}");
     assert_json_content_type(&response);
-
-    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
-    let parsed: Value = serde_json::from_str(body)?;
-    assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32700);
-    assert!(
-        parsed["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("UTF-8"),
-        "expected UTF-8 error message, got: {parsed}"
-    );
+    assert_jsonrpc_error(&response, &Value::Null, -32700, "UTF-8")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -342,18 +345,7 @@ async fn http_rejects_oversized_payload_with_413() -> Result<(), Box<dyn std::er
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 413"), "got: {response}");
     assert_json_content_type(&response);
-
-    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
-    let parsed: Value = serde_json::from_str(body)?;
-    assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32012);
-    assert!(
-        parsed["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("payload too large"),
-        "expected payload too large error message, got: {parsed}"
-    );
+    assert_jsonrpc_error(&response, &Value::Null, -32012, "payload too large")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -381,18 +373,7 @@ async fn http_rejects_oversized_json_rpc_frame_with_413() -> Result<(), Box<dyn 
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 413"), "got: {response}");
     assert_json_content_type(&response);
-
-    let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
-    let parsed: Value = serde_json::from_str(body)?;
-    assert_eq!(parsed["jsonrpc"], "2.0");
-    assert_eq!(parsed["error"]["code"], -32012);
-    assert!(
-        parsed["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("payload too large"),
-        "expected payload too large error message, got: {parsed}"
-    );
+    assert_jsonrpc_error(&response, &Value::Null, -32012, "payload too large")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -415,7 +396,7 @@ async fn http_handler_register_returns_handler_id() -> Result<(), Box<dyn std::e
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
 
-    let (handler_id, reconnect_token) = extract_handler_id(&response)?;
+    let (handler_id, reconnect_token) = extract_handler_id(&response, &8.into())?;
     assert!(!handler_id.is_empty());
     assert!(!reconnect_token.is_empty());
 
@@ -439,7 +420,7 @@ async fn http_handler_response_is_accepted() -> Result<(), Box<dyn std::error::E
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     let response_body = serialize_message(&JsonRpcMessage::request(
         9.into(),
@@ -451,6 +432,12 @@ async fn http_handler_response_is_accepted() -> Result<(), Box<dyn std::error::E
     ))?;
     let response = raw_http_post(port, Some(&token), Some(&handler_id), &response_body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert_json_content_type(&response);
+    let result = assert_jsonrpc_success(&response, &9.into())?;
+    assert!(
+        result.is_none(),
+        "expected null result for handler.response without dispatched event, got: {result:?}"
+    );
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -472,7 +459,7 @@ async fn http_handler_unregister_returns_unregistered_flag()
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     let unregister_body = serialize_message(&JsonRpcMessage::request(
         2.into(),
@@ -485,22 +472,10 @@ async fn http_handler_unregister_returns_unregistered_flag()
         unregister_response.starts_with("HTTP/1.1 200"),
         "got: {unregister_response}"
     );
-
-    let body = unregister_response
-        .split("\r\n\r\n")
-        .nth(1)
-        .or_else(|| unregister_response.split("\n\n").nth(1))
-        .unwrap_or("")
-        .trim();
-    let msg: JsonRpcMessage = serde_json::from_str(body)?;
-    match msg {
-        JsonRpcMessage::Response {
-            result: Some(r), ..
-        } => {
-            assert_eq!(r, serde_json::json!({ "unregistered": true }));
-        }
-        _ => panic!("expected unregister response, got {msg:?}"),
-    }
+    assert_json_content_type(&unregister_response);
+    let result = assert_jsonrpc_success(&unregister_response, &2.into())?
+        .ok_or("expected result for handler.unregister")?;
+    assert_eq!(result, serde_json::json!({ "unregistered": true }));
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -522,7 +497,7 @@ async fn http_handler_unregister_without_identity_rejected()
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     // handler.unregister without the X-Pacto-Handler-Id header must be rejected
     // with a JSON-RPC error rather than silently reaching the dispatch layer.
@@ -536,30 +511,13 @@ async fn http_handler_unregister_without_identity_rejected()
         unregister_response.starts_with("HTTP/1.1 401"),
         "expected 401 for missing handler identity, got: {unregister_response}"
     );
-    assert!(
-        unregister_response.lines().any(|line| line
-            .to_ascii_lowercase()
-            .starts_with("content-type: application/json")),
-        "expected application/json content type, got: {unregister_response}"
-    );
-
-    let body = unregister_response
-        .split("\r\n\r\n")
-        .nth(1)
-        .or_else(|| unregister_response.split("\n\n").nth(1))
-        .unwrap_or("")
-        .trim();
-    let msg: JsonRpcMessage = serde_json::from_str(body)?;
-    match msg {
-        JsonRpcMessage::Error { error, .. } => {
-            assert_eq!(error.code, -32006);
-            assert!(
-                error.message.contains("handler identity required"),
-                "expected identity error, got: {error:?}"
-            );
-        }
-        _ => panic!("expected JSON-RPC error, got {msg:?}"),
-    }
+    assert_json_content_type(&unregister_response);
+    assert_jsonrpc_error(
+        &unregister_response,
+        &2.into(),
+        -32006,
+        "handler identity required",
+    )?;
 
     // The handler should still be registered; a subsequent unregister with the
     // correct header succeeds, proving the identity-less call did not mutate
@@ -575,21 +533,10 @@ async fn http_handler_unregister_without_identity_rejected()
         unregister_response.starts_with("HTTP/1.1 200"),
         "got: {unregister_response}"
     );
-    let body = unregister_response
-        .split("\r\n\r\n")
-        .nth(1)
-        .or_else(|| unregister_response.split("\n\n").nth(1))
-        .unwrap_or("")
-        .trim();
-    let msg: JsonRpcMessage = serde_json::from_str(body)?;
-    match msg {
-        JsonRpcMessage::Response {
-            result: Some(r), ..
-        } => {
-            assert_eq!(r, serde_json::json!({ "unregistered": true }));
-        }
-        _ => panic!("expected unregister response, got {msg:?}"),
-    }
+    assert_json_content_type(&unregister_response);
+    let result = assert_jsonrpc_success(&unregister_response, &3.into())?
+        .ok_or("expected result for handler.unregister")?;
+    assert_eq!(result, serde_json::json!({ "unregistered": true }));
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -624,6 +571,8 @@ async fn http_unregistered_send_dm_rejected() -> Result<(), Box<dyn std::error::
     ))?;
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &1.into(), -32006, "handler identity required")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -644,6 +593,8 @@ async fn http_unregistered_set_profile_rejected() -> Result<(), Box<dyn std::err
     ))?;
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &1.into(), -32006, "handler identity required")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -665,6 +616,8 @@ async fn http_unregistered_error_rejected() -> Result<(), Box<dyn std::error::Er
     ))?;
     let response = raw_http_post(port, Some(&token), None, &body).await?;
     assert!(response.starts_with("HTTP/1.1 401"), "got: {response}");
+    assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &1.into(), -32006, "handler identity required")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -686,10 +639,8 @@ async fn http_invalid_handler_id_send_dm_rejected() -> Result<(), Box<dyn std::e
     ))?;
     let response = raw_http_post(port, Some(&token), Some("not-a-real-handler-id"), &body).await?;
     assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
-    assert!(
-        response.contains("\"code\":-32001"),
-        "expected HandlerNotRegistered in body: {response}"
-    );
+    assert_json_content_type(&response);
+    assert_jsonrpc_error(&response, &1.into(), -32001, "handler not registered")?;
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -712,7 +663,7 @@ async fn http_events_requires_matching_handler_id_header() -> Result<(), Box<dyn
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     // Missing header should be rejected.
     let response = raw_events_get(port, Some(&token), None, &handler_id).await?;
@@ -754,7 +705,7 @@ async fn http_dm_round_trip_registers_replies_and_publishes_gift_wrap()
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     // Open the SSE notification stream.
     let mut sse = SseClient::connect(port, &token, &handler_id).await?;
@@ -804,6 +755,13 @@ async fn http_dm_round_trip_registers_replies_and_publishes_gift_wrap()
         send_response.starts_with("HTTP/1.1 200"),
         "got: {send_response}"
     );
+    assert_json_content_type(&send_response);
+    let result = assert_jsonrpc_success(&send_response, &2.into())?
+        .ok_or("expected event_id result for agent.send_dm")?;
+    assert!(
+        result.as_str().is_some_and(|s| !s.is_empty()),
+        "expected non-empty event_id result, got: {result}"
+    );
 
     // The daemon should have published a kind:1059 gift wrap addressed to the sender.
     let sender_pubkey = sender_keys.public_key();
@@ -843,7 +801,7 @@ async fn http_dm_round_trip_via_handler_response() -> Result<(), Box<dyn std::er
         })),
     ))?;
     let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
-    let (handler_id, _reconnect_token) = extract_handler_id(&register_response)?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
 
     // Open the SSE notification stream.
     let mut sse = SseClient::connect(port, &token, &handler_id).await?;
@@ -895,6 +853,12 @@ async fn http_dm_round_trip_via_handler_response() -> Result<(), Box<dyn std::er
     assert!(
         post_response.starts_with("HTTP/1.1 200"),
         "got: {post_response}"
+    );
+    assert_json_content_type(&post_response);
+    let result = assert_jsonrpc_success(&post_response, &2.into())?;
+    assert!(
+        result.is_none(),
+        "expected null result for handler.response reply, got: {result:?}"
     );
 
     // Wait for the dispatch loop to process the reply.
@@ -1189,6 +1153,15 @@ async fn raw_events_get(
     Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
+fn extract_body(response: &str) -> &str {
+    response
+        .split("\r\n\r\n")
+        .nth(1)
+        .or_else(|| response.split("\n\n").nth(1))
+        .unwrap_or("")
+        .trim()
+}
+
 fn assert_json_content_type(response: &str) {
     const EXPECTED: &str = "application/json; charset=utf-8";
     let content_type = response
@@ -1208,46 +1181,72 @@ fn assert_json_content_type(response: &str) {
     );
 }
 
-fn extract_handler_id(response: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+fn assert_jsonrpc_error(
+    response: &str,
+    expected_id: &Value,
+    expected_code: i32,
+    message_substr: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let body = extract_body(response);
+    let msg: JsonRpcMessage = serde_json::from_str(body)?;
+    match msg {
+        JsonRpcMessage::Error { jsonrpc, id, error } => {
+            assert_eq!(jsonrpc, "2.0");
+            assert_eq!(&id, expected_id);
+            assert_eq!(error.code, expected_code);
+            assert!(
+                error.message.contains(message_substr),
+                "expected error message containing {message_substr:?}, got: {error:?}"
+            );
+            Ok(())
+        }
+        other => Err(format!("expected JSON-RPC error, got {other:?}").into()),
+    }
+}
+
+fn assert_jsonrpc_success(
+    response: &str,
+    expected_id: &Value,
+) -> Result<Option<Value>, Box<dyn std::error::Error>> {
+    let body = extract_body(response);
+    let msg: JsonRpcMessage = serde_json::from_str(body)?;
+    match msg {
+        JsonRpcMessage::Response {
+            jsonrpc,
+            id,
+            result,
+        } => {
+            assert_eq!(jsonrpc, "2.0");
+            assert_eq!(&id, expected_id);
+            Ok(result)
+        }
+        other => Err(format!("expected JSON-RPC response, got {other:?}").into()),
+    }
+}
+
+fn extract_handler_id(
+    response: &str,
+    expected_id: &Value,
+) -> Result<(String, String), Box<dyn std::error::Error>> {
     let mut lines = response.lines();
     let status = lines.next().ok_or("empty HTTP response")?;
     if !status.starts_with("HTTP/1.1 200") {
         return Err(format!("unexpected HTTP status: {status}").into());
     }
 
-    let body = response
-        .split("\r\n\r\n")
-        .nth(1)
-        .or_else(|| response.split("\n\n").nth(1))
-        .unwrap_or("");
-    let trimmed = body.trim();
-    let msg: JsonRpcMessage =
-        serde_json::from_str(trimmed).map_err(|e| format!("failed to parse JSON-RPC body: {e}"))?;
-
-    match msg {
-        JsonRpcMessage::Response {
-            result: Some(result),
-            ..
-        } => {
-            let handler_id = result
-                .get("handler_id")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .ok_or("handler.register response missing handler_id")?;
-            let reconnect_token = result
-                .get("reconnect_token")
-                .and_then(Value::as_str)
-                .map(String::from)
-                .ok_or("handler.register response missing reconnect_token")?;
-            Ok((handler_id, reconnect_token))
-        }
-        JsonRpcMessage::Error { error, .. } => Err(format!(
-            "handler.register returned error {}: {}",
-            error.code, error.message
-        )
-        .into()),
-        _ => Err("handler.register response was not a response".into()),
-    }
+    let result = assert_jsonrpc_success(response, expected_id)?
+        .ok_or("handler.register response missing result")?;
+    let handler_id = result
+        .get("handler_id")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or("handler.register response missing handler_id")?;
+    let reconnect_token = result
+        .get("reconnect_token")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or("handler.register response missing reconnect_token")?;
+    Ok((handler_id, reconnect_token))
 }
 
 struct SseClient {
