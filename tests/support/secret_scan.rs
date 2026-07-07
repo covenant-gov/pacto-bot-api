@@ -172,6 +172,7 @@ pub fn strings_output(binary_path: &Path) -> Option<String> {
 }
 
 /// Write `content` to a temporary config file with owner-only permissions.
+/// Also tightens the parent directory to `0o700` so config validation passes.
 pub fn write_config_file(dir: &Path, content: &str) -> std::io::Result<PathBuf> {
     let path = dir.join("pacto-bot-api.toml");
     let mut file = fs::File::create(&path)?;
@@ -183,6 +184,10 @@ pub fn write_config_file(dir: &Path, content: &str) -> std::io::Result<PathBuf> 
         let mut perms = fs::metadata(&path)?.permissions();
         perms.set_mode(0o600);
         fs::set_permissions(&path, perms)?;
+
+        let mut dir_perms = fs::metadata(dir)?.permissions();
+        dir_perms.set_mode(0o700);
+        fs::set_permissions(dir, dir_perms)?;
     }
 
     Ok(path)
