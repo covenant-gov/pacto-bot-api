@@ -197,8 +197,8 @@ impl ClientManager {
     }
 
     /// Update the shared diagnostics aggregator with the current bot health snapshots.
-    pub fn update_diagnostics(&self, diagnostics: &Diagnostics) {
-        diagnostics.set_bots(self.bot_health_snapshots());
+    pub async fn update_diagnostics(&self, diagnostics: &Diagnostics) {
+        diagnostics.set_bots(self.bot_health_snapshots()).await;
     }
 }
 

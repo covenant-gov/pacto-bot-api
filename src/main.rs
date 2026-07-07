@@ -290,7 +290,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         .collect();
 
     let diagnostics = Diagnostics::new();
-    diagnostics.set_status(DaemonStatus::Initializing);
+    diagnostics.set_status(DaemonStatus::Initializing).await;
 
     let nostr_client = NostrClient::new(unique_relays)
         .await
@@ -302,7 +302,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             .await
             .map_err(|e| format!("failed to initialize client manager: {e}"))?;
 
-    client_manager.update_diagnostics(&diagnostics);
+    client_manager.update_diagnostics(&diagnostics).await;
 
     // Register every bot signer so gift wraps addressed to its pubkey can be
     // decrypted. The NostrClient clone held by ClientManager shares the same
@@ -536,7 +536,7 @@ async fn acquire_lock_file(lock_path: &Path) -> Result<File, String> {
 
 /// Emit an `agent.status` lifecycle notification and update diagnostics.
 async fn emit_agent_status(diagnostics: &Diagnostics, dispatch: &Dispatch, status: DaemonStatus) {
-    diagnostics.set_status(status);
+    diagnostics.set_status(status).await;
     dispatch.broadcast_status(status).await;
 }
 

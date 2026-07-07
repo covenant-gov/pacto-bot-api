@@ -459,7 +459,7 @@ async fn rate_limit_increments_rate_limited_total_counter() -> Result<(), Box<dy
         .await?;
     assert_not_rate_limited(first, "first set_profile call");
 
-    let before = dispatch.diagnostics.snapshot().rate_limited_total;
+    let before = dispatch.diagnostics.snapshot().await.rate_limited_total;
     assert_eq!(before, 0);
 
     let second = dispatch
@@ -467,7 +467,7 @@ async fn rate_limit_increments_rate_limited_total_counter() -> Result<(), Box<dy
         .await?;
     assert_rate_limited(second, "second set_profile call");
 
-    let after = dispatch.diagnostics.snapshot().rate_limited_total;
+    let after = dispatch.diagnostics.snapshot().await.rate_limited_total;
     assert_eq!(after, before + 1);
 
     Ok(())
@@ -1273,7 +1273,7 @@ async fn agent_error_preserves_code_and_data_in_diagnostics()
 
     // The redacted error is still retained in the diagnostics snapshot and
     // flushed report; that path is covered in `tests/diagnostics.rs`.
-    let snap = dispatch.diagnostics().snapshot();
+    let snap = dispatch.diagnostics().snapshot().await;
     let record = snap
         .errors
         .iter()

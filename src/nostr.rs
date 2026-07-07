@@ -473,8 +473,9 @@ impl NostrClient {
         if let Err(e) = event.verify() {
             let message = format!("gift wrap signature verification failed: {e}");
             if let Some(d) = diagnostics {
-                d.record_invalid_event();
-                d.record_error(Some("gift_wrap_verify_failed"), &message, None);
+                d.record_invalid_event().await;
+                d.record_error(Some("gift_wrap_verify_failed"), &message, None)
+                    .await;
             }
             return Err(DaemonError::Nostr(message));
         }
@@ -501,8 +502,9 @@ impl NostrClient {
         if let Err(e) = seal_event.verify() {
             let message = format!("seal signature verification failed: {e}");
             if let Some(d) = diagnostics {
-                d.record_invalid_event();
-                d.record_error(Some("seal_verify_failed"), &message, None);
+                d.record_invalid_event().await;
+                d.record_error(Some("seal_verify_failed"), &message, None)
+                    .await;
             }
             return Err(DaemonError::Nostr(message));
         }
