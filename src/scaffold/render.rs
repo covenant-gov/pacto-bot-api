@@ -7,6 +7,7 @@
 //! directory creation and copy step.
 
 use crate::scaffold::generate::ScaffoldRequest;
+use crate::scaffold::merge::bot_id_snake;
 use crate::scaffold::template::{Template, Value};
 use pacto_bot_api::errors::DaemonError;
 use std::collections::HashMap;
@@ -198,10 +199,6 @@ fn build_context(request: &ScaffoldRequest) -> HashMap<String, Value> {
     ctx
 }
 
-fn bot_id_snake(bot_id: &str) -> String {
-    bot_id.replace(['-', '.'], "_")
-}
-
 fn build_command_handlers(request: &ScaffoldRequest) -> String {
     request
         .commands
@@ -382,6 +379,14 @@ mod tests {
             mode: ScaffoldMode::NewProject {
                 snippet: String::new(),
             },
+        }
+    }
+
+    #[test]
+    fn bot_id_snake_agrees_with_merge() {
+        let cases = ["echo-bot", "my.bot", "already_snake", "a-b.c"];
+        for id in cases {
+            assert_eq!(bot_id_snake(id), crate::scaffold::merge::bot_id_snake(id));
         }
     }
 
