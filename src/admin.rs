@@ -2716,7 +2716,7 @@ async fn probe_evm_node() -> ServiceInfo {
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "net_version",
+        "method": "web3_clientVersion",
         "params": []
     })
     .to_string();
