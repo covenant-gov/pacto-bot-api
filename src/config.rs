@@ -1,4 +1,5 @@
 use crate::errors::DaemonError;
+use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -264,6 +265,38 @@ pub fn redact_bunker_uri(uri: &str) -> String {
     format!("{base}?{redacted}")
 }
 
+/// Extract and percent-decode every `relay` query parameter from a `bunker://` URI.
+fn parse_bunker_relays(uri: &str) -> Result<Vec<String>, DaemonError> {
+    let redacted = redact_bunker_uri(uri);
+    let after_scheme = uri.strip_prefix("bunker://").ok_or_else(|| {
+        DaemonError::Config(format!("bunker uri missing bunker:// scheme: {redacted}"))
+    })?;
+    let query = after_scheme.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut relays = Vec::new();
+    for param in query.split('&') {
+        if param.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = param.split_once('=')
+            && key == "relay"
+        {
+            let decoded = percent_decode_str(value)
+                .decode_utf8()
+                .map_err(|e| {
+                    DaemonError::Config(format!("bunker uri relay param is not valid UTF-8: {e}"))
+                })?
+                .to_string();
+            if decoded.is_empty() {
+                return Err(DaemonError::Config(
+                    "bunker uri relay param is empty".into(),
+                ));
+            }
+            relays.push(decoded);
+        }
+    }
+    Ok(relays)
+}
+
 /// Validate that `bot_id` is a safe, single directory name.
 ///
 /// Rejects empty values, names that are too long, whitespace, path
@@ -323,7 +356,8 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
                     )));
                 }
                 // Production bunker URIs must use wss:// relays.
-                if uri.contains("ws://") && !uri.contains("wss://") {
+                let relays = parse_bunker_relays(uri)?;
+                if relays.iter().any(|r| !r.starts_with("wss://")) {
                     return Err(DaemonError::Config(format!(
                         "bot {}: bunker_remote backend must use wss://, got {}",
                         bot.id,
@@ -656,6 +690,54 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
             msg.contains("secret=[REDACTED]"),
             "secret not redacted: {msg}"
         );
+    }
+
+    #[test]
+    fn bunker_remote_rejects_mixed_ws_and_wss_relays() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "bad-bot"
+npub = "npub1a"
+signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay1.nsec.app&relay=wss://relay2.nsec.app" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must use wss://"),
+            "expected wss requirement: {msg}"
+        );
+        assert!(
+            !msg.contains("ws://relay1.nsec.app"),
+            "raw bunker relay URL leaked in error: {msg}"
+        );
+        assert!(
+            !msg.contains("wss://relay2.nsec.app"),
+            "raw bunker relay URL leaked in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn bunker_remote_accepts_only_wss_relays() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "good-bot"
+npub = "npub1a"
+signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=wss://relay1.nsec.app&relay=wss://relay2.nsec.app" }
+relays = ["wss://relay.example.com"]
+capabilities = ["ReadMessages"]
+"#,
+        );
+
+        let config = DaemonConfig::load(&path).unwrap();
+        assert_eq!(config.bots.len(), 1);
+        assert!(matches!(
+            config.bots[0].signing,
+            SigningConfig::BunkerRemote { .. }
+        ));
     }
 
     #[test]
