@@ -6,6 +6,7 @@ use crate::scaffold::render::render_template;
 use crate::scaffold::resolve::{Resolver, ResolverConfig};
 use crate::scaffold::safety::{
     OverwritePolicy, decide_write, is_populated_config, set_config_permissions,
+    set_project_dir_permissions,
 };
 use pacto_bot_api::config::BotConfig;
 use pacto_bot_api::errors::DaemonError;
@@ -92,6 +93,7 @@ pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
     denylist.push(request.project_dir.join("pacto-bot-api.toml"));
 
     fs::create_dir_all(&request.project_dir).map_err(DaemonError::Io)?;
+    set_project_dir_permissions(&request.project_dir)?;
 
     match &request.mode {
         ScaffoldMode::NewProject { snippet } => {

@@ -85,6 +85,22 @@ pub fn decide_write(
     }
 }
 
+/// Set restrictive permissions on a generated project directory.
+///
+/// On Unix this is `0o700`; on other platforms it is a no-op.
+pub fn set_project_dir_permissions(path: &Path) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::Permissions::from_mode(0o700);
+        fs::set_permissions(path, permissions).map_err(DaemonError::Io)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
 /// Set restrictive permissions on a generated config file.
 ///
 /// On Unix this is `0o600`; on other platforms it is a no-op.
