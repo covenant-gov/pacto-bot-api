@@ -54,13 +54,6 @@ impl NostrConnectSignerActions for AutoApprove {
         }
         let _ = self.request_tx.send(request);
 
-        // The `nostr-connect` client sends its request before subscribing to
-        // relay notifications. For in-process mock bunkers the response can
-        // arrive so quickly that the client misses it, so pause briefly before
-        // approving every request to give the client's notification receiver
-        // time to register.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         true
     }
 }

@@ -57,13 +57,6 @@ impl NostrConnectSignerActions for AutoApprove {
         }
         let _ = self.request_tx.send(request);
 
-        // The `nostr-connect` client sends its request before subscribing to
-        // relay notifications. For in-process mock bunkers the response can
-        // arrive so quickly that the client misses it, so pause briefly before
-        // approving every request to give the client's notification receiver
-        // time to register.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         true
     }
 }
@@ -200,6 +193,32 @@ mod tests {
         let keys = Keys::generate();
         let bunker = MockBunker::new(keys.clone(), vec![]).await.unwrap();
         assert_eq!(bunker.public_key(), keys.public_key());
+    }
+
+    #[tokio::test]
+    async fn approve_does_not_block_async_runtime() {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (request_tx, _request_rx) = broadcast::channel(64);
+        let auto_approve = AutoApprove {
+            requests: Arc::clone(&requests),
+            request_tx,
+        };
+
+        let public_key = Keys::generate().public_key();
+        let req = nostr::nips::nip46::NostrConnectRequest::Ping;
+
+        // If approve() still used std::thread::sleep, this would take ~50 ms.
+        // It should complete in well under a millisecond and never block a Tokio
+        // worker while the signer is serving requests.
+        let start = tokio::time::Instant::now();
+        let approved = auto_approve.approve(&public_key, &req);
+        let elapsed = start.elapsed();
+
+        assert!(approved);
+        assert!(
+            elapsed < Duration::from_millis(5),
+            "approve blocked the async runtime: {elapsed:?}"
+        );
     }
 
     #[tokio::test]
