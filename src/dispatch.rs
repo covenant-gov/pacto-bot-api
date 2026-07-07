@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nostr::EventId;
 use serde_json::Value;
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 
 use crate::client_manager::ClientManager;
@@ -1571,6 +1571,95 @@ mod tests {
             assert_eq!(limiter.handlers.lock().await.map.len(), 1);
             assert_eq!(limiter.bots.lock().await.map.len(), 1);
         });
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn rate_limiter_replenishes_tokens_at_configured_rate() {
+        let limiter = RateLimiter::new(1.0, 2.0, 100.0, 200.0);
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn rate_limiter_partial_replenishment_requires_full_token() {
+        let limiter = RateLimiter::new(1.0, 2.0, 100.0, 200.0);
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+
+        tokio::time::advance(Duration::from_millis(500)).await;
+        let now = Instant::now();
+        assert!(
+            !limiter.check("h1", "b1", now).await,
+            "half a token should not allow a request"
+        );
+
+        tokio::time::advance(Duration::from_millis(500)).await;
+        let now = Instant::now();
+        assert!(
+            limiter.check("h1", "b1", now).await,
+            "a full token should allow a request"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn rate_limiter_replenishment_caps_at_burst() {
+        let limiter = RateLimiter::new(10.0, 2.0, 100.0, 200.0);
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+
+        // Enough time to replenish far more than the burst if it were not capped.
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn rate_limiter_zero_replenishment_without_time_passage() {
+        let limiter = RateLimiter::new(10.0, 2.0, 100.0, 200.0);
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(!limiter.check("h1", "b1", now).await);
+        assert!(
+            !limiter.check("h1", "b1", now).await,
+            "no time passed, so no new tokens should be available"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn rate_limiter_replenishes_bot_aggregate_bucket() {
+        let limiter = RateLimiter::new(100.0, 200.0, 1.0, 1.0);
+        let now = Instant::now();
+        assert!(limiter.check("h1", "b1", now).await);
+        assert!(
+            !limiter.check("h2", "b1", now).await,
+            "bot aggregate bucket should be depleted"
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let now = Instant::now();
+        assert!(
+            limiter.check("h2", "b1", now).await,
+            "bot aggregate bucket should be replenished after one second"
+        );
     }
 
     #[test]
