@@ -663,7 +663,13 @@ mod tests {
     async fn unix_transport_accepts_exact_max_frame_size() {
         let (server, mut client) = UnixStream::pair().unwrap();
         let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
-        let max_frame_size = 64;
+        let max_frame_size = serialize_message(&JsonRpcMessage::request(
+            1.into(),
+            "x",
+            Some(serde_json::json!({"pad": ""})),
+        ))
+        .unwrap()
+        .len();
 
         let handle = tokio::spawn(async move {
             handle_connection(

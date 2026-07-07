@@ -378,6 +378,19 @@ async fn http_handler(
 
     match value {
         Value::Array(items) => {
+            if items.is_empty() {
+                let err = JsonRpcMessage::error(
+                    Value::Null,
+                    JsonRpcError::new(-32600, "invalid request: empty batch"),
+                );
+                let mut body = serialize_message(&err).unwrap_or_default();
+                body.push('\n');
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                    body.into_bytes(),
+                );
+            }
             let mut responses = Vec::new();
             for item in items {
                 match serde_json::from_value::<JsonRpcMessage>(item) {

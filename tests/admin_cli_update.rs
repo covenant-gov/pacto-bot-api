@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime};
 
 /// Create the fixture cache and template repo env used by the resolver.
 fn setup_update_env(cmd: &mut Command, temp: &Path) -> Result<(), Box<dyn Error>> {
@@ -57,17 +58,10 @@ fn scaffold_echo_bot(temp: &Path) -> Result<PathBuf, Box<dyn Error>> {
 
 /// Set the modification time of `path` to `days` days in the past.
 fn set_mtime_in_past(path: &Path, days: u64) -> Result<(), Box<dyn Error>> {
-    let output = std::process::Command::new("touch")
-        .args(["-d", &format!("{days} days ago"), &path.to_string_lossy()])
-        .output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "failed to set mtime for {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
+    let file = fs::OpenOptions::new().write(true).open(path)?;
+    let mtime = SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60);
+    let times = fs::FileTimes::new().set_modified(mtime);
+    file.set_times(times)?;
     Ok(())
 }
 

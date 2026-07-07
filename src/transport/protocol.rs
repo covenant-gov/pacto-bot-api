@@ -115,7 +115,7 @@ pub enum JsonRpcMessage {
     Response {
         jsonrpc: String,
         id: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         result: Option<Value>,
     },
     /// A JSON-RPC notification (no `id`).

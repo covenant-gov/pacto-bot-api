@@ -189,15 +189,27 @@ async fn http_batch_omits_notifications() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[tokio::test]
-async fn http_batch_empty_array_returns_empty_array() -> Result<(), Box<dyn std::error::Error>> {
+async fn http_batch_empty_array_returns_invalid_request_error()
+-> Result<(), Box<dyn std::error::Error>> {
     let (port, shutdown_tx, dir) = start_server().await?;
     let token = read_token(dir.path()).await?;
 
     let response = raw_http_post(port, Some(&token), None, "[]").await?;
-    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert!(response.starts_with("HTTP/1.1 400"), "got: {response}");
 
     let (_, body) = response.split_once("\r\n\r\n").unwrap_or(("", ""));
-    assert_eq!(body.trim(), "[]", "expected empty JSON array");
+    let parsed: Value = serde_json::from_str(body.trim())?;
+    assert!(
+        parsed.is_object(),
+        "expected single JSON object response, got: {parsed}"
+    );
+    assert_eq!(parsed["jsonrpc"], "2.0");
+    assert_eq!(parsed["id"], Value::Null);
+    assert!(
+        parsed["result"].is_null(),
+        "error response must not have a result"
+    );
+    assert_eq!(parsed["error"]["code"], -32600);
 
     let _ = shutdown_tx.send(());
     Ok(())
@@ -1209,7 +1221,14 @@ fn assert_jsonrpc_success(
     expected_id: &Value,
 ) -> Result<Option<Value>, Box<dyn std::error::Error>> {
     let body = extract_body(response);
-    let msg: JsonRpcMessage = serde_json::from_str(body)?;
+    let raw: Value = serde_json::from_str(body)?;
+    assert!(
+        raw.as_object()
+            .map(|obj| obj.contains_key("result"))
+            .unwrap_or(false),
+        "expected JSON-RPC success response to contain a top-level `result` key, got: {raw}"
+    );
+    let msg: JsonRpcMessage = serde_json::from_value(raw)?;
     match msg {
         JsonRpcMessage::Response {
             jsonrpc,

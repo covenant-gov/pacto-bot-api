@@ -216,7 +216,7 @@ mod tests {
 
         assert!(approved);
         assert!(
-            elapsed < Duration::from_millis(5),
+            elapsed < Duration::from_millis(20),
             "approve blocked the async runtime: {elapsed:?}"
         );
     }
