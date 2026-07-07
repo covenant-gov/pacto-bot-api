@@ -29,6 +29,7 @@ use pacto_bot_api::transport::protocol::{
     AdminSendTestDmResponse, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
     HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
 };
+use percent_encoding::percent_decode_str;
 use rusqlite::Connection;
 
 use secrecy::SecretString;
@@ -2779,9 +2780,39 @@ fn find_bunker_port(bots: &[BotConfig]) -> Option<u16> {
     for bot in bots {
         if let SigningConfig::BunkerLocal { uri } | SigningConfig::BunkerRemote { uri } =
             &bot.signing
-            && let Some(port) = extract_port_from_url(uri.expose_secret())
+            && let Some(port) = extract_bunker_port(uri.expose_secret())
         {
             return Some(port);
+        }
+    }
+    None
+}
+
+/// Extract a TCP port from a `bunker://` URI.
+///
+/// Local bunker URIs have the form `bunker://<key>@host:port`, where the port
+/// is taken directly from the host:port component. Remote bunker URIs have the
+/// form `bunker://<key>?relay=ws[s]://host:port`, where the port is derived
+/// from the first `relay` query parameter.
+fn extract_bunker_port(uri: &str) -> Option<u16> {
+    let after_scheme = uri.strip_prefix("bunker://")?;
+    let before_query = after_scheme.split('?').next()?;
+
+    // Local bunker: bunker://<key>@127.0.0.1:4848[?...]
+    if let Some((_, host_port)) = before_query.rsplit_once('@') {
+        return host_port.split(':').nth(1).and_then(|p| p.parse().ok());
+    }
+
+    // Remote bunker: bunker://<key>?relay=wss://host:port
+    let query = after_scheme.split_once('?').map(|(_, q)| q).unwrap_or("");
+    for param in query.split('&') {
+        if let Some((key, value)) = param.split_once('=')
+            && key == "relay"
+        {
+            let decoded = percent_decode_str(value).decode_utf8().ok()?;
+            if let Some(port) = extract_port_from_url(&decoded) {
+                return Some(port);
+            }
         }
     }
     None
@@ -4028,6 +4059,42 @@ mod tests {
             Some(443)
         );
         assert_eq!(extract_port_from_url("ws://relay.example"), None);
+    }
+
+    #[test]
+    fn extract_bunker_port_parses_local_and_remote_uris() {
+        // Local bunker URI: port is the host:port after '@'.
+        assert_eq!(
+            extract_bunker_port("bunker://abc123@127.0.0.1:4848"),
+            Some(4848)
+        );
+        assert_eq!(
+            extract_bunker_port("bunker://abc123@127.0.0.1:4848?relay=wss://relay.example"),
+            Some(4848)
+        );
+        assert_eq!(extract_bunker_port("bunker://abc123@127.0.0.1"), None);
+
+        // Remote bunker URI: port is derived from the first relay URL.
+        assert_eq!(
+            extract_bunker_port("bunker://abc123?relay=wss://relay.example:443/path"),
+            Some(443)
+        );
+        assert_eq!(
+            extract_bunker_port("bunker://abc123?relay=ws://relay.example:80"),
+            Some(80)
+        );
+        assert_eq!(
+            extract_bunker_port("bunker://abc123?relay=ws://127.0.0.1:4848&secret=topsecret"),
+            Some(4848)
+        );
+        assert_eq!(
+            extract_bunker_port("bunker://abc123?relay=wss://relay.example"),
+            None
+        );
+        assert_eq!(extract_bunker_port("bunker://abc123"), None);
+
+        // Non-bunker schemes fall through.
+        assert_eq!(extract_bunker_port("ws://127.0.0.1:4848"), None);
     }
 
     #[test]
