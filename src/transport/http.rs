@@ -2,8 +2,7 @@ use crate::errors::{DaemonError, JsonRpcError};
 use crate::handlers::ConnectionHandle;
 use crate::transport::MessageHandler;
 use crate::transport::protocol::{
-    JsonRpcMessage, MAX_FRAME_BYTES, Method, parse_message, parse_method, serialize_message,
-    validate_params,
+    JsonRpcMessage, MAX_FRAME_BYTES, Method, parse_method, serialize_message, validate_params,
 };
 use axum::Router;
 use axum::body::Bytes;
@@ -44,6 +43,11 @@ use tracing::info;
 
 const SECRET_HEADER: HeaderName = HeaderName::from_static("x-pacto-bot-secret");
 const HANDLER_ID_HEADER: HeaderName = HeaderName::from_static("x-pacto-handler-id");
+
+/// JSON-RPC error code for HTTP requests whose body exceeds `max_frame_size`.
+/// Chosen from the next unused Pacto-specific server-error slot to avoid
+/// colliding with the existing Bunker error code (`-32003`).
+const HTTP_PAYLOAD_TOO_LARGE_CODE: i32 = -32012;
 
 /// Shared, runtime-reloadable HTTP secret token.
 pub type HttpToken = Arc<RwLock<SecretString>>;
@@ -232,6 +236,80 @@ struct AppState {
     disconnect_tx: mpsc::Sender<Option<String>>,
 }
 
+/// Result of processing a single JSON-RPC message.
+enum SingleMessageResult {
+    /// A successful or error JSON-RPC response to return to the client.
+    Response(Option<JsonRpcMessage>),
+    /// The message triggered an HTTP-level error response. The status code
+    /// is preserved for single-object requests; batch requests convert
+    /// this into a JSON-RPC error object in the response array.
+    HttpError(StatusCode, JsonRpcMessage),
+}
+
+async fn process_single_message(
+    state: AppState,
+    headers: &HeaderMap,
+    msg: JsonRpcMessage,
+) -> SingleMessageResult {
+    let id = msg.id().cloned();
+    let method_name = msg.method().map(|s: &str| s.to_string());
+    let method = method_name.as_deref().and_then(|m| parse_method(m).ok());
+    let is_notification = msg.id().is_none();
+
+    // Runtime OpenRPC schema validation of incoming params.
+    if let Some(name) = msg.method()
+        && let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null))
+    {
+        if is_notification {
+            // Notifications do not receive responses, even for validation errors.
+            return SingleMessageResult::Response(None);
+        }
+        let err = JsonRpcMessage::error(id.unwrap_or(Value::Null), e.into());
+        return SingleMessageResult::HttpError(StatusCode::BAD_REQUEST, err);
+    }
+
+    if method == Some(Method::HandlerRegister) || method == Some(Method::HandlerReconnect) {
+        let response = handle_register(state, msg, id).await;
+        return if is_notification {
+            SingleMessageResult::Response(None)
+        } else {
+            SingleMessageResult::Response(response)
+        };
+    }
+
+    let handler_id = headers
+        .get(&HANDLER_ID_HEADER)
+        .and_then(|h| h.to_str().ok());
+    // Mutating methods require a per-request handler identity because HTTP
+    // has no per-connection registration state.
+    if handler_id.is_none() && is_mutating_method(method) {
+        if is_notification {
+            return SingleMessageResult::Response(None);
+        }
+        let err = JsonRpcMessage::error(
+            id.unwrap_or(Value::Null),
+            JsonRpcError::new(-32006, "handler identity required"),
+        );
+        return SingleMessageResult::HttpError(StatusCode::UNAUTHORIZED, err);
+    }
+
+    // Non-registration requests do not need a persistent outbound channel,
+    // so we pass a disconnected handle.
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let connection = ConnectionHandle::new(tx);
+    let handler_id_owned = handler_id.map(|s| s.to_string());
+    let response = match (state.handler)(msg, connection, handler_id_owned).await {
+        Ok(resp) => resp,
+        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
+    };
+
+    if is_notification {
+        SingleMessageResult::Response(None)
+    } else {
+        SingleMessageResult::Response(response)
+    }
+}
+
 async fn http_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -248,10 +326,13 @@ async fn http_handler(
             body.into_bytes(),
         );
     }
+    drop(token);
 
     if body.len() > state.max_frame_size {
-        let err =
-            JsonRpcMessage::error(Value::Null, JsonRpcError::new(-32012, "payload too large"));
+        let err = JsonRpcMessage::error(
+            Value::Null,
+            JsonRpcError::new(HTTP_PAYLOAD_TOO_LARGE_CODE, "payload too large"),
+        );
         let mut body = serialize_message(&err).unwrap_or_default();
         body.push('\n');
         return (
@@ -278,93 +359,111 @@ async fn http_handler(
         }
     };
 
-    let mut responses = Vec::new();
-
-    for line in text.lines() {
-        if line.is_empty() {
-            continue;
+    let value = match serde_json::from_str::<Value>(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            let err = JsonRpcMessage::error(
+                Value::Null,
+                JsonRpcError::new(-32700, format!("parse error: {e}")),
+            );
+            let mut body = serialize_message(&err).unwrap_or_default();
+            body.push('\n');
+            return (
+                StatusCode::BAD_REQUEST,
+                [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                body.into_bytes(),
+            );
         }
+    };
 
-        let response = match parse_message(line) {
-            Ok(msg) => {
-                let id = msg.id().cloned();
-                let method_name = msg.method().map(|s: &str| s.to_string());
-
-                let method = method_name.as_deref().and_then(|m| parse_method(m).ok());
-
-                // Runtime OpenRPC schema validation of incoming params.
-                if let Some(name) = msg.method()
-                    && let Err(e) = validate_params(name, msg.params().unwrap_or(&Value::Null))
-                {
-                    let err =
-                        JsonRpcMessage::error(msg.id().cloned().unwrap_or(Value::Null), e.into());
-                    let mut body = serialize_message(&err).unwrap_or_default();
-                    if !body.is_empty() {
-                        body.push('\n');
+    match value {
+        Value::Array(items) => {
+            if items.is_empty() {
+                let err = JsonRpcMessage::error(
+                    Value::Null,
+                    JsonRpcError::new(-32600, "invalid request: empty batch"),
+                );
+                let mut body = serialize_message(&err).unwrap_or_default();
+                body.push('\n');
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                    body.into_bytes(),
+                );
+            }
+            let mut responses = Vec::new();
+            for item in items {
+                match serde_json::from_value::<JsonRpcMessage>(item) {
+                    Ok(msg) => match process_single_message(state.clone(), &headers, msg).await {
+                        SingleMessageResult::Response(resp) => {
+                            if let Some(resp) = resp {
+                                responses.push(resp);
+                            }
+                        }
+                        SingleMessageResult::HttpError(_, err) => {
+                            responses.push(err);
+                        }
+                    },
+                    Err(e) => {
+                        responses.push(JsonRpcMessage::error(
+                            Value::Null,
+                            JsonRpcError::new(-32600, e.to_string()),
+                        ));
                     }
+                }
+            }
+            let body = serde_json::to_string(&responses).unwrap_or_default();
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                body.into_bytes(),
+            )
+        }
+        _ => {
+            let msg = match serde_json::from_value::<JsonRpcMessage>(value) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    let err = JsonRpcMessage::error(
+                        Value::Null,
+                        JsonRpcError::new(-32600, e.to_string()),
+                    );
+                    let mut body = serialize_message(&err).unwrap_or_default();
+                    body.push('\n');
                     return (
                         StatusCode::BAD_REQUEST,
                         [(CONTENT_TYPE, "application/json; charset=utf-8")],
                         body.into_bytes(),
                     );
                 }
+            };
 
-                if method == Some(Method::HandlerRegister)
-                    || method == Some(Method::HandlerReconnect)
-                {
-                    handle_register(state.clone(), msg, id).await
-                } else {
-                    let handler_id = headers
-                        .get(&HANDLER_ID_HEADER)
-                        .and_then(|h| h.to_str().ok());
-                    // Mutating methods require a per-request handler identity
-                    // because HTTP has no per-connection registration state.
-                    if handler_id.is_none() && is_mutating_method(method) {
-                        let err = JsonRpcMessage::error(
-                            id.unwrap_or(Value::Null),
-                            JsonRpcError::new(-32006, "handler identity required"),
-                        );
-                        let mut body = serialize_message(&err).unwrap_or_default();
-                        if !body.is_empty() {
-                            body.push('\n');
-                        }
-                        return (
-                            StatusCode::UNAUTHORIZED,
-                            [(CONTENT_TYPE, "application/json; charset=utf-8")],
-                            body.into_bytes(),
-                        );
+            match process_single_message(state, &headers, msg).await {
+                SingleMessageResult::Response(resp) => {
+                    let mut body = resp
+                        .as_ref()
+                        .and_then(|r| serialize_message(r).ok())
+                        .unwrap_or_default();
+                    if !body.is_empty() {
+                        body.push('\n');
                     }
-                    // Non-registration requests do not need a persistent
-                    // outbound channel, so we pass a disconnected handle.
-                    let (tx, _rx) = tokio::sync::mpsc::channel(1);
-                    let connection = ConnectionHandle::new(tx);
-                    let handler_id_owned = handler_id.map(|s| s.to_string());
-                    match (state.handler)(msg, connection, handler_id_owned).await {
-                        Ok(resp) => resp,
-                        Err(e) => id.map(|id| JsonRpcMessage::error(id, e.into())),
-                    }
+                    (
+                        StatusCode::OK,
+                        [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                        body.into_bytes(),
+                    )
+                }
+                SingleMessageResult::HttpError(status, err) => {
+                    let mut body = serialize_message(&err).unwrap_or_default();
+                    body.push('\n');
+                    (
+                        status,
+                        [(CONTENT_TYPE, "application/json; charset=utf-8")],
+                        body.into_bytes(),
+                    )
                 }
             }
-            Err(e) => Some(JsonRpcMessage::error(Value::Null, e.into())),
-        };
-
-        if let Some(resp) = response
-            && let Ok(line) = serialize_message(&resp)
-        {
-            responses.push(line);
         }
     }
-
-    let mut body = responses.join("\n");
-    if !body.is_empty() {
-        body.push('\n');
-    }
-
-    (
-        StatusCode::OK,
-        [(CONTENT_TYPE, "application/json; charset=utf-8")],
-        body.into_bytes(),
-    )
 }
 
 async fn handle_register(

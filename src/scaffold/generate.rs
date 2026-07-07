@@ -6,6 +6,7 @@ use crate::scaffold::render::render_template;
 use crate::scaffold::resolve::{Resolver, ResolverConfig};
 use crate::scaffold::safety::{
     OverwritePolicy, decide_write, is_populated_config, set_config_permissions,
+    set_project_dir_permissions,
 };
 use pacto_bot_api::config::BotConfig;
 use pacto_bot_api::errors::DaemonError;
@@ -92,6 +93,7 @@ pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
     denylist.push(request.project_dir.join("pacto-bot-api.toml"));
 
     fs::create_dir_all(&request.project_dir).map_err(DaemonError::Io)?;
+    set_project_dir_permissions(&request.project_dir)?;
 
     match &request.mode {
         ScaffoldMode::NewProject { snippet } => {
@@ -204,6 +206,7 @@ fn append_config_entry(path: &Path, bot_config: &BotConfig) -> Result<(), Daemon
     file.write_all(b"\n").map_err(DaemonError::Io)?;
     file.write_all(snippet.as_bytes())
         .map_err(DaemonError::Io)?;
+    set_config_permissions(path)?;
     println!("Appended [[bots]] entry to {}", path.display());
     Ok(())
 }
@@ -436,5 +439,36 @@ mod tests {
         assert_eq!(content.matches("[[bots]]").count(), 1);
         assert!(content.contains("[daemon]"));
         assert!(content.contains("id = \"echo-bot\""));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn append_config_entry_tightens_lax_permissions_to_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pacto-bot-api.toml");
+        fs::write(&path, "[daemon]\ndata_dir = \"data\"\n").unwrap();
+        {
+            let mut perms = fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o644);
+            fs::set_permissions(&path, perms).unwrap();
+        }
+
+        let bot = BotConfig {
+            id: "echo-bot".to_string(),
+            npub: "npub1echo".to_string(),
+            signing: SigningConfig::Nsec {
+                nsec: SecretString::new("nsec1secret".into()),
+            },
+            ..Default::default()
+        };
+        append_config_entry(&path, &bot).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "config file should be tightened to 0o600 after append"
+        );
     }
 }
