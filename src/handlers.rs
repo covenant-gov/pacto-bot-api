@@ -98,13 +98,13 @@ impl HandlerRef {
 
     /// Returns true if this handler should receive events for the given bot and event type.
     pub fn matches(&self, bot_id: &str, event_type: EventType) -> bool {
-        self.bot_ids.contains(&bot_id.to_string()) && self.event_types.contains(&event_type)
+        self.bot_ids.iter().any(|id| id == bot_id) && self.event_types.contains(&event_type)
     }
 
     /// Returns true if this handler is authorized for the given bot and capability.
     pub fn is_authorized(&self, bot_id: &str, capability: &str) -> bool {
-        self.bot_ids.contains(&bot_id.to_string())
-            && self.capabilities.contains(&capability.to_string())
+        self.bot_ids.iter().any(|id| id == bot_id)
+            && self.capabilities.iter().any(|c| c == capability)
     }
 
     /// Send an `agent.event` notification to this handler if it has a live connection.

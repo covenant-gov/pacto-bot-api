@@ -982,6 +982,150 @@ async fn http_idle_timeout_closes_connection() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[tokio::test]
+async fn http_agent_version_returns_version_and_commit() -> Result<(), Box<dyn std::error::Error>> {
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server().await?;
+    let token = read_token(dir.path()).await?;
+
+    let body = serialize_message(&JsonRpcMessage::request(1.into(), "agent.version", None))?;
+    let response = raw_http_post(port, Some(&token), None, &body).await?;
+    assert!(response.starts_with("HTTP/1.1 200"), "got: {response}");
+    assert_json_content_type(&response);
+    let result =
+        assert_jsonrpc_success(&response, &1.into())?.ok_or("expected result for agent.version")?;
+
+    let obj = result
+        .as_object()
+        .ok_or("expected object result for agent.version")?;
+    assert!(obj.contains_key("version"), "version field missing");
+    assert!(obj.contains_key("commit"), "commit field missing");
+    assert_eq!(
+        obj["commit"].as_str().map(|s| s.len()),
+        Some(8),
+        "commit must be 8 characters"
+    );
+    assert_matches_version_schema(&result)?;
+
+    let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_agent_list_handlers_returns_routing_table() -> Result<(), Box<dyn std::error::Error>>
+{
+    let relay = MockRelay::start().await?;
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server_with_capabilities(
+        &relay,
+        vec!["ReadMessages".into(), "SendMessages".into(), "Admin".into()],
+    )
+    .await?;
+    let token = read_token(dir.path()).await?;
+
+    let register_body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages", "Admin"],
+        })),
+    ))?;
+    let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
+    let (handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
+
+    let list_body = serialize_message(&JsonRpcMessage::request(
+        2.into(),
+        "agent.list_handlers",
+        Some(serde_json::json!({})),
+    ))?;
+    let list_response = raw_http_post(port, Some(&token), Some(&handler_id), &list_body).await?;
+    assert!(
+        list_response.starts_with("HTTP/1.1 200"),
+        "got: {list_response}"
+    );
+    assert_json_content_type(&list_response);
+    let result = assert_jsonrpc_success(&list_response, &2.into())?
+        .ok_or("expected result for agent.list_handlers")?;
+
+    let obj = result
+        .as_object()
+        .ok_or("expected object result for agent.list_handlers")?;
+    let handlers = obj["handlers"]
+        .as_array()
+        .ok_or("expected handlers array")?;
+    assert_eq!(handlers.len(), 1, "expected one handler");
+    assert_eq!(handlers[0]["handler_id"], handler_id);
+    assert_matches_jsonrpc_result_schema(&result, "agent.list_handlers")?;
+
+    let _ = shutdown_tx.send(());
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_agent_unregister_handler_forcibly_removes_handler()
+-> Result<(), Box<dyn std::error::Error>> {
+    let relay = MockRelay::start().await?;
+    let (port, shutdown_tx, dir, _dispatch) = start_dispatch_server_with_capabilities(
+        &relay,
+        vec!["ReadMessages".into(), "SendMessages".into(), "Admin".into()],
+    )
+    .await?;
+    let token = read_token(dir.path()).await?;
+
+    let register_body = serialize_message(&JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages", "Admin"],
+        })),
+    ))?;
+    let register_response = raw_http_post(port, Some(&token), None, &register_body).await?;
+    let (admin_handler_id, _reconnect_token) = extract_handler_id(&register_response, &1.into())?;
+
+    let target_register_body = serialize_message(&JsonRpcMessage::request(
+        2.into(),
+        "handler.register",
+        Some(serde_json::json!({
+            "bot_ids": ["echo-bot"],
+            "event_types": ["dm_received"],
+            "capabilities": ["ReadMessages"],
+        })),
+    ))?;
+    let target_register_response =
+        raw_http_post(port, Some(&token), None, &target_register_body).await?;
+    let (target_handler_id, _reconnect_token) =
+        extract_handler_id(&target_register_response, &2.into())?;
+
+    let unregister_body = serialize_message(&JsonRpcMessage::request(
+        3.into(),
+        "agent.unregister_handler",
+        Some(serde_json::json!({ "handler_id": target_handler_id })),
+    ))?;
+    let unregister_response = raw_http_post(
+        port,
+        Some(&token),
+        Some(&admin_handler_id),
+        &unregister_body,
+    )
+    .await?;
+    assert!(
+        unregister_response.starts_with("HTTP/1.1 200"),
+        "got: {unregister_response}"
+    );
+    assert_json_content_type(&unregister_response);
+    let result = assert_jsonrpc_success(&unregister_response, &3.into())?
+        .ok_or("expected result for agent.unregister_handler")?;
+    assert_eq!(result, serde_json::json!({ "unregistered": true }));
+    assert_matches_jsonrpc_result_schema(&result, "agent.unregister_handler")?;
+
+    let _ = shutdown_tx.send(());
+    relay.stop().await;
+    Ok(())
+}
+
 async fn start_server()
 -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir), Box<dyn std::error::Error>> {
     let dir = common::tempdir()?;
@@ -1037,6 +1181,18 @@ async fn start_dispatch_server_with_relay(
     relay: &MockRelay,
 ) -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir, Arc<Dispatch>), Box<dyn std::error::Error>>
 {
+    start_dispatch_server_with_capabilities(
+        relay,
+        vec!["ReadMessages".into(), "SendMessages".into()],
+    )
+    .await
+}
+
+async fn start_dispatch_server_with_capabilities(
+    relay: &MockRelay,
+    capabilities: Vec<String>,
+) -> Result<(u16, oneshot::Sender<()>, tempfile::TempDir, Arc<Dispatch>), Box<dyn std::error::Error>>
+{
     let dir = common::tempdir()?;
     let data_dir = dir.path().to_path_buf();
 
@@ -1048,7 +1204,7 @@ async fn start_dispatch_server_with_relay(
             nsec: SecretString::new(bot_keys.secret_key().to_bech32()?.into()),
         },
         relays: vec![relay.url()],
-        capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        capabilities,
         ..Default::default()
     };
 
@@ -1266,6 +1422,42 @@ fn extract_handler_id(
         .map(String::from)
         .ok_or("handler.register response missing reconnect_token")?;
     Ok((handler_id, reconnect_token))
+}
+
+fn assert_matches_jsonrpc_result_schema(
+    result: &Value,
+    method_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog: Value = serde_json::from_str(&std::fs::read_to_string("schemas/jsonrpc.json")?)?;
+    let method = catalog["methods"]
+        .as_array()
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|m| m["name"].as_str() == Some(method_name))
+        })
+        .ok_or_else(|| format!("method {method_name} not found in schemas/jsonrpc.json"))?;
+    let schema = method["result"]["schema"].clone();
+    assert!(
+        !schema.is_null(),
+        "method {method_name} must declare a result schema"
+    );
+    let validator = jsonschema::validator_for(&schema)?;
+    assert!(
+        validator.validate(result).is_ok(),
+        "result for {method_name} must validate against schemas/jsonrpc.json"
+    );
+    Ok(())
+}
+
+fn assert_matches_version_schema(result: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string("schemas/version.json")?)?;
+    let validator = jsonschema::validator_for(&schema)?;
+    assert!(
+        validator.validate(result).is_ok(),
+        "agent.version result must validate against schemas/version.json"
+    );
+    Ok(())
 }
 
 struct SseClient {

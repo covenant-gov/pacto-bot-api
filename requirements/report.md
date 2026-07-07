@@ -44,7 +44,7 @@ The following requirements were tagged directly in test source files:
 - **R29** — tests/admin_cli_migration.rs
 - **R30** — tests/dispatch_integration.rs
 - **R31** — tests/admin_cli_migration.rs, tests/admin_cli_status.rs, tests/diagnostics.rs
-- **R32** — tests/schema_sync.rs
+- **R32** — tests/metrics_response_schema.rs, tests/schema_sync.rs
 - **R33** — tests/integration_test.rs, tests/multi_bot.rs
 - **R34** — tests/secret_redaction.rs
 - **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs
@@ -86,7 +86,7 @@ The following requirements were tagged directly in test source files:
 | R29 | **State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti... | tests/admin_cli_migration.rs | src/admin.rs | Active split-brain detection is deferred to Phase 2; metadata warning is verified. | ✅ covered |
 | R30 | **Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R31 | **Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,... | tests/diagnostics.rs<br>tests/admin_cli_migration.rs<br>tests/admin_cli_status.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
-| R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs | schemas/<br>src/config_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
+| R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs<br>tests/metrics_response_schema.rs | schemas/<br>src/config_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
 | R33 | **Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `... | tests/support/mock_relay.rs<br>tests/support/mock_bunker.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | tests/support/ | — | ✅ covered |
 | R34 | **Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite... | tests/secret_redaction.rs | src/errors.rs<br>src/config.rs<br>src/transport/http.rs | — | ✅ covered |
 | R35 | **Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing. | tests/diagnostics.rs<br>tests/admin_cli_migration.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |

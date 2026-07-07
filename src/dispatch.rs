@@ -329,8 +329,8 @@ impl Dispatch {
     }
 
     /// Return the current diagnostics health snapshot.
-    pub fn diagnostics_snapshot(&self) -> HealthSnapshot {
-        self.diagnostics.snapshot()
+    pub async fn diagnostics_snapshot(&self) -> HealthSnapshot {
+        self.diagnostics.snapshot().await
     }
 
     /// Number of handlers currently registered.
@@ -354,14 +354,15 @@ impl Dispatch {
 
         self.handlers_registered.fetch_sub(1, Ordering::SeqCst);
         self.diagnostics
-            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst))
+            .await;
 
         Ok(())
     }
 
     /// Dispatch an outgoing agent event to all matching handlers.
     pub async fn dispatch_event(&self, event: AgentEvent) -> Result<(), DaemonError> {
-        self.diagnostics.record_event_received();
+        self.diagnostics.record_event_received().await;
 
         let (handlers, npub) = {
             let cm = self.client_manager.read().await;
@@ -375,7 +376,8 @@ impl Dispatch {
         };
 
         self.diagnostics
-            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst))
+            .await;
 
         let expected = handlers.len();
         let event_id = event.event_id.clone();
@@ -402,12 +404,15 @@ impl Dispatch {
             tokio::spawn(async move {
                 let handler_id = handler.id.clone();
                 match handler.send_event(event) {
-                    Ok(()) => diag.record_event_dispatched(),
-                    Err(e) => diag.record_error(
-                        Some("handler_send_failed"),
-                        &format!("handler {handler_id} send failed: {e}"),
-                        None,
-                    ),
+                    Ok(()) => diag.record_event_dispatched().await,
+                    Err(e) => {
+                        diag.record_error(
+                            Some("handler_send_failed"),
+                            &format!("handler {handler_id} send failed: {e}"),
+                            None,
+                        )
+                        .await
+                    }
                 }
             });
         }
@@ -467,11 +472,11 @@ impl Dispatch {
                     {
                         Ok(event_id) => {
                             reply_event_id = Some(event_id.to_hex());
-                            self.diagnostics.record_reply();
+                            self.diagnostics.record_reply().await;
                         }
                         Err(e) => {
                             action_label = "reply_failed";
-                            self.diagnostics.record_reply_send_failed();
+                            self.diagnostics.record_reply_send_failed().await;
                             tracing::error!(
                                 bot_id = %event.bot_id,
                                 recipient = %event.author,
@@ -500,11 +505,11 @@ impl Dispatch {
                     {
                         Ok(event_id) => {
                             reply_event_id = Some(event_id.to_hex());
-                            self.diagnostics.record_send_dm();
+                            self.diagnostics.record_send_dm().await;
                         }
                         Err(e) => {
                             action_label = "send_dm_failed";
-                            self.diagnostics.record_send_dm_failed();
+                            self.diagnostics.record_send_dm_failed().await;
                             tracing::error!(
                                 bot_id = %event.bot_id,
                                 recipient = %event.author,
@@ -575,7 +580,7 @@ impl Dispatch {
     ///
     /// Uses the same payload shape as the `agent.metrics` response.
     pub async fn broadcast_metrics(&self) {
-        let snapshot = self.diagnostics.snapshot();
+        let snapshot = self.diagnostics.snapshot().await;
         let response = MetricsResponse::from(snapshot);
 
         let handlers = {
@@ -755,7 +760,8 @@ impl Dispatch {
 
         self.handlers_registered.fetch_add(1, Ordering::SeqCst);
         self.diagnostics
-            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst));
+            .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst))
+            .await;
 
         Ok(Some(serde_json::to_value(HandlerRegisterResponse {
             handler_id,
@@ -878,7 +884,7 @@ impl Dispatch {
 
         let now = Instant::now();
         if !self.rate_limiter.check(hid, bot_id, now).await {
-            self.diagnostics.record_rate_limited();
+            self.diagnostics.record_rate_limited().await;
             return Err(DaemonError::RateLimited);
         }
 
@@ -921,7 +927,7 @@ impl Dispatch {
 
         let now = Instant::now();
         if !self.rate_limiter.check(hid, bot_id, now).await {
-            self.diagnostics.record_rate_limited();
+            self.diagnostics.record_rate_limited().await;
             return Err(DaemonError::RateLimited);
         }
 
@@ -965,11 +971,11 @@ impl Dispatch {
 
         let now = Instant::now();
         if !self.rate_limiter.check(hid, bot_id, now).await {
-            self.diagnostics.record_rate_limited();
+            self.diagnostics.record_rate_limited().await;
             return Err(DaemonError::RateLimited);
         }
 
-        self.diagnostics.record_error(code, message, data);
+        self.diagnostics.record_error(code, message, data).await;
         Ok(None)
     }
 
@@ -1033,7 +1039,7 @@ impl Dispatch {
     }
 
     async fn handle_metrics(&self) -> Result<Option<Value>, DaemonError> {
-        let snapshot = self.diagnostics.snapshot();
+        let snapshot = self.diagnostics.snapshot().await;
         let response = MetricsResponse::from(snapshot);
         Ok(Some(serde_json::to_value(response)?))
     }
@@ -1224,7 +1230,7 @@ impl Dispatch {
 
         let now = Instant::now();
         if !self.rate_limiter.check(hid, bot_id, now).await {
-            self.diagnostics.record_rate_limited();
+            self.diagnostics.record_rate_limited().await;
             return Err(DaemonError::RateLimited);
         }
 
@@ -1282,7 +1288,7 @@ impl Dispatch {
 
         let now = Instant::now();
         if !self.rate_limiter.check(hid, bot_id, now).await {
-            self.diagnostics.record_rate_limited();
+            self.diagnostics.record_rate_limited().await;
             return Err(DaemonError::RateLimited);
         }
 
@@ -1365,7 +1371,7 @@ impl Dispatch {
         }
         drop(cm);
         self.handlers_registered.store(count, Ordering::SeqCst);
-        self.diagnostics.set_handlers_registered(count);
+        self.diagnostics.set_handlers_registered(count).await;
         Ok(())
     }
 
@@ -1848,7 +1854,7 @@ mod tests {
             .handle_message(req, Some(&handler_id), None)
             .await
             .unwrap();
-        let snapshot = dispatch.diagnostics.snapshot();
+        let snapshot = dispatch.diagnostics.snapshot().await;
         assert!(
             snapshot
                 .errors

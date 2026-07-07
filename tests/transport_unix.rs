@@ -42,6 +42,12 @@ fn echo_handler() -> pacto_bot_api::transport::MessageHandler {
 
 async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn std::error::Error>>
 {
+    setup_dispatch_with_capabilities(vec!["ReadMessages".into(), "SendMessages".into()]).await
+}
+
+async fn setup_dispatch_with_capabilities(
+    capabilities: Vec<String>,
+) -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn std::error::Error>> {
     let keys = nostr::Keys::generate();
     let bot = BotConfig {
         id: "echo-bot".to_string(),
@@ -50,7 +56,7 @@ async fn setup_dispatch() -> Result<(Arc<Dispatch>, tempfile::TempDir), Box<dyn 
             nsec: SecretString::new(keys.secret_key().to_bech32()?.into()),
         },
         relays: vec![],
-        capabilities: vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+        capabilities,
         ..Default::default()
     };
     let config = DaemonConfig {
@@ -852,4 +858,302 @@ async fn send_request(
     stream.read_line(&mut line).await?;
     let parsed = serde_json::from_str::<JsonRpcMessage>(&line)?;
     Ok(parsed)
+}
+
+async fn send_request_on_stream(
+    stream: &mut BufStream<UnixStream>,
+    msg: &JsonRpcMessage,
+) -> Result<JsonRpcMessage, Box<dyn std::error::Error>> {
+    let line = serialize_message(msg)?;
+    stream.write_all(line.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+
+    let mut line = String::new();
+    stream.read_line(&mut line).await?;
+    let parsed = serde_json::from_str::<JsonRpcMessage>(&line)?;
+    Ok(parsed)
+}
+
+fn assert_matches_jsonrpc_result_schema(
+    result: &Value,
+    method_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let catalog: Value = serde_json::from_str(&std::fs::read_to_string("schemas/jsonrpc.json")?)?;
+    let method = catalog["methods"]
+        .as_array()
+        .and_then(|methods| {
+            methods
+                .iter()
+                .find(|m| m["name"].as_str() == Some(method_name))
+        })
+        .ok_or_else(|| format!("method {method_name} not found in schemas/jsonrpc.json"))?;
+    let schema = method["result"]["schema"].clone();
+    assert!(
+        !schema.is_null(),
+        "method {method_name} must declare a result schema"
+    );
+    let validator = jsonschema::validator_for(&schema)?;
+    assert!(
+        validator.validate(result).is_ok(),
+        "result for {method_name} must validate against schemas/jsonrpc.json"
+    );
+    Ok(())
+}
+
+fn assert_matches_version_schema(result: &Value) -> Result<(), Box<dyn std::error::Error>> {
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string("schemas/version.json")?)?;
+    let validator = jsonschema::validator_for(&schema)?;
+    assert!(
+        validator.validate(result).is_ok(),
+        "agent.version result must validate against schemas/version.json"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unix_agent_version_returns_version_and_commit() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let dir = test_socket_dir()?;
+        let path = dir.join("version.sock");
+        let (dispatch, _db_dir) = setup_dispatch().await?;
+        let dispatch_for_handler = dispatch.clone();
+
+        let handler = message_handler(move |msg, connection, handler_id| {
+            let dispatch = dispatch_for_handler.clone();
+            async move {
+                dispatch
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
+                    .await
+            }
+        });
+
+        let transport = UnixTransport::new(&path).with_limits(4096, Duration::from_secs(2), 10);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            transport
+                .run(handler, dummy_disconnect_sender(), shutdown_rx)
+                .await
+        });
+
+        wait_for_connect(&path).await?;
+
+        let response = send_request(
+            &path,
+            &JsonRpcMessage::request(1.into(), "agent.version", None),
+        )
+        .await?;
+        match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => {
+                let obj = r
+                    .as_object()
+                    .ok_or("expected object result for agent.version")?;
+                assert!(obj.contains_key("version"));
+                assert!(obj.contains_key("commit"));
+                assert_eq!(obj["commit"].as_str().map(|s| s.len()), Some(8));
+                assert_matches_version_schema(&r)?;
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("agent.version failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unix_agent_list_handlers_returns_routing_table() -> Result<(), Box<dyn std::error::Error>>
+{
+    #[cfg(unix)]
+    {
+        let dir = test_socket_dir()?;
+        let path = dir.join("list_handlers.sock");
+        let (dispatch, _db_dir) =
+            setup_dispatch_with_capabilities(vec!["ReadMessages".into(), "Admin".into()]).await?;
+        let dispatch_for_handler = dispatch.clone();
+
+        let handler = message_handler(move |msg, connection, handler_id| {
+            let dispatch = dispatch_for_handler.clone();
+            async move {
+                dispatch
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
+                    .await
+            }
+        });
+
+        let transport = UnixTransport::new(&path).with_limits(4096, Duration::from_secs(2), 10);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            transport
+                .run(handler, dummy_disconnect_sender(), shutdown_rx)
+                .await
+        });
+
+        wait_for_connect(&path).await?;
+
+        let mut stream = BufStream::new(UnixStream::connect(&path).await?);
+
+        let register = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["echo-bot"],
+                "event_types": ["dm_received"],
+                "capabilities": ["ReadMessages", "Admin"],
+            })),
+        );
+        let response = send_request_on_stream(&mut stream, &register).await?;
+        let handler_id = match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => r
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or("handler_id missing")?,
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("register failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        };
+
+        let list =
+            JsonRpcMessage::request(2.into(), "agent.list_handlers", Some(serde_json::json!({})));
+        let response = send_request_on_stream(&mut stream, &list).await?;
+        match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => {
+                let obj = r
+                    .as_object()
+                    .ok_or("expected object result for agent.list_handlers")?;
+                let handlers = obj["handlers"]
+                    .as_array()
+                    .ok_or("expected handlers array")?;
+                assert_eq!(handlers.len(), 1);
+                assert_eq!(handlers[0]["handler_id"], handler_id);
+                assert_matches_jsonrpc_result_schema(&r, "agent.list_handlers")?;
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("agent.list_handlers failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unix_agent_unregister_handler_forcibly_removes_handler()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let dir = test_socket_dir()?;
+        let path = dir.join("admin_unregister.sock");
+        let (dispatch, _db_dir) =
+            setup_dispatch_with_capabilities(vec!["ReadMessages".into(), "Admin".into()]).await?;
+        let dispatch_for_handler = dispatch.clone();
+
+        let handler = message_handler(move |msg, connection, handler_id| {
+            let dispatch = dispatch_for_handler.clone();
+            async move {
+                dispatch
+                    .handle_message(msg, handler_id.as_deref(), Some(connection))
+                    .await
+            }
+        });
+
+        let transport = UnixTransport::new(&path).with_limits(4096, Duration::from_secs(2), 10);
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let handle = tokio::spawn(async move {
+            transport
+                .run(handler, dummy_disconnect_sender(), shutdown_rx)
+                .await
+        });
+
+        wait_for_connect(&path).await?;
+
+        let mut admin_stream = BufStream::new(UnixStream::connect(&path).await?);
+        let register = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["echo-bot"],
+                "event_types": ["dm_received"],
+                "capabilities": ["ReadMessages", "Admin"],
+            })),
+        );
+        let response = send_request_on_stream(&mut admin_stream, &register).await?;
+        let _admin_handler_id = match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => r
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or("handler_id missing")?,
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("register failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        };
+
+        let mut target_stream = BufStream::new(UnixStream::connect(&path).await?);
+        let register = JsonRpcMessage::request(
+            2.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": ["echo-bot"],
+                "event_types": ["dm_received"],
+                "capabilities": ["ReadMessages"],
+            })),
+        );
+        let response = send_request_on_stream(&mut target_stream, &register).await?;
+        let target_handler_id = match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => r
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or("handler_id missing")?,
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("register failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        };
+
+        let unregister = JsonRpcMessage::request(
+            3.into(),
+            "agent.unregister_handler",
+            Some(serde_json::json!({ "handler_id": target_handler_id })),
+        );
+        let response = send_request_on_stream(&mut admin_stream, &unregister).await?;
+        match response {
+            JsonRpcMessage::Response {
+                result: Some(r), ..
+            } => {
+                assert_eq!(r, serde_json::json!({ "unregistered": true }));
+                assert_matches_jsonrpc_result_schema(&r, "agent.unregister_handler")?;
+            }
+            JsonRpcMessage::Error { error, .. } => {
+                return Err(format!("agent.unregister_handler failed: {}", error.message).into());
+            }
+            _ => return Err("unexpected response".into()),
+        }
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await?;
+    }
+    Ok(())
 }

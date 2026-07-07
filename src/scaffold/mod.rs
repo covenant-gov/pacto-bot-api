@@ -15,3 +15,6 @@ pub mod resolve;
 pub mod safety;
 pub mod template;
 pub mod update;
+
+#[cfg(test)]
+mod core_path_tests;

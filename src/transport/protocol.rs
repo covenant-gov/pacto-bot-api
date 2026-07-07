@@ -385,9 +385,10 @@ pub struct HandlerReconnectResponse {
 
 /// Typed payload returned by the `agent.metrics` JSON-RPC method.
 ///
-/// Matches `schemas/metrics.json` exactly: the schema declares eight
-/// non-negative integer counters and no required fields, so every field is
-/// optional on the wire. The daemon always populates every counter.
+/// Matches `schemas/metrics.json` exactly: the schema declares non-negative
+/// integer counters for all public counters in [`crate::diagnostics::HealthSnapshot`]
+/// (including reply DM and plain DM counters) and no required fields, so every
+/// field is optional on the wire. The daemon always populates every counter.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricsResponse {
     /// Daemon uptime in seconds.
@@ -417,6 +418,12 @@ pub struct MetricsResponse {
     /// Total reply DMs that failed to publish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_send_failed_total: Option<u64>,
+    /// Total plain DMs attempted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_dm_total: Option<u64>,
+    /// Total plain DMs that failed to publish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_dm_failed_total: Option<u64>,
     /// Events received in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_last_10_min: Option<u64>,
@@ -429,6 +436,12 @@ pub struct MetricsResponse {
     /// Reply DMs that failed to publish in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_send_failed_last_10_min: Option<u64>,
+    /// Plain DMs attempted in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_dm_last_10_min: Option<u64>,
+    /// Plain DMs that failed to publish in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_dm_failed_last_10_min: Option<u64>,
     /// Per-bot health summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bots: Option<Vec<crate::diagnostics::BotHealth>>,
@@ -446,10 +459,14 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             bunker_sign_failures_total: Some(snapshot.bunker_sign_failures_total),
             invalid_events_total: Some(snapshot.invalid_events_total),
             reply_send_failed_total: Some(snapshot.reply_send_failed_total),
+            send_dm_total: Some(snapshot.send_dm_total),
+            send_dm_failed_total: Some(snapshot.send_dm_failed_total),
             events_received_last_10_min: Some(snapshot.recent_counts.events_received),
             events_dispatched_last_10_min: Some(snapshot.recent_counts.events_dispatched),
             replies_last_10_min: Some(snapshot.recent_counts.replies),
             reply_send_failed_last_10_min: Some(snapshot.recent_counts.reply_send_failed),
+            send_dm_last_10_min: Some(snapshot.recent_counts.send_dm),
+            send_dm_failed_last_10_min: Some(snapshot.recent_counts.send_dm_failed),
             bots: Some(snapshot.bots),
         }
     }

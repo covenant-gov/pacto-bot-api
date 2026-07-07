@@ -88,6 +88,16 @@ impl NostrClient {
         Ok(())
     }
 
+    /// Return the URLs of all relays currently configured in the pool.
+    pub async fn relays(&self) -> Vec<String> {
+        self.client
+            .relays()
+            .await
+            .into_keys()
+            .map(|url| url.to_string())
+            .collect()
+    }
+
     /// Register a signer for a bot so that incoming gift wraps addressed to
     /// `pubkey` can be decrypted.
     pub async fn add_signer(&self, pubkey: PublicKey, bot_id: String, signer: Arc<dyn Signer>) {
@@ -473,8 +483,9 @@ impl NostrClient {
         if let Err(e) = event.verify() {
             let message = format!("gift wrap signature verification failed: {e}");
             if let Some(d) = diagnostics {
-                d.record_invalid_event();
-                d.record_error(Some("gift_wrap_verify_failed"), &message, None);
+                d.record_invalid_event().await;
+                d.record_error(Some("gift_wrap_verify_failed"), &message, None)
+                    .await;
             }
             return Err(DaemonError::Nostr(message));
         }
@@ -501,8 +512,9 @@ impl NostrClient {
         if let Err(e) = seal_event.verify() {
             let message = format!("seal signature verification failed: {e}");
             if let Some(d) = diagnostics {
-                d.record_invalid_event();
-                d.record_error(Some("seal_verify_failed"), &message, None);
+                d.record_invalid_event().await;
+                d.record_error(Some("seal_verify_failed"), &message, None)
+                    .await;
             }
             return Err(DaemonError::Nostr(message));
         }
@@ -659,10 +671,19 @@ mod tests {
         "wss://localhost:4242".into()
     }
 
+    fn assert_valid_event_id(event_id: &EventId) {
+        let hex = event_id.to_hex();
+        assert_eq!(hex.len(), 64, "event id should be 64 hex chars");
+        assert_ne!(
+            hex, "0000000000000000000000000000000000000000000000000000000000000000",
+            "event id should not be the zero id"
+        );
+    }
+
     #[tokio::test]
     async fn new_with_empty_relays_works() {
         let client = NostrClient::new(vec![]).await.unwrap();
-        assert!(client.signers.read().await.is_empty());
+        assert_eq!(client.signers.read().await.len(), 0);
     }
 
     #[tokio::test]
@@ -688,7 +709,7 @@ mod tests {
             .send_dm(&sender, &recipient_npub, "hello", None)
             .await
             .unwrap();
-        assert!(!event_id.to_hex().is_empty());
+        assert_valid_event_id(&event_id);
     }
 
     #[tokio::test]
@@ -705,7 +726,7 @@ mod tests {
             .send_dm(&sender, &recipient_npub, "reply", Some(&reply_id.to_hex()))
             .await
             .unwrap();
-        assert!(!event_id.to_hex().is_empty());
+        assert_valid_event_id(&event_id);
     }
 
     #[test]
@@ -777,7 +798,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(!event_id.to_hex().is_empty());
+        assert_valid_event_id(&event_id);
     }
 
     #[tokio::test]
@@ -902,10 +923,12 @@ mod tests {
             .expect("stream should not end")
             .expect_err("decryption should fail for unregistered recipient");
 
-        assert!(
-            err.to_string().contains("no signer registered"),
-            "error should report missing signer: {err}"
-        );
+        let expected = format!("no signer registered for {unregistered_pubkey}");
+        let msg = match err {
+            DaemonError::Nostr(msg) => msg,
+            other => panic!("expected Nostr error, got {other:?}"),
+        };
+        assert_eq!(msg, expected, "error should report missing signer");
     }
 
     #[tokio::test]

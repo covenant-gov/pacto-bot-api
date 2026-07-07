@@ -107,7 +107,11 @@ pub fn render_template(
 }
 
 fn check_cargo_generate() -> Result<(), DaemonError> {
-    let output = Command::new("cargo-generate")
+    check_cargo_generate_path(Path::new("cargo-generate"))
+}
+
+pub(crate) fn check_cargo_generate_path(path: &Path) -> Result<(), DaemonError> {
+    let output = Command::new(path)
         .arg("--version")
         .output()
         .map_err(|e| {

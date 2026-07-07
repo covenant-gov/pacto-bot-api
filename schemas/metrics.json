@@ -29,10 +29,14 @@
     "bunker_sign_failures_total": { "type": "integer", "minimum": 0 },
     "invalid_events_total": { "type": "integer", "minimum": 0 },
     "reply_send_failed_total": { "type": "integer", "minimum": 0 },
+    "send_dm_total": { "type": "integer", "minimum": 0 },
+    "send_dm_failed_total": { "type": "integer", "minimum": 0 },
     "events_received_last_10_min": { "type": "integer", "minimum": 0 },
     "events_dispatched_last_10_min": { "type": "integer", "minimum": 0 },
     "replies_last_10_min": { "type": "integer", "minimum": 0 },
     "reply_send_failed_last_10_min": { "type": "integer", "minimum": 0 },
+    "send_dm_last_10_min": { "type": "integer", "minimum": 0 },
+    "send_dm_failed_last_10_min": { "type": "integer", "minimum": 0 },
     "bots": {
       "type": "array",
       "items": { "$ref": "#/definitions/botHealth" }

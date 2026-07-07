@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, LazyLock, RwLock, RwLockWriteGuard};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{RwLock, RwLockWriteGuard, watch};
 use tokio_tungstenite::connect_async;
 
 /// Number of recent error messages to retain in a snapshot.
@@ -241,6 +241,7 @@ struct Inner {
 #[derive(Debug, Clone)]
 pub struct Diagnostics {
     inner: Arc<RwLock<Inner>>,
+    metrics_tx: watch::Sender<HealthSnapshot>,
 }
 
 impl Default for Diagnostics {
@@ -258,7 +259,7 @@ impl Diagnostics {
                 snapshot: HealthSnapshot::default(),
                 startup_instant: Instant::now(),
                 errors: VecDeque::with_capacity(ERROR_BUFFER_CAPACITY),
-                metrics_tx,
+                metrics_tx: metrics_tx.clone(),
                 received: RecentBuckets::new(60),
                 dispatched: RecentBuckets::new(60),
                 replies: RecentBuckets::new(60),
@@ -266,13 +267,14 @@ impl Diagnostics {
                 send_dm: RecentBuckets::new(60),
                 send_dm_failed: RecentBuckets::new(60),
             })),
+            metrics_tx,
         }
     }
 
     /// Return a current snapshot with `reported_at` and `uptime_seconds`
     /// refreshed.
-    pub fn snapshot(&self) -> HealthSnapshot {
-        let mut inner = write_guard(&self.inner);
+    pub async fn snapshot(&self) -> HealthSnapshot {
+        let mut inner = write_guard(&self.inner).await;
         let now = Utc::now();
         inner.snapshot.reported_at = now;
         inner.snapshot.uptime_seconds = inner.startup_instant.elapsed().as_secs();
@@ -291,18 +293,19 @@ impl Diagnostics {
     }
 
     /// Replace the per-bot health summaries.
-    pub fn set_bots(&self, bots: Vec<BotHealth>) {
-        self.with_snapshot(|snapshot| snapshot.bots = bots);
+    pub async fn set_bots(&self, bots: Vec<BotHealth>) {
+        self.with_snapshot(|snapshot| snapshot.bots = bots).await;
     }
 
     /// Set the daemon lifecycle status.
-    pub fn set_status(&self, status: DaemonStatus) {
-        self.with_snapshot(|snapshot| snapshot.status = status);
+    pub async fn set_status(&self, status: DaemonStatus) {
+        self.with_snapshot(|snapshot| snapshot.status = status)
+            .await;
     }
 
     /// Increment the counter for events received from Nostr relays.
-    pub fn record_event_received(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_event_received(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.snapshot.events_received_total += 1;
         inner.received.record();
         let snap = inner.snapshot.clone();
@@ -310,8 +313,8 @@ impl Diagnostics {
     }
 
     /// Increment the counter for events dispatched to registered handlers.
-    pub fn record_event_dispatched(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_event_dispatched(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.snapshot.events_dispatched_total += 1;
         inner.dispatched.record();
         let snap = inner.snapshot.clone();
@@ -319,36 +322,40 @@ impl Diagnostics {
     }
 
     /// Increment the counter for rate-limited events.
-    pub fn record_rate_limited(&self) {
-        self.with_snapshot(|snapshot| snapshot.rate_limited_total += 1);
+    pub async fn record_rate_limited(&self) {
+        self.with_snapshot(|snapshot| snapshot.rate_limited_total += 1)
+            .await;
     }
 
     /// Increment the counter for relay reconnections.
-    pub fn record_relay_reconnect(&self) {
-        self.with_snapshot(|snapshot| snapshot.relay_reconnects_total += 1);
+    pub async fn record_relay_reconnect(&self) {
+        self.with_snapshot(|snapshot| snapshot.relay_reconnects_total += 1)
+            .await;
     }
 
     /// Increment the counter for bunker signing failures.
-    pub fn record_bunker_sign_failure(&self) {
-        self.with_snapshot(|snapshot| snapshot.bunker_sign_failures_total += 1);
+    pub async fn record_bunker_sign_failure(&self) {
+        self.with_snapshot(|snapshot| snapshot.bunker_sign_failures_total += 1)
+            .await;
     }
 
     /// Increment the counter for events rejected due to failed verification.
-    pub fn record_invalid_event(&self) {
-        self.with_snapshot(|snapshot| snapshot.invalid_events_total += 1);
+    pub async fn record_invalid_event(&self) {
+        self.with_snapshot(|snapshot| snapshot.invalid_events_total += 1)
+            .await;
     }
 
     /// Record that a reply DM was attempted.
-    pub fn record_reply(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_reply(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.replies.record();
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for reply DMs that failed to publish.
-    pub fn record_reply_send_failed(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_reply_send_failed(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.snapshot.reply_send_failed_total += 1;
         inner.reply_failed.record();
         let snap = inner.snapshot.clone();
@@ -356,8 +363,8 @@ impl Diagnostics {
     }
 
     /// Record that a plain DM was attempted.
-    pub fn record_send_dm(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_send_dm(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.snapshot.send_dm_total += 1;
         inner.send_dm.record();
         let snap = inner.snapshot.clone();
@@ -365,8 +372,8 @@ impl Diagnostics {
     }
 
     /// Increment the counter for plain DMs that failed to publish.
-    pub fn record_send_dm_failed(&self) {
-        let mut inner = write_guard(&self.inner);
+    pub async fn record_send_dm_failed(&self) {
+        let mut inner = write_guard(&self.inner).await;
         inner.snapshot.send_dm_failed_total += 1;
         inner.send_dm_failed.record();
         let snap = inner.snapshot.clone();
@@ -374,8 +381,9 @@ impl Diagnostics {
     }
 
     /// Set the number of registered handlers.
-    pub fn set_handlers_registered(&self, count: u64) {
-        self.with_snapshot(|snapshot| snapshot.handlers_registered = count);
+    pub async fn set_handlers_registered(&self, count: u64) {
+        self.with_snapshot(|snapshot| snapshot.handlers_registered = count)
+            .await;
     }
 
     /// Record a recent error message.
@@ -383,7 +391,7 @@ impl Diagnostics {
     /// The message and optional structured `data` are redacted before storage
     /// so that secrets (`nsec1...`, query parameters such as `secret=...`,
     /// `token=...`) never appear in snapshots or on-disk reports.
-    pub fn record_error(&self, code: Option<&str>, message: &str, data: Option<&Value>) {
+    pub async fn record_error(&self, code: Option<&str>, message: &str, data: Option<&Value>) {
         let code = code.unwrap_or("unknown").to_string();
         let redacted_message = redact_secrets(message);
         let redacted_data =
@@ -393,7 +401,7 @@ impl Diagnostics {
             message: redacted_message,
             data: redacted_data,
         };
-        let mut inner = write_guard(&self.inner);
+        let mut inner = write_guard(&self.inner).await;
         if inner.errors.len() >= ERROR_BUFFER_CAPACITY {
             inner.errors.pop_front();
         }
@@ -404,7 +412,7 @@ impl Diagnostics {
     /// Atomically write the current snapshot to
     /// `<data_dir>/reports/latest.json`.
     pub async fn flush_report(&self, data_dir: &Path) -> Result<(), DaemonError> {
-        let snapshot = self.snapshot();
+        let snapshot = self.snapshot().await;
         let reports_dir = data_dir.join("reports");
         tokio::fs::create_dir_all(&reports_dir).await?;
 
@@ -456,15 +464,14 @@ impl Diagnostics {
     /// The returned receiver is notified every time the daemon updates the
     /// health snapshot, including periodic metrics broadcasts.
     pub fn subscribe_metrics(&self) -> watch::Receiver<HealthSnapshot> {
-        let inner = read_guard(&self.inner);
-        inner.metrics_tx.subscribe()
+        self.metrics_tx.subscribe()
     }
 
-    fn with_snapshot<F>(&self, f: F)
+    async fn with_snapshot<F>(&self, f: F)
     where
         F: FnOnce(&mut HealthSnapshot),
     {
-        let mut inner = write_guard(&self.inner);
+        let mut inner = write_guard(&self.inner).await;
         f(&mut inner.snapshot);
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap);
@@ -587,18 +594,8 @@ pub fn parse_bunker_relay(uri: &str) -> Result<String, DaemonError> {
     Ok(relay)
 }
 
-fn write_guard<'a, T>(lock: &'a RwLock<T>) -> RwLockWriteGuard<'a, T> {
-    match lock.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
-fn read_guard<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockReadGuard<'a, T> {
-    match lock.read() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+async fn write_guard<'a, T>(lock: &'a RwLock<T>) -> RwLockWriteGuard<'a, T> {
+    lock.write().await
 }
 
 /// Precompiled redaction regexes, built once per process.
@@ -775,10 +772,10 @@ fn redact_authorization_header(input: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_snapshot_initializes_counters_to_zero() {
+    #[tokio::test]
+    async fn default_snapshot_initializes_counters_to_zero() {
         let diag = Diagnostics::new();
-        let snap = diag.snapshot();
+        let snap = diag.snapshot().await;
         assert_eq!(snap.status, DaemonStatus::Initializing);
         assert_eq!(snap.events_received_total, 0);
         assert_eq!(snap.events_dispatched_total, 0);
@@ -789,19 +786,19 @@ mod tests {
         assert!(snap.errors.is_empty());
     }
 
-    #[test]
-    fn counters_increment_independently() {
+    #[tokio::test]
+    async fn counters_increment_independently() {
         let diag = Diagnostics::new();
-        diag.record_event_received();
-        diag.record_event_received();
-        diag.record_event_dispatched();
-        diag.record_rate_limited();
-        diag.record_relay_reconnect();
-        diag.record_bunker_sign_failure();
-        diag.record_bunker_sign_failure();
-        diag.set_handlers_registered(5);
+        diag.record_event_received().await;
+        diag.record_event_received().await;
+        diag.record_event_dispatched().await;
+        diag.record_rate_limited().await;
+        diag.record_relay_reconnect().await;
+        diag.record_bunker_sign_failure().await;
+        diag.record_bunker_sign_failure().await;
+        diag.set_handlers_registered(5).await;
 
-        let snap = diag.snapshot();
+        let snap = diag.snapshot().await;
         assert_eq!(snap.events_received_total, 2);
         assert_eq!(snap.events_dispatched_total, 1);
         assert_eq!(snap.rate_limited_total, 1);
@@ -810,23 +807,23 @@ mod tests {
         assert_eq!(snap.handlers_registered, 5);
     }
 
-    #[test]
-    fn status_transitions_are_reflected() {
+    #[tokio::test]
+    async fn status_transitions_are_reflected() {
         let diag = Diagnostics::new();
-        assert_eq!(diag.snapshot().status, DaemonStatus::Initializing);
+        assert_eq!(diag.snapshot().await.status, DaemonStatus::Initializing);
 
-        diag.set_status(DaemonStatus::Ready);
-        assert_eq!(diag.snapshot().status, DaemonStatus::Ready);
+        diag.set_status(DaemonStatus::Ready).await;
+        assert_eq!(diag.snapshot().await.status, DaemonStatus::Ready);
 
-        diag.set_status(DaemonStatus::ShuttingDown);
-        assert_eq!(diag.snapshot().status, DaemonStatus::ShuttingDown);
+        diag.set_status(DaemonStatus::ShuttingDown).await;
+        assert_eq!(diag.snapshot().await.status, DaemonStatus::ShuttingDown);
 
-        diag.set_status(DaemonStatus::Stopped);
-        assert_eq!(diag.snapshot().status, DaemonStatus::Stopped);
+        diag.set_status(DaemonStatus::Stopped).await;
+        assert_eq!(diag.snapshot().await.status, DaemonStatus::Stopped);
     }
 
-    #[test]
-    fn bots_are_stored_in_snapshot() {
+    #[tokio::test]
+    async fn bots_are_stored_in_snapshot() {
         let diag = Diagnostics::new();
         diag.set_bots(vec![
             BotHealth {
@@ -851,29 +848,32 @@ mod tests {
                 signer_backend: "nsec".into(),
                 error: None,
             },
-        ]);
+        ])
+        .await;
 
-        let snap = diag.snapshot();
+        let snap = diag.snapshot().await;
         assert_eq!(snap.bots.len(), 2);
         assert_eq!(snap.bots[0].bot_id, "bot-a");
         assert_eq!(snap.bots[1].relay_count, 0);
     }
 
-    #[test]
-    fn errors_are_redacted_in_snapshot() {
+    #[tokio::test]
+    async fn errors_are_redacted_in_snapshot() {
         let diag = Diagnostics::new();
         diag.record_error(
             Some("sign_failed"),
             "signing failed for nsec1deadbeef1234 on bot-a",
             None,
-        );
+        )
+        .await;
         diag.record_error(
             None,
             "bunker uri: bunker://relay.example?secret=supersecret&token=abc123",
             None,
-        );
+        )
+        .await;
 
-        let snap = diag.snapshot();
+        let snap = diag.snapshot().await;
         assert_eq!(snap.errors.len(), 2);
         let joined = snap
             .errors
@@ -887,13 +887,13 @@ mod tests {
         assert!(joined.contains("[REDACTED]"));
     }
 
-    #[test]
-    fn error_buffer_drops_oldest_messages() {
+    #[tokio::test]
+    async fn error_buffer_drops_oldest_messages() {
         let diag = Diagnostics::new();
         for i in 0..ERROR_BUFFER_CAPACITY + 5 {
-            diag.record_error(None, &format!("error {i}"), None);
+            diag.record_error(None, &format!("error {i}"), None).await;
         }
-        let snap = diag.snapshot();
+        let snap = diag.snapshot().await;
         assert_eq!(snap.errors.len(), ERROR_BUFFER_CAPACITY);
         assert!(snap.errors[0].message.contains("error 5"));
         let last = snap.errors.iter().last();
@@ -907,8 +907,8 @@ mod tests {
     async fn flush_report_round_trips() -> Result<(), DaemonError> {
         let tmp = tempfile::tempdir()?;
         let diag = Diagnostics::new();
-        diag.set_status(DaemonStatus::Ready);
-        diag.record_event_received();
+        diag.set_status(DaemonStatus::Ready).await;
+        diag.record_event_received().await;
         diag.set_bots(vec![BotHealth {
             bot_id: "bot-x".into(),
             npub: "npub1x".into(),
@@ -917,7 +917,8 @@ mod tests {
             bunker_connected: true,
             signer_backend: "bunker_remote".into(),
             error: None,
-        }]);
+        }])
+        .await;
 
         diag.flush_report(tmp.path()).await?;
 
@@ -946,8 +947,10 @@ mod tests {
     async fn flushed_report_contains_no_secrets() -> Result<(), DaemonError> {
         let tmp = tempfile::tempdir()?;
         let diag = Diagnostics::new();
-        diag.record_error(None, "leaked nsec1verysecretandlonghexstring", None);
-        diag.record_error(None, "bunker secret=shh! token=do-not-leak", None);
+        diag.record_error(None, "leaked nsec1verysecretandlonghexstring", None)
+            .await;
+        diag.record_error(None, "bunker secret=shh! token=do-not-leak", None)
+            .await;
         diag.flush_report(tmp.path()).await?;
 
         let report_path = tmp.path().join("reports").join("latest.json");
@@ -979,7 +982,7 @@ mod tests {
             let diag = diag.clone();
             let dir = tmp.path().to_path_buf();
             flushes.push(tokio::spawn(async move {
-                diag.set_handlers_registered(i);
+                diag.set_handlers_registered(i).await;
                 diag.flush_report(&dir).await.unwrap();
             }));
         }

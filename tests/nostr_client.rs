@@ -33,6 +33,15 @@ fn dummy_relay() -> String {
     "wss://localhost:4242".into()
 }
 
+fn assert_valid_event_id(event_id: &EventId) {
+    let hex = event_id.to_hex();
+    assert_eq!(hex.len(), 64, "event id should be 64 hex chars");
+    assert_ne!(
+        hex, "0000000000000000000000000000000000000000000000000000000000000000",
+        "event id should not be the zero id"
+    );
+}
+
 #[tokio::test]
 async fn new_adds_relays_and_connects() {
     let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
@@ -41,6 +50,14 @@ async fn new_adds_relays_and_connects() {
         .add_relays(&[dummy_relay(), "".to_string()])
         .await
         .unwrap();
+
+    let relays = client.relays().await;
+    assert_eq!(
+        relays.len(),
+        1,
+        "relay pool should contain exactly one relay"
+    );
+    assert_eq!(relays[0], dummy_relay());
 }
 
 #[tokio::test]
@@ -69,7 +86,7 @@ async fn send_dm_returns_event_id() {
         .send_dm(&sender, &recipient_npub, "hello integration", None)
         .await
         .unwrap();
-    assert!(!event_id.to_hex().is_empty());
+    assert_valid_event_id(&event_id);
 }
 
 #[tokio::test]
@@ -84,9 +101,24 @@ async fn outgoing_gift_wrap_has_kind_1059_and_p_tag() {
         .send_dm(&sender, &recipient_npub, "wrapped", None)
         .await
         .unwrap();
-    assert_ne!(
-        event_id.to_hex(),
-        "0000000000000000000000000000000000000000000000000000000000000000"
+    assert_valid_event_id(&event_id);
+
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(2))
+        .await
+        .unwrap();
+    let gift = events
+        .into_iter()
+        .find(|e| e.kind == Kind::GiftWrap)
+        .expect("gift wrap should be published");
+
+    assert_eq!(gift.kind, Kind::GiftWrap);
+    let p_tags: Vec<_> = gift.tags.public_keys().collect();
+    assert_eq!(p_tags.len(), 1, "gift wrap should have exactly one p tag");
+    assert_eq!(
+        p_tags[0],
+        &recipient.public_key(),
+        "gift wrap should be addressed to the recipient"
     );
 
     relay.stop().await;
@@ -120,7 +152,12 @@ async fn send_dm_reply_gift_wrap_contains_ms_tag_and_reply_marker() {
     let gift = events
         .into_iter()
         .find(|e| e.kind == Kind::GiftWrap)
-        .unwrap();
+        .expect("gift wrap should be published");
+
+    assert_eq!(gift.kind, Kind::GiftWrap);
+    let p_tags: Vec<_> = gift.tags.public_keys().collect();
+    assert_eq!(p_tags.len(), 1, "gift wrap should have exactly one p tag");
+    assert_eq!(p_tags[0], &recipient.public_key());
 
     let seal_json = recipient
         .nip44_decrypt(&gift.pubkey, &gift.content)
@@ -174,7 +211,12 @@ async fn send_dm_gift_wrap_contains_ms_tag_without_reply() {
     let gift = events
         .into_iter()
         .find(|e| e.kind == Kind::GiftWrap)
-        .unwrap();
+        .expect("gift wrap should be published");
+
+    assert_eq!(gift.kind, Kind::GiftWrap);
+    let p_tags: Vec<_> = gift.tags.public_keys().collect();
+    assert_eq!(p_tags.len(), 1, "gift wrap should have exactly one p tag");
+    assert_eq!(p_tags[0], &recipient.public_key());
 
     let seal_json = recipient
         .nip44_decrypt(&gift.pubkey, &gift.content)
@@ -252,8 +294,12 @@ async fn wrong_npub_gift_wrap_returns_error() {
     .unwrap();
 
     let err = client.decrypt_event(&event).await.unwrap_err();
-    assert!(matches!(err, DaemonError::Nostr(_)));
-    assert!(err.to_string().contains("no signer registered"));
+    let expected = format!("no signer registered for {}", bot_keys.public_key());
+    let msg = match err {
+        DaemonError::Nostr(msg) => msg,
+        other => panic!("expected DaemonError::Nostr, got {other:?}"),
+    };
+    assert_eq!(msg, expected);
 }
 
 #[tokio::test]
@@ -274,7 +320,7 @@ async fn set_profile_publishes_kind_0_metadata_event() -> Result<(), Box<dyn std
             Some("https://example.com/avatar.png"),
         )
         .await?;
-    assert!(!event_id.to_hex().is_empty());
+    assert_valid_event_id(&event_id);
 
     let events = relay
         .wait_for_event(
@@ -287,6 +333,10 @@ async fn set_profile_publishes_kind_0_metadata_event() -> Result<(), Box<dyn std
         .find(|e| e.kind == Kind::Metadata && e.pubkey == pubkey)
         .ok_or("metadata event not found")?;
 
+    assert_eq!(
+        event.id, event_id,
+        "published event id should match returned id"
+    );
     assert_eq!(event.kind, Kind::Metadata);
     assert!(event.verify_signature());
 
@@ -400,21 +450,21 @@ async fn spoofed_gift_wrap_is_rejected_and_recorded() {
     let spoofed = event_with_signature(&valid_event, bogus_signature());
 
     let err = client.decrypt_event(&spoofed).await.unwrap_err();
-    assert!(matches!(err, DaemonError::Nostr(_)));
-    assert!(
-        err.to_string()
-            .contains("gift wrap signature verification failed")
+    let expected = format!(
+        "gift wrap signature verification failed: {}",
+        spoofed.verify().expect_err("bogus signature should fail")
     );
+    let msg = match err {
+        DaemonError::Nostr(msg) => msg,
+        other => panic!("expected DaemonError::Nostr, got {other:?}"),
+    };
+    assert_eq!(msg, expected);
 
-    let snap = diagnostics.snapshot();
+    let snap = diagnostics.snapshot().await;
     assert_eq!(snap.invalid_events_total, 1);
-    assert!(
-        snap.errors.iter().any(|e| e
-            .message
-            .contains("gift wrap signature verification failed")),
-        "expected verification error in diagnostics, got {:?}",
-        snap.errors
-    );
+    assert_eq!(snap.errors.len(), 1);
+    assert_eq!(snap.errors[0].code, "gift_wrap_verify_failed");
+    assert_eq!(snap.errors[0].message, expected);
 }
 
 #[tokio::test]
@@ -468,19 +518,21 @@ async fn malformed_seal_is_rejected_and_recorded() {
     let malformed_gift = gift.sign_with_keys(&ephemeral).unwrap();
 
     let err = client.decrypt_event(&malformed_gift).await.unwrap_err();
-    assert!(matches!(err, DaemonError::Nostr(_)));
-    assert!(
-        err.to_string()
-            .contains("seal signature verification failed")
+    let expected = format!(
+        "seal signature verification failed: {}",
+        tampered_seal
+            .verify()
+            .expect_err("bogus seal signature should fail")
     );
+    let msg = match err {
+        DaemonError::Nostr(msg) => msg,
+        other => panic!("expected DaemonError::Nostr, got {other:?}"),
+    };
+    assert_eq!(msg, expected);
 
-    let snap = diagnostics.snapshot();
+    let snap = diagnostics.snapshot().await;
     assert_eq!(snap.invalid_events_total, 1);
-    assert!(
-        snap.errors
-            .iter()
-            .any(|e| e.message.contains("seal signature verification failed")),
-        "expected seal verification error in diagnostics, got {:?}",
-        snap.errors
-    );
+    assert_eq!(snap.errors.len(), 1);
+    assert_eq!(snap.errors[0].code, "seal_verify_failed");
+    assert_eq!(snap.errors[0].message, expected);
 }

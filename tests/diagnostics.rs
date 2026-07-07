@@ -18,20 +18,20 @@ fn read_latest_report(data_dir: &Path) -> Result<String, Box<dyn std::error::Err
     Ok(std::fs::read_to_string(&path)?)
 }
 
-#[test]
-fn counter_increments() {
+#[tokio::test]
+async fn counter_increments() {
     let diag = Diagnostics::new();
-    diag.record_event_received();
-    diag.record_event_received();
-    diag.record_event_dispatched();
-    diag.record_rate_limited();
-    diag.record_relay_reconnect();
-    diag.record_bunker_sign_failure();
-    diag.record_bunker_sign_failure();
-    diag.record_invalid_event();
-    diag.set_handlers_registered(3);
+    diag.record_event_received().await;
+    diag.record_event_received().await;
+    diag.record_event_dispatched().await;
+    diag.record_rate_limited().await;
+    diag.record_relay_reconnect().await;
+    diag.record_bunker_sign_failure().await;
+    diag.record_bunker_sign_failure().await;
+    diag.record_invalid_event().await;
+    diag.set_handlers_registered(3).await;
 
-    let snap = diag.snapshot();
+    let snap = diag.snapshot().await;
     assert_eq!(snap.events_received_total, 2);
     assert_eq!(snap.events_dispatched_total, 1);
     assert_eq!(snap.rate_limited_total, 1);
@@ -41,19 +41,19 @@ fn counter_increments() {
     assert_eq!(snap.handlers_registered, 3);
 }
 
-#[test]
-fn status_transitions() {
+#[tokio::test]
+async fn status_transitions() {
     let diag = Diagnostics::new();
-    assert_eq!(diag.snapshot().status, DaemonStatus::Initializing);
+    assert_eq!(diag.snapshot().await.status, DaemonStatus::Initializing);
 
-    diag.set_status(DaemonStatus::Ready);
-    assert_eq!(diag.snapshot().status, DaemonStatus::Ready);
+    diag.set_status(DaemonStatus::Ready).await;
+    assert_eq!(diag.snapshot().await.status, DaemonStatus::Ready);
 
-    diag.set_status(DaemonStatus::ShuttingDown);
-    assert_eq!(diag.snapshot().status, DaemonStatus::ShuttingDown);
+    diag.set_status(DaemonStatus::ShuttingDown).await;
+    assert_eq!(diag.snapshot().await.status, DaemonStatus::ShuttingDown);
 
-    diag.set_status(DaemonStatus::Stopped);
-    assert_eq!(diag.snapshot().status, DaemonStatus::Stopped);
+    diag.set_status(DaemonStatus::Stopped).await;
+    assert_eq!(diag.snapshot().await.status, DaemonStatus::Stopped);
 }
 
 #[tokio::test]
@@ -61,9 +61,9 @@ async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Erro
     let tmp = common::tempdir()?;
     let diag = Diagnostics::new();
 
-    diag.set_status(DaemonStatus::Ready);
-    diag.record_event_received();
-    diag.record_event_dispatched();
+    diag.set_status(DaemonStatus::Ready).await;
+    diag.record_event_received().await;
+    diag.record_event_dispatched().await;
     diag.set_bots(vec![
         BotHealth {
             bot_id: "bot-one".into(),
@@ -83,7 +83,8 @@ async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Erro
             signer_backend: "nsec".into(),
             error: None,
         },
-    ]);
+    ])
+    .await;
 
     diag.flush_report(tmp.path()).await?;
 
@@ -109,12 +110,14 @@ async fn flushed_report_contains_no_secrets() -> Result<(), Box<dyn std::error::
         None,
         "bunker signer rejected nsec1deadbeefcafebabe01020304050607",
         None,
-    );
+    )
+    .await;
     diag.record_error(
         None,
         "token=super-secret-token and secret=do-not-share",
         None,
-    );
+    )
+    .await;
     diag.flush_report(tmp.path()).await?;
 
     let contents = read_latest_report(tmp.path())?;
@@ -140,17 +143,17 @@ async fn report_directory_is_created_lazily() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
-#[test]
-fn metrics_response_matches_schema_fields() {
+#[tokio::test]
+async fn metrics_response_matches_schema_fields() {
     let diag = Diagnostics::new();
-    diag.record_event_received();
-    diag.record_event_dispatched();
-    diag.record_rate_limited();
-    diag.record_relay_reconnect();
-    diag.record_bunker_sign_failure();
-    diag.record_bunker_sign_failure();
-    diag.record_invalid_event();
-    diag.set_handlers_registered(5);
+    diag.record_event_received().await;
+    diag.record_event_dispatched().await;
+    diag.record_rate_limited().await;
+    diag.record_relay_reconnect().await;
+    diag.record_bunker_sign_failure().await;
+    diag.record_bunker_sign_failure().await;
+    diag.record_invalid_event().await;
+    diag.set_handlers_registered(5).await;
     diag.set_bots(vec![BotHealth {
         bot_id: "bot-one".into(),
         npub: "npub1one".into(),
@@ -159,9 +162,10 @@ fn metrics_response_matches_schema_fields() {
         bunker_connected: true,
         signer_backend: "bunker_local".into(),
         error: None,
-    }]);
+    }])
+    .await;
 
-    let snap = diag.snapshot();
+    let snap = diag.snapshot().await;
     let metrics = MetricsResponse::from(snap.clone());
 
     assert_eq!(metrics.uptime_seconds, Some(snap.uptime_seconds));
@@ -191,13 +195,13 @@ fn metrics_response_matches_schema_fields() {
     assert!(!object.contains_key("reported_at"));
 }
 
-#[test]
-fn metrics_response_validates_against_schema() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn metrics_response_validates_against_schema() -> Result<(), Box<dyn std::error::Error>> {
     let diag = Diagnostics::new();
-    diag.record_event_received();
-    diag.set_handlers_registered(2);
+    diag.record_event_received().await;
+    diag.set_handlers_registered(2).await;
 
-    let metrics = MetricsResponse::from(diag.snapshot());
+    let metrics = MetricsResponse::from(diag.snapshot().await);
     let value = serde_json::to_value(&metrics)?;
 
     let schema: serde_json::Value =
@@ -211,17 +215,18 @@ fn metrics_response_validates_against_schema() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[test]
-fn error_record_preserves_code_and_redacts_data() {
+#[tokio::test]
+async fn error_record_preserves_code_and_redacts_data() {
     let diag = Diagnostics::new();
     let data = json!({
         "context": "dm parsing",
         "secret": "nsec1do-not-leak-this",
     });
 
-    diag.record_error(Some("E_DM_PARSE"), "handler error", Some(&data));
+    diag.record_error(Some("E_DM_PARSE"), "handler error", Some(&data))
+        .await;
 
-    let snap = diag.snapshot();
+    let snap = diag.snapshot().await;
     let record: &ErrorRecord = snap
         .errors
         .iter()
@@ -262,8 +267,8 @@ fn bot_health_reflects_bot_state() {
     assert!(health.error.is_none());
 }
 
-#[test]
-fn client_manager_populates_diagnostics_bots() {
+#[tokio::test]
+async fn client_manager_populates_diagnostics_bots() {
     let keys = nostr::Keys::generate();
     let npub = keys.public_key().to_bech32().unwrap();
     let nsec = keys.secret_key().to_bech32().unwrap();
@@ -281,21 +286,19 @@ fn client_manager_populates_diagnostics_bots() {
         }],
     };
 
-    let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let data_dir = tempfile::tempdir().unwrap();
-        ClientManager::new(
-            data_dir.path(),
-            config,
-            NostrClient::new(vec![]).await.unwrap(),
-        )
-        .await
-        .unwrap()
-    });
+    let data_dir = tempfile::tempdir().unwrap();
+    let manager = ClientManager::new(
+        data_dir.path(),
+        config,
+        NostrClient::new(vec![]).await.unwrap(),
+    )
+    .await
+    .unwrap();
 
     let diag = Diagnostics::new();
-    manager.update_diagnostics(&diag);
+    manager.update_diagnostics(&diag).await;
 
-    let snap = diag.snapshot();
+    let snap = diag.snapshot().await;
     assert_eq!(snap.bots.len(), 1);
     assert_eq!(snap.bots[0].bot_id, "diag-bot");
     assert_eq!(snap.bots[0].signer_backend, "nsec");

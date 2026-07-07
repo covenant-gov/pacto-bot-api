@@ -107,6 +107,11 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(config: ResolverConfig) -> Result<Self, DaemonError> {
         let cache = Cache::new()?;
+        Self::with_cache(config, cache)
+    }
+
+    /// Build a resolver with an explicit cache, used by tests.
+    pub(crate) fn with_cache(config: ResolverConfig, cache: Cache) -> Result<Self, DaemonError> {
         let admin_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map_err(|e| DaemonError::Config(format!("invalid package version: {e}")))?;
         Ok(Self {
