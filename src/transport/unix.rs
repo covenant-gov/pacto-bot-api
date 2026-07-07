@@ -312,6 +312,13 @@ async fn handle_connection(
                 return Ok(());
             }
 
+            // Strip the trailing newline before applying the frame-size limit so
+            // that a message whose body is exactly `max_frame_size` bytes is not
+            // rejected because of the delimiter.
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+
             if buf.len() > max_frame_size {
                 // Oversized frame: tell the peer why the connection is being
                 // dropped, then close per R3.
@@ -335,10 +342,6 @@ async fn handle_connection(
                 return Ok(());
             }
 
-            // Strip the trailing newline for parsing.
-            if buf.last() == Some(&b'\n') {
-                buf.pop();
-            }
             if buf.is_empty() {
                 continue;
             }
@@ -627,5 +630,118 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    fn exact_size_request(size: usize) -> Vec<u8> {
+        let base = serialize_message(&JsonRpcMessage::request(
+            1.into(),
+            "x",
+            Some(serde_json::json!({"pad": ""})),
+        ))
+        .unwrap();
+        assert!(
+            size >= base.len(),
+            "test setup: requested size {size} is smaller than base request length {}",
+            base.len()
+        );
+        let pad_len = size - base.len();
+        let request = serialize_message(&JsonRpcMessage::request(
+            1.into(),
+            "x",
+            Some(serde_json::json!({"pad": "A".repeat(pad_len)})),
+        ))
+        .unwrap();
+        assert_eq!(
+            request.len(),
+            size,
+            "test setup: padded request length mismatch"
+        );
+        request.into_bytes()
+    }
+
+    #[tokio::test]
+    async fn unix_transport_accepts_exact_max_frame_size() {
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
+        let max_frame_size = 64;
+
+        let handle = tokio::spawn(async move {
+            handle_connection(
+                server,
+                noop_handler(),
+                disconnect_tx,
+                max_frame_size,
+                Duration::from_secs(5),
+            )
+            .await
+        });
+
+        let request = exact_size_request(max_frame_size);
+        assert_eq!(request.len(), max_frame_size);
+
+        client.write_all(&request).await.unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.flush().await.unwrap();
+        drop(client);
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.is_ok(),
+            "expected exact-size frame to be accepted without disconnect"
+        );
+
+        let final_id = disconnect_rx.recv().await;
+        assert_eq!(final_id, Some(None));
+    }
+
+    #[tokio::test]
+    async fn unix_transport_rejects_oversized_frame() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel(1);
+        let max_frame_size = 32;
+
+        let handle = tokio::spawn(async move {
+            handle_connection(
+                server,
+                noop_handler(),
+                disconnect_tx,
+                max_frame_size,
+                Duration::from_secs(5),
+            )
+            .await
+        });
+
+        let mut client = tokio::io::BufStream::new(client);
+        let payload = vec![b'x'; max_frame_size + 1];
+        client.write_all(&payload).await.unwrap();
+        client.write_all(b"\n").await.unwrap();
+        client.flush().await.unwrap();
+
+        let mut buf = Vec::new();
+        let n = client.read_until(b'\n', &mut buf).await.unwrap();
+        assert_ne!(
+            n, 0,
+            "expected an error response before the connection closed"
+        );
+
+        let response: JsonRpcMessage = serde_json::from_slice(&buf).unwrap();
+        let error = response
+            .as_error()
+            .expect("expected a JSON-RPC error response");
+        assert_eq!(error.code, -32600);
+        assert!(
+            error.message.contains("frame size") && error.message.contains("exceeds maximum"),
+            "unexpected error message: {}",
+            error.message
+        );
+
+        buf.clear();
+        let n = client.read_until(b'\n', &mut buf).await.unwrap();
+        assert_eq!(n, 0, "connection should be closed after oversized frame");
+
+        let _ = handle.await;
     }
 }
