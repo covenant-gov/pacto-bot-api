@@ -550,9 +550,11 @@
       "id": "R32",
       "summary": "**Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio...",
       "tests": [
-        "tests/schema_sync.rs"
+        "tests/schema_sync.rs",
+        "tests/metrics_response_schema.rs"
       ],
       "parsed_tests": [
+        "tests/metrics_response_schema.rs",
         "tests/schema_sync.rs"
       ],
       "sources": [
