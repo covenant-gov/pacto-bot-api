@@ -1,5 +1,6 @@
 //! Project generation logic for the scaffold command.
 
+use crate::scaffold::cache::Cache;
 use crate::scaffold::lock::{ScaffoldLock, ScaffoldSettings, lock_path, write_lock};
 use crate::scaffold::merge::{MergeContext, merge_rendered};
 use crate::scaffold::render::render_template;
@@ -47,6 +48,14 @@ pub struct ScaffoldRequest {
 /// This is the entry point used by both `pacto-bot-admin new --scaffold` and
 /// `pacto-bot-admin scaffold`.
 pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
+    run_scaffold_with_cache(request, None).await
+}
+
+/// Generate project files with an explicit cache, used by tests.
+pub(crate) async fn run_scaffold_with_cache(
+    request: ScaffoldRequest,
+    cache: Option<Cache>,
+) -> Result<(), DaemonError> {
     validate_commands(&request.commands)?;
 
     let config = ResolverConfig {
@@ -57,7 +66,10 @@ pub async fn run_scaffold(request: ScaffoldRequest) -> Result<(), DaemonError> {
         refresh: request.refresh,
     };
 
-    let resolver = Resolver::new(config)?;
+    let resolver = match cache {
+        Some(c) => Resolver::with_cache(config, c)?,
+        None => Resolver::new(config)?,
+    };
     let bundle = resolver.resolve().await?;
     let triple = bundle.triple;
     let template_dir = bundle.template_dir;
