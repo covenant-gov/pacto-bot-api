@@ -557,6 +557,10 @@ mod tests {
             let mut perms = std::fs::metadata(&path)?.permissions();
             perms.set_mode(0o600);
             std::fs::set_permissions(&path, perms)?;
+
+            let mut dir_perms = std::fs::metadata(dir)?.permissions();
+            dir_perms.set_mode(0o700);
+            std::fs::set_permissions(dir, dir_perms)?;
         }
         Ok(path)
     }
