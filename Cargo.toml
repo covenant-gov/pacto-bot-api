@@ -62,7 +62,7 @@ regex = "1"
 percent-encoding = "2"
 semver = "1"
 dirs = "6"
-colored = "2"
+colored = "3"
 nix = { version = "0.31", features = ["signal", "process"] }
     rpassword = "7.5.4"
 jsonschema = "0.46"
