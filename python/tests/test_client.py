@@ -8,6 +8,7 @@ import pytest
 
 from pacto_bot_sdk import (
     AgentEventParams,
+    AgentRateLimitedParams,
     HandlerRegisterParams,
     HandlerRegisterResponse,
     PactoClientError,
@@ -102,6 +103,28 @@ async def test_incoming_notification_async_iterator(client, transport):
     assert notification.bot_id == "greeting-bot"
     assert notification.content == "/hello"
     assert notification.chat_id == "npub1chat"
+
+
+@pytest.mark.asyncio
+async def test_incoming_rate_limited_notification_async_iterator(client, transport):
+    """Incoming agent.rate_limited frames are exposed by the notifications() iterator."""
+    transport.inject(
+        {
+            "jsonrpc": "2.0",
+            "method": "agent.rate_limited",
+            "params": {
+                "bot_id": "greeting-bot",
+                "group_id": "0xdeadbeef",
+                "window_seconds": 30,
+            },
+        }
+    )
+
+    notification = await anext(client.notifications())
+    assert isinstance(notification, AgentRateLimitedParams)
+    assert notification.bot_id == "greeting-bot"
+    assert notification.group_id == "0xdeadbeef"
+    assert notification.window_seconds == 30
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pacto_bot_sdk import Bot, PactoClient, parse_command
-from pacto_bot_sdk._generated.models import AgentEventParams
+from pacto_bot_sdk._generated.models import AgentEventParams, AgentRateLimitedParams
 from pacto_bot_sdk.transports import Transport, UnixTransport
 
 
@@ -795,6 +795,82 @@ async def test_status_handler_called(bot, transport):
     assert len(statuses) == 1
     assert statuses[0].state == "ready"
 
+    bot._request_shutdown()
+    await task
+
+
+# ---------------------------------------------------------------------------
+# Rate-limited handler
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_handler_called(bot, transport):
+    """agent.rate_limited notifications are routed to the registered handler."""
+    calls: list[Any] = []
+
+    @bot.rate_limited
+    async def on_rate_limited(params, b):
+        calls.append((params, b))
+
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.rate_limited",
+        "params": {"bot_id": "test-bot", "group_id": "0xabc123", "window_seconds": 42},
+    })
+
+    await asyncio.sleep(0.05)
+
+    assert len(calls) == 1
+    params, b = calls[0]
+    assert isinstance(params, AgentRateLimitedParams)
+    assert params.window_seconds == 42
+    assert b is bot
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_handler_optional(bot, transport):
+    """agent.rate_limited notifications are logged when no handler is registered."""
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.rate_limited",
+        "params": {"bot_id": "test-bot", "group_id": "0xabc123", "window_seconds": 7},
+    })
+
+    await asyncio.sleep(0.05)
+
+    # No crash and no handler side effects to assert; the dispatch loop is still running.
     bot._request_shutdown()
     await task
 

@@ -21,7 +21,7 @@ class PactoClient:
     def __init__(self, transport: Any) -> None:
         self.transport = transport
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()
+        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue(maxsize=100)
         self._read_task: asyncio.Task[None] | None = None
         self._closed = False
 
@@ -98,6 +98,8 @@ class PactoClient:
         params = frame.get('params', {})
         if method == 'agent.event':
             await self._notify_queue.put(models.AgentEventParams.model_validate(params))
+        elif method == 'agent.rate_limited':
+            await self._notify_queue.put(models.AgentRateLimitedParams.model_validate(params))
         elif method == 'agent.status':
             await self._notify_queue.put(models.AgentStatusParams.model_validate(params))
 
@@ -222,27 +224,6 @@ class PactoClient:
         response = await self._request("agent.publish_key_package", params_dict)
         result = response.get('result')
         return result
-
-    async def agent_rate_limited(self, bot_id: str, group_id: str, window_seconds: int) -> None:
-        """
-        Send JSON-RPC notification `agent.rate_limited`.
-
-        Notification that an inbound MLS group message was dropped because the per-Squad rate limit was exceeded.
-
-        Example:
-
-            >>> await client.agent_rate_limited(...)
-
-        jsonrpc_method: ``"agent.rate_limited"``
-        """
-        params = models.AgentRateLimitedParams(bot_id=bot_id, group_id=group_id, window_seconds=window_seconds)
-        params_dict = params.model_dump(mode='json', exclude_none=True)
-        frame = {
-            "jsonrpc": "2.0",
-            "method": "agent.rate_limited",
-            "params": params_dict,
-        }
-        await self.transport.write_frame(frame)
 
     async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResponse:
         """

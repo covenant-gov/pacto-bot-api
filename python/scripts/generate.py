@@ -494,7 +494,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
 
     # Mapping of JSON-RPC method name to params/result model names for the
     # notification dispatch table.
-    incoming_notifications = {"agent.event", "agent.status"}
+    incoming_notifications = {"agent.event", "agent.status", "agent.rate_limited"}
     params_by_method: dict[str, str] = {}
     result_by_method: dict[str, tuple[str, str, str]] = {}
 
@@ -535,7 +535,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append(
         "        self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}\n"
     )
-    out.append("        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()\n")
+    out.append("        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue(maxsize=100)\n")
     out.append("        self._read_task: asyncio.Task[None] | None = None\n")
     out.append("        self._closed = False\n\n")
 
@@ -615,10 +615,14 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("            return\n")
     out.append("        method = frame.get('method')\n")
     out.append("        params = frame.get('params', {})\n")
-    out.append("        if method == 'agent.event':\n")
-    out.append("            await self._notify_queue.put(models.AgentEventParams.model_validate(params))\n")
-    out.append("        elif method == 'agent.status':\n")
-    out.append("            await self._notify_queue.put(models.AgentStatusParams.model_validate(params))\n\n")
+    first = True
+    for method_name in sorted(incoming_notifications):
+        params_model = params_by_method[method_name]
+        prefix = "        if " if first else "        elif "
+        first = False
+        out.append(f"{prefix}method == '{method_name}':\n")
+        out.append(f"            await self._notify_queue.put(models.{params_model}.model_validate(params))\n")
+    out.append("\n")
 
     out.append("    async def notifications(self) -> Any:\n")
     out.append('        """Async iterator over incoming daemon notifications."""\n')
