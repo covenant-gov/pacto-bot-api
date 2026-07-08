@@ -149,4 +149,7 @@ Recurring review feedback is captured in `docs/solutions/` (searchable by `tags`
 | **cursor** | Persisted offset that tracks which events have been processed for a bot/event pair. |
 | **fan-out** | Sending one event to all matching handlers. |
 | **kind:0** | Nostr event kind for profile metadata. |
-| **kind:1059** | Nostr event kind for gift-wrapped (sealed) DMs. |
+| **kind:443** | Nostr event kind for MLS KeyPackage announcements. |
+| **kind:445** | Nostr event kind for MLS group messages. |
+| **Squad** | An MLS group chat in the Pacto ecosystem. |
+| **Squad wire ID** | The Nostr event `h` tag value that identifies a Squad on the wire. |
