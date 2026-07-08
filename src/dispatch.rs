@@ -61,6 +61,18 @@ enum HandlerAction {
 }
 
 impl HandlerAction {
+    fn action_label(&self) -> &'static str {
+        match self {
+            HandlerAction::Ack => "ack",
+            HandlerAction::Reply { .. } => "reply",
+            HandlerAction::SendDm { .. } => "send_dm",
+            HandlerAction::Defer => "defer",
+            HandlerAction::Ignore => "ignore",
+        }
+    }
+}
+
+impl HandlerAction {
     fn from_value(value: &Value) -> Result<Self, DaemonError> {
         let action = value
             .get("action")
@@ -444,14 +456,14 @@ impl Dispatch {
                     info!(
                         event_id = %event_id,
                         handler_id = %handler_id,
-                        action = ?action,
+                        action = action.action_label(),
                         "received handler response"
                     );
+                    self.diagnostics.record_handler_response().await;
                     if matches!(action, HandlerAction::Defer) {
                         any_defer = true;
                         break;
                     }
-                    self.diagnostics.record_handler_response().await;
                     responses.push((handler_id, action));
                 }
                 Ok(None) => break,
@@ -464,13 +476,7 @@ impl Dispatch {
 
         // Process replies.
         for (handler_id, action) in &responses {
-            let mut action_label = match action {
-                HandlerAction::Ack => "ack",
-                HandlerAction::Reply { .. } => "reply",
-                HandlerAction::SendDm { .. } => "send_dm",
-                HandlerAction::Defer => "defer",
-                HandlerAction::Ignore => "ignore",
-            };
+            let mut action_label = action.action_label();
             let mut reply_event_id: Option<String> = None;
             match action {
                 HandlerAction::Reply { content } => {
@@ -1209,8 +1215,11 @@ impl Dispatch {
         let snapshot = self.diagnostics.snapshot().await;
         let mut response = MetricsResponse::from(snapshot);
         response.config_valid = Some(true);
-        let cm = self.client_manager.read().await;
-        response.relay_state = Some(cm.nostr_client.relay_statuses().await);
+        let nostr_client = {
+            let cm = self.client_manager.read().await;
+            cm.nostr_client.clone()
+        };
+        response.relay_state = Some(nostr_client.relay_statuses().await);
         Ok(Some(serde_json::to_value(response)?))
     }
     async fn handle_send_group_message(
@@ -1839,6 +1848,62 @@ mod tests {
         assert_eq!(
             result.get("git_sha").and_then(|v| v.as_str()),
             Some(crate::version::GIT_COMMIT_SHORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn system_version_returns_version_and_commit() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let req = JsonRpcMessage::request(1.into(), "system.version", None);
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("version").and_then(|v| v.as_str()),
+            Some(crate::version::VERSION)
+        );
+        assert_eq!(
+            result.get("git_sha").and_then(|v| v.as_str()),
+            Some(crate::version::GIT_COMMIT_SHORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn system_health_returns_metrics_and_relay_state() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let req = JsonRpcMessage::request(1.into(), "system.health", None);
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("config_valid").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(
+            result.get("relay_state").is_some(),
+            "health response should include relay_state"
+        );
+        assert!(
+            result.get("uptime_seconds").is_some(),
+            "health response should include uptime_seconds"
         );
     }
 

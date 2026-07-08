@@ -588,6 +588,8 @@ mod tests {
             "agent.list_handlers",
             "agent.unregister_handler",
             "agent.version",
+            "system.version",
+            "system.health",
             "agent.send_group_message",
             "agent.publish_key_package",
             "admin.send_test_dm",
