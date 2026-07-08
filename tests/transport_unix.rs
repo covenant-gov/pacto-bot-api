@@ -57,6 +57,7 @@ async fn setup_dispatch_with_capabilities(
         },
         relays: vec![],
         capabilities,
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
     let config = DaemonConfig {

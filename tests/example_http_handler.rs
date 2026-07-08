@@ -115,6 +115,7 @@ async fn start_http_daemon(
         },
         relays: vec![relay.url()],
         capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 

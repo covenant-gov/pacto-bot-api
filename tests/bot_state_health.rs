@@ -15,6 +15,7 @@ fn generate_nsec_config(id: &str) -> BotConfig {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     }
 }
@@ -79,6 +80,7 @@ fn to_bot_health_reports_bunker_connected() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -103,6 +105,7 @@ fn new_rejects_empty_nsec() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -125,6 +128,7 @@ fn new_rejects_nsec_public_key_mismatch() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -142,6 +146,7 @@ fn new_rejects_invalid_npub() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -161,6 +166,7 @@ fn new_rejects_bunker_uri_missing_scheme() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -184,6 +190,7 @@ fn new_rejects_bunker_uri_missing_remote_signer_pubkey() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -211,6 +218,7 @@ fn new_rejects_bunker_remote_with_ws_relay() {
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 

@@ -283,6 +283,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.send_group_message"
                 | "agent.publish_key_package"
                 | "admin.send_test_dm"
+                | "agent.is_squad_member"
         );
         if expects_result {
             assert!(

@@ -1205,6 +1205,7 @@ async fn start_dispatch_server_with_capabilities(
         },
         relays: vec![relay.url()],
         capabilities,
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 

@@ -253,6 +253,7 @@ fn bot_health_reflects_bot_state() {
         },
         relays: vec!["wss://relay.example".into()],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -282,6 +283,7 @@ async fn client_manager_populates_diagnostics_bots() {
             },
             relays: vec!["wss://relay.example".into()],
             capabilities: vec![],
+            mls_dedup_window_secs: None,
             ..Default::default()
         }],
     };
