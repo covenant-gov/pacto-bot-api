@@ -9,7 +9,7 @@ import pytest
 from pacto_bot_sdk import (
     AgentEventParams,
     HandlerRegisterParams,
-    HandlerRegisterResult,
+    HandlerRegisterResponse,
     PactoClientError,
 )
 
@@ -56,7 +56,7 @@ async def test_handler_register_sends_frame_and_awaits_result(client, transport)
     )
 
     result = await task
-    assert isinstance(result, HandlerRegisterResult)
+    assert isinstance(result, HandlerRegisterResponse)
     assert result.handler_id == "h-123"
     assert result.registered_events == ["dm_received"]
 
@@ -139,7 +139,7 @@ async def test_handler_register_params_model_construction():
 @pytest.mark.asyncio
 async def test_handler_register_result_model_construction():
     """The generated result model validates and exposes its fields."""
-    result = HandlerRegisterResult(
+    result = HandlerRegisterResponse(
         handler_id="h-1", reconnect_token="rt-1", registered_events=["dm_received"]
     )
     assert result.handler_id == "h-1"

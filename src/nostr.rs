@@ -691,15 +691,15 @@ impl NostrClient {
         for (pubkey, (_, mls)) in mls_engines {
             match mls.has_group_with_wire_id(&group_id).await {
                 Ok(true) => {
-        debug!("found engine for pubkey={} with group {}", pubkey, group_id);
+                    debug!("found engine for pubkey={} with group {}", pubkey, group_id);
                     recipient = Some(*pubkey);
                     break;
                 }
                 Ok(false) => {
-        debug!(
-            "engine for pubkey={} does NOT have group {}",
-            pubkey, group_id
-        );
+                    debug!(
+                        "engine for pubkey={} does NOT have group {}",
+                        pubkey, group_id
+                    );
                     continue;
                 }
                 Err(e) => {

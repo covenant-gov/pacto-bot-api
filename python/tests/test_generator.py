@@ -83,8 +83,8 @@ def test_handler_register_params_snapshot(run_generator):
 def test_unresolved_ref_result_is_dict(run_generator):
     """External $ref results are typed as dict[str, Any]."""
     models_source = run_generator[0].decode("utf-8")
-    assert "AgentMetricsResult = dict[str, Any]" in models_source
-    assert "AgentVersionResult = dict[str, Any]" in models_source
+    assert "AgentMetricsResponse = dict[str, Any]" in models_source
+    assert "AgentVersionResponse = dict[str, Any]" in models_source
 
 
 def test_agent_event_required_and_optional_fields(run_generator):
