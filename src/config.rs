@@ -101,6 +101,9 @@ pub struct BotConfig {
     /// URL to the bot's profile picture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
+    /// Time window in seconds for MLS group-message deduplication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_dedup_window_secs: Option<u64>,
 }
 
 /// Signing backend configuration for a bot identity.
@@ -251,6 +254,7 @@ const VALID_CAPABILITIES: &[&str] = &[
     "SendMessages",
     "ManageProfile",
     "SendGroupMessages",
+    "ReceiveGroupMessages",
     "Admin",
 ];
 
@@ -476,6 +480,11 @@ impl BotConfig {
     /// Resolved data directory path.
     pub fn data_dir_path(&self, global: &GlobalDaemonConfig) -> PathBuf {
         PathBuf::from(expand_path(&global.data_dir))
+    }
+
+    /// Resolved MLS group-message deduplication window.
+    pub fn dedup_window(&self) -> u64 {
+        self.mls_dedup_window_secs.unwrap_or(900)
     }
 }
 

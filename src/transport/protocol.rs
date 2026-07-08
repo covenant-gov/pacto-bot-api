@@ -292,6 +292,10 @@ pub enum Method {
     SystemHealth,
     #[serde(rename = "agent.version")]
     AgentVersion,
+    #[serde(rename = "agent.rate_limited")]
+    AgentRateLimited,
+    #[serde(rename = "agent.is_squad_member")]
+    AgentIsSquadMember,
     #[serde(rename = "agent.send_group_message")]
     AgentSendGroupMessage,
     #[serde(rename = "agent.publish_key_package")]
@@ -319,6 +323,8 @@ impl Method {
             Method::SystemVersion,
             Method::SystemHealth,
             Method::AgentVersion,
+            Method::AgentRateLimited,
+            Method::AgentIsSquadMember,
             Method::AgentSendGroupMessage,
             Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
@@ -346,6 +352,8 @@ impl FromStr for Method {
             "system.version" => Ok(Self::SystemVersion),
             "system.health" => Ok(Self::SystemHealth),
             "agent.version" => Ok(Self::AgentVersion),
+            "agent.rate_limited" => Ok(Self::AgentRateLimited),
+            "agent.is_squad_member" => Ok(Self::AgentIsSquadMember),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
@@ -444,6 +452,9 @@ pub struct MetricsResponse {
     /// Total plain DMs that failed to publish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub send_dm_failed_total: Option<u64>,
+    /// Total MLS group messages dropped due to per-Squad rate limiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_messages_rate_limited_total: Option<u64>,
     /// Events received in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_last_10_min: Option<u64>,
@@ -489,6 +500,7 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             reply_send_failed_total: Some(snapshot.reply_send_failed_total),
             send_dm_total: Some(snapshot.send_dm_total),
             send_dm_failed_total: Some(snapshot.send_dm_failed_total),
+            group_messages_rate_limited_total: Some(snapshot.group_messages_rate_limited_total),
             events_received_last_10_min: Some(snapshot.recent_counts.events_received),
             events_decrypted_last_10_min: Some(snapshot.recent_counts.events_decrypted),
             events_dispatched_last_10_min: Some(snapshot.recent_counts.events_dispatched),
@@ -556,6 +568,27 @@ pub struct AgentStatusParams {
     pub capabilities: Vec<String>,
 }
 
+/// Typed payload for the `agent.is_squad_member` JSON-RPC method.
+///
+/// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
+/// `agent.is_squad_member` method: all fields are required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIsSquadMemberParams {
+    /// Bot identity that participates in the Squad.
+    pub bot_id: String,
+    /// Hex-encoded Squad wire id (MLS nostr_group_id).
+    pub group_id: String,
+    /// Nostr public key (hex or npub) of the member to check.
+    pub member_pubkey: String,
+}
+
+/// Typed payload returned by the `agent.is_squad_member` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentIsSquadMemberResult {
+    /// True if `member_pubkey` is a member of the Squad.
+    pub is_member: bool,
+}
+
 /// Typed payload returned by the `agent.version` JSON-RPC method.
 ///
 /// Matches `schemas/version.json`: the result contains the daemon's Cargo
@@ -590,6 +623,8 @@ mod tests {
             "agent.version",
             "system.version",
             "system.health",
+            "agent.rate_limited",
+            "agent.is_squad_member",
             "agent.send_group_message",
             "agent.publish_key_package",
             "admin.send_test_dm",

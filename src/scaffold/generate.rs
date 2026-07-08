@@ -341,6 +341,7 @@ mod tests {
             },
             relays: vec!["ws://localhost:7000".to_string()],
             capabilities: vec!["ReadMessages".to_string(), "SendMessages".to_string()],
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         let snippet = bot_config_to_snippet(&bot).unwrap();
@@ -368,6 +369,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         append_config_entry(&path, &bot).unwrap();
@@ -387,6 +389,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         let bot2 = BotConfig {
@@ -395,6 +398,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1other".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         append_config_entry(&path, &bot1).unwrap();
@@ -415,6 +419,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         let bot2 = BotConfig {
@@ -423,6 +428,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1different".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         append_config_entry(&path, &bot1).unwrap();
@@ -444,6 +450,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         append_config_entry(&path, &bot).unwrap();
@@ -473,6 +480,7 @@ mod tests {
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
             },
+            mls_dedup_window_secs: None,
             ..Default::default()
         };
         append_config_entry(&path, &bot).unwrap();

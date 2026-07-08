@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     DmReceived,
     MlsWelcomeReceived,
+    MlsGroupMessageReceived,
 }
 
 impl EventType {
@@ -14,6 +15,7 @@ impl EventType {
         match self {
             EventType::DmReceived => "dm_received",
             EventType::MlsWelcomeReceived => "mls_welcome_received",
+            EventType::MlsGroupMessageReceived => "mls_group_message_received",
         }
     }
 }
