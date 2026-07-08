@@ -19,6 +19,7 @@ async fn metrics_response_exposes_all_counters() {
     diag.record_send_dm().await;
     diag.record_send_dm_failed().await;
     diag.record_reply_send_failed().await;
+    diag.record_group_message_rate_limited().await;
     diag.set_handlers_registered(3).await;
 
     let snap = diag.snapshot().await;
@@ -35,6 +36,7 @@ async fn metrics_response_exposes_all_counters() {
     assert_eq!(metrics.send_dm_total, Some(1));
     assert_eq!(metrics.send_dm_failed_total, Some(1));
     assert_eq!(metrics.reply_send_failed_total, Some(1));
+    assert_eq!(metrics.group_messages_rate_limited_total, Some(1));
 
     // Recent-counts fields are populated from the rolling window.
     assert!(metrics.events_received_last_10_min.unwrap() >= 1);
@@ -50,6 +52,7 @@ async fn metrics_response_exposes_all_counters() {
     assert!(object.contains_key("send_dm_failed_total"));
     assert!(object.contains_key("send_dm_last_10_min"));
     assert!(object.contains_key("send_dm_failed_last_10_min"));
+    assert!(object.contains_key("group_messages_rate_limited_total"));
     assert!(!object.contains_key("status"));
     assert!(!object.contains_key("errors"));
     assert!(!object.contains_key("startup_time"));

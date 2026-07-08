@@ -3702,6 +3702,7 @@ mod tests {
             display_name: None,
             about: None,
             picture: None,
+            mls_dedup_window_secs: None,
         }
     }
 

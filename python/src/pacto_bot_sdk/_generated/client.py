@@ -109,7 +109,7 @@ class PactoClient:
                 break
             yield notification
 
-    async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str) -> models.AdminSendTestDmResult:
+    async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str) -> models.AdminSendTestDmResponse:
         """
         Call JSON-RPC method `admin.send_test_dm`.
 
@@ -118,7 +118,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.admin_send_test_dm(...)
-            >>> isinstance(result, AdminSendTestDmResult)
+            >>> isinstance(result, AdminSendTestDmResponse)
 
         jsonrpc_method: ``"admin.send_test_dm"``
         """
@@ -126,7 +126,7 @@ class PactoClient:
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("admin.send_test_dm", params_dict)
         result = response.get('result')
-        return models.AdminSendTestDmResult.model_validate(result)
+        return models.AdminSendTestDmResponse.model_validate(result)
 
     async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:
         """
@@ -149,7 +149,26 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def agent_list_handlers(self) -> models.AgentListHandlersResult:
+    async def agent_is_squad_member(self, bot_id: str, group_id: str, member_pubkey: str) -> models.AgentIsSquadMemberResponse:
+        """
+        Call JSON-RPC method `agent.is_squad_member`.
+
+        Verify whether a Nostr public key is a member of a Squad.
+
+        Example:
+
+            >>> result = await client.agent_is_squad_member(...)
+            >>> isinstance(result, AgentIsSquadMemberResponse)
+
+        jsonrpc_method: ``"agent.is_squad_member"``
+        """
+        params = models.AgentIsSquadMemberParams(bot_id=bot_id, group_id=group_id, member_pubkey=member_pubkey)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.is_squad_member", params_dict)
+        result = response.get('result')
+        return models.AgentIsSquadMemberResponse.model_validate(result)
+
+    async def agent_list_handlers(self) -> models.AgentListHandlersResponse:
         """
         Call JSON-RPC method `agent.list_handlers`.
 
@@ -158,16 +177,16 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_list_handlers(...)
-            >>> isinstance(result, AgentListHandlersResult)
+            >>> isinstance(result, AgentListHandlersResponse)
 
         jsonrpc_method: ``"agent.list_handlers"``
         """
         params_dict: dict[str, Any] = {}
         response = await self._request("agent.list_handlers", params_dict)
         result = response.get('result')
-        return models.AgentListHandlersResult.model_validate(result)
+        return models.AgentListHandlersResponse.model_validate(result)
 
-    async def agent_metrics(self) -> models.AgentMetricsResult:
+    async def agent_metrics(self) -> models.AgentMetricsResponse:
         """
         Call JSON-RPC method `agent.metrics`.
 
@@ -176,7 +195,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_metrics(...)
-            >>> isinstance(result, AgentMetricsResult)
+            >>> isinstance(result, AgentMetricsResponse)
 
         jsonrpc_method: ``"agent.metrics"``
         """
@@ -185,7 +204,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_publish_key_package(self, bot_id: str) -> models.AgentPublishKeyPackageResult:
+    async def agent_publish_key_package(self, bot_id: str) -> models.AgentPublishKeyPackageResponse:
         """
         Call JSON-RPC method `agent.publish_key_package`.
 
@@ -194,7 +213,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_publish_key_package(...)
-            >>> isinstance(result, AgentPublishKeyPackageResult)
+            >>> isinstance(result, AgentPublishKeyPackageResponse)
 
         jsonrpc_method: ``"agent.publish_key_package"``
         """
@@ -204,7 +223,28 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResult:
+    async def agent_rate_limited(self, bot_id: str, group_id: str, window_seconds: int) -> None:
+        """
+        Send JSON-RPC notification `agent.rate_limited`.
+
+        Notification that an inbound MLS group message was dropped because the per-Squad rate limit was exceeded.
+
+        Example:
+
+            >>> await client.agent_rate_limited(...)
+
+        jsonrpc_method: ``"agent.rate_limited"``
+        """
+        params = models.AgentRateLimitedParams(bot_id=bot_id, group_id=group_id, window_seconds=window_seconds)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        frame = {
+            "jsonrpc": "2.0",
+            "method": "agent.rate_limited",
+            "params": params_dict,
+        }
+        await self.transport.write_frame(frame)
+
+    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResponse:
         """
         Call JSON-RPC method `agent.send_dm`.
 
@@ -213,7 +253,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_send_dm(...)
-            >>> isinstance(result, AgentSendDmResult)
+            >>> isinstance(result, AgentSendDmResponse)
 
         jsonrpc_method: ``"agent.send_dm"``
         """
@@ -223,7 +263,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str) -> models.AgentSendGroupMessageResult:
+    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str) -> models.AgentSendGroupMessageResponse:
         """
         Call JSON-RPC method `agent.send_group_message`.
 
@@ -232,7 +272,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_send_group_message(...)
-            >>> isinstance(result, AgentSendGroupMessageResult)
+            >>> isinstance(result, AgentSendGroupMessageResponse)
 
         jsonrpc_method: ``"agent.send_group_message"``
         """
@@ -242,7 +282,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None) -> models.AgentSetProfileResult:
+    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None) -> models.AgentSetProfileResponse:
         """
         Call JSON-RPC method `agent.set_profile`.
 
@@ -251,7 +291,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_set_profile(...)
-            >>> isinstance(result, AgentSetProfileResult)
+            >>> isinstance(result, AgentSetProfileResponse)
 
         jsonrpc_method: ``"agent.set_profile"``
         """
@@ -261,7 +301,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_unregister_handler(self, handler_id: str) -> models.AgentUnregisterHandlerResult:
+    async def agent_unregister_handler(self, handler_id: str) -> models.AgentUnregisterHandlerResponse:
         """
         Call JSON-RPC method `agent.unregister_handler`.
 
@@ -270,7 +310,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_unregister_handler(...)
-            >>> isinstance(result, AgentUnregisterHandlerResult)
+            >>> isinstance(result, AgentUnregisterHandlerResponse)
 
         jsonrpc_method: ``"agent.unregister_handler"``
         """
@@ -278,9 +318,9 @@ class PactoClient:
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("agent.unregister_handler", params_dict)
         result = response.get('result')
-        return models.AgentUnregisterHandlerResult.model_validate(result)
+        return models.AgentUnregisterHandlerResponse.model_validate(result)
 
-    async def agent_version(self) -> models.AgentVersionResult:
+    async def agent_version(self) -> models.AgentVersionResponse:
         """
         Call JSON-RPC method `agent.version`.
 
@@ -289,7 +329,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.agent_version(...)
-            >>> isinstance(result, AgentVersionResult)
+            >>> isinstance(result, AgentVersionResponse)
 
         jsonrpc_method: ``"agent.version"``
         """
@@ -298,7 +338,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def handler_reconnect(self, handler_id: str, reconnect_token: str) -> models.HandlerReconnectResult:
+    async def handler_reconnect(self, handler_id: str, reconnect_token: str) -> models.HandlerReconnectResponse:
         """
         Call JSON-RPC method `handler.reconnect`.
 
@@ -307,7 +347,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.handler_reconnect(...)
-            >>> isinstance(result, HandlerReconnectResult)
+            >>> isinstance(result, HandlerReconnectResponse)
 
         jsonrpc_method: ``"handler.reconnect"``
         """
@@ -315,9 +355,9 @@ class PactoClient:
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("handler.reconnect", params_dict)
         result = response.get('result')
-        return models.HandlerReconnectResult.model_validate(result)
+        return models.HandlerReconnectResponse.model_validate(result)
 
-    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResult:
+    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResponse:
         """
         Call JSON-RPC method `handler.register`.
 
@@ -326,7 +366,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.handler_register(...)
-            >>> isinstance(result, HandlerRegisterResult)
+            >>> isinstance(result, HandlerRegisterResponse)
 
         jsonrpc_method: ``"handler.register"``
         """
@@ -334,7 +374,7 @@ class PactoClient:
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("handler.register", params_dict)
         result = response.get('result')
-        return models.HandlerRegisterResult.model_validate(result)
+        return models.HandlerRegisterResponse.model_validate(result)
 
     async def handler_response(self, action: str, event_id: str, content: str | None = None) -> None:
         """
@@ -357,7 +397,7 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def handler_unregister(self) -> models.HandlerUnregisterResult:
+    async def handler_unregister(self) -> models.HandlerUnregisterResponse:
         """
         Call JSON-RPC method `handler.unregister`.
 
@@ -366,16 +406,16 @@ class PactoClient:
         Example:
 
             >>> result = await client.handler_unregister(...)
-            >>> isinstance(result, HandlerUnregisterResult)
+            >>> isinstance(result, HandlerUnregisterResponse)
 
         jsonrpc_method: ``"handler.unregister"``
         """
         params_dict: dict[str, Any] = {}
         response = await self._request("handler.unregister", params_dict)
         result = response.get('result')
-        return models.HandlerUnregisterResult.model_validate(result)
+        return models.HandlerUnregisterResponse.model_validate(result)
 
-    async def system_health(self) -> models.SystemHealthResult:
+    async def system_health(self) -> models.SystemHealthResponse:
         """
         Call JSON-RPC method `system.health`.
 
@@ -384,7 +424,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.system_health(...)
-            >>> isinstance(result, SystemHealthResult)
+            >>> isinstance(result, SystemHealthResponse)
 
         jsonrpc_method: ``"system.health"``
         """
@@ -393,7 +433,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def system_version(self) -> models.SystemVersionResult:
+    async def system_version(self) -> models.SystemVersionResponse:
         """
         Call JSON-RPC method `system.version`.
 
@@ -402,7 +442,7 @@ class PactoClient:
         Example:
 
             >>> result = await client.system_version(...)
-            >>> isinstance(result, SystemVersionResult)
+            >>> isinstance(result, SystemVersionResponse)
 
         jsonrpc_method: ``"system.version"``
         """

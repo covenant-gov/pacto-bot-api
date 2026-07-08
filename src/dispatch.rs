@@ -10,16 +10,18 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 
 use crate::client_manager::ClientManager;
+use crate::config::BotConfig;
 use crate::db::Db;
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
+use crate::handlers::HandlerRef;
 use crate::transport::protocol::{
-    AdminSendTestDmResponse, AgentListHandlersEntry, AgentListHandlersResponse,
-    AgentUnregisterHandlerResponse, AgentVersionResponse, HandlerReconnectParams,
-    HandlerReconnectResponse, HandlerRegisterResponse, HandlerUnregisterResponse, JsonRpcMessage,
-    Method, MetricsResponse, parse_method,
+    AdminSendTestDmResponse, AgentIsSquadMemberResponse, AgentListHandlersEntry,
+    AgentListHandlersResponse, AgentUnregisterHandlerResponse, AgentVersionResponse,
+    HandlerReconnectParams, HandlerReconnectResponse, HandlerRegisterResponse,
+    HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse, parse_method,
 };
 
 use secrecy::{ExposeSecret, SecretString};
@@ -40,6 +42,17 @@ const BOT_BURST: f64 = 40.0;
 const BUCKET_STALE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Maximum number of buckets to retain per map.
 const MAX_BUCKETS: usize = 10_000;
+
+/// MLS group-message rate-limit window.
+const GROUP_RATE_WINDOW: Duration = Duration::from_secs(60);
+/// MLS group-message rate-limit fill rate (one token per window, i.e. one notification per Squad per minute).
+const GROUP_RATE: f64 = 1.0 / 60.0;
+/// MLS group-message rate-limit burst (no burst beyond one).
+const GROUP_RATE_BURST: f64 = 1.0;
+/// Maximum number of entries to retain in the MLS deduplication cache.
+const MLS_DEDUP_MAX_SIZE: usize = 1000;
+/// Opportunistic cleanup threshold for the MLS deduplication cache.
+const MLS_DEDUP_CLEANUP_THRESHOLD: usize = 1000;
 
 /// Production default per-handler rate, exposed for tests.
 pub const DEFAULT_HANDLER_RATE: f64 = HANDLER_RATE;
@@ -193,11 +206,12 @@ impl BucketMap {
     }
 }
 
-/// Rate limiter enforcing per-handler and per-bot token buckets.
+/// Rate limiter enforcing per-handler, per-bot, and per-Squad token buckets.
 #[derive(Debug)]
 pub struct RateLimiter {
     handlers: TokioMutex<BucketMap>,
     bots: TokioMutex<BucketMap>,
+    groups: TokioMutex<BucketMap>,
     handler_rate: f64,
     handler_burst: f64,
     bot_rate: f64,
@@ -212,6 +226,7 @@ impl RateLimiter {
         Self {
             handlers: TokioMutex::new(BucketMap::new()),
             bots: TokioMutex::new(BucketMap::new()),
+            groups: TokioMutex::new(BucketMap::new()),
             handler_rate,
             handler_burst,
             bot_rate,
@@ -254,11 +269,83 @@ impl RateLimiter {
             .or_insert_with(|| Bucket::new(self.handler_rate, self.handler_burst));
         handler_bucket.check(now)
     }
+
+    /// Check whether a group message for `(bot_id, group_id)` may be dispatched
+    /// to handlers. Returns `true` if allowed, `false` if the per-Squad bucket
+    /// is empty.
+    pub async fn check_group(&self, bot_id: &str, group_id: &str, now: Instant) -> bool {
+        let key = format!("{bot_id}:{group_id}");
+        let mut groups = self.groups.lock().await;
+        if groups.needs_sweep(now, self.max_buckets, self.stale_after) {
+            groups.sweep(now, self.max_buckets, self.stale_after);
+        }
+        let bucket = groups
+            .map
+            .entry(key)
+            .or_insert_with(|| Bucket::new(GROUP_RATE, GROUP_RATE_BURST));
+        bucket.check(now)
+    }
 }
 
 impl Default for RateLimiter {
     fn default() -> Self {
         Self::new(HANDLER_RATE, HANDLER_BURST, BOT_RATE, BOT_BURST)
+    }
+}
+
+/// Bounded, TTL-based deduplication cache for wrapper event ids.
+#[derive(Debug)]
+struct DedupCache {
+    seen: HashMap<String, Instant>,
+    max_size: usize,
+}
+
+impl DedupCache {
+    fn new(max_size: usize) -> Self {
+        Self {
+            seen: HashMap::new(),
+            max_size,
+        }
+    }
+
+    /// Returns true if the event id has been seen within the TTL window.
+    ///
+    /// Updates the entry timestamp on every call, so a repeated event id
+    /// extends the duplicate window. Opportunistically cleans up stale entries
+    /// when the cache grows past its threshold.
+    fn is_duplicate(&mut self, event_id: &str, window: Duration) -> bool {
+        let now = Instant::now();
+
+        if self.seen.len() >= MLS_DEDUP_CLEANUP_THRESHOLD {
+            self.cleanup(now, window);
+        }
+
+        match self.seen.get(event_id) {
+            Some(last_seen) if now.saturating_duration_since(*last_seen) < window => true,
+            _ => {
+                self.seen.insert(event_id.to_string(), now);
+                false
+            }
+        }
+    }
+
+    fn cleanup(&mut self, now: Instant, window: Duration) {
+        self.seen
+            .retain(|_, last_seen| now.saturating_duration_since(*last_seen) < window);
+
+        while self.seen.len() > self.max_size {
+            let oldest = self
+                .seen
+                .iter()
+                .min_by_key(|(_, last_seen)| *last_seen)
+                .map(|(id, _)| id.clone());
+            match oldest {
+                Some(id) => {
+                    self.seen.remove(&id);
+                }
+                None => break,
+            }
+        }
     }
 }
 
@@ -283,6 +370,7 @@ pub struct Dispatch {
     db: Db,
     pub diagnostics: Diagnostics,
     rate_limiter: RateLimiter,
+    mls_dedup_cache: Arc<TokioMutex<DedupCache>>,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
     handlers_registered: AtomicU64,
     last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
@@ -302,6 +390,7 @@ impl Dispatch {
             db,
             diagnostics,
             rate_limiter: RateLimiter::default(),
+            mls_dedup_cache: Arc::new(TokioMutex::new(DedupCache::new(MLS_DEDUP_MAX_SIZE))),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
@@ -322,6 +411,7 @@ impl Dispatch {
             db,
             diagnostics,
             rate_limiter,
+            mls_dedup_cache: Arc::new(TokioMutex::new(DedupCache::new(MLS_DEDUP_MAX_SIZE))),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
@@ -376,16 +466,26 @@ impl Dispatch {
     pub async fn dispatch_event(&self, event: AgentEvent) -> Result<(), DaemonError> {
         self.diagnostics.record_event_received().await;
 
-        let (handlers, npub) = {
+        let (mut handlers, npub, bot_config) = {
             let cm = self.client_manager.read().await;
-            let handlers = cm.handler_registry.find(&event.bot_id, event.event_type);
-            let npub = cm
+            let bot = cm
                 .get_bot_by_id(&event.bot_id)
-                .ok_or_else(|| DaemonError::UnknownBot(event.bot_id.clone()))?
-                .npub()
-                .to_string();
-            (handlers, npub)
+                .ok_or_else(|| DaemonError::UnknownBot(event.bot_id.clone()))?;
+            let handlers = cm.handler_registry.find(&event.bot_id, event.event_type);
+            let npub = bot.npub().to_string();
+            let bot_config = bot.config.clone();
+            // Authorization check for MLS group messages is now handled in the helper
+            (handlers, npub, bot_config)
         };
+
+        // Process MLS group message events with dedicated helper
+        if event.event_type == EventType::MlsGroupMessageReceived
+            && !self
+                .process_mls_group_message(&event, &mut handlers, &bot_config)
+                .await?
+        {
+            return Ok(());
+        }
 
         self.diagnostics
             .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst))
@@ -421,12 +521,6 @@ impl Dispatch {
             let event = event.clone();
             let diag = self.diagnostics.clone();
             let handler_id = handler.id.clone();
-            info!(
-                bot_id = %event.bot_id,
-                event_id = %event_id,
-                handler_id = %handler_id,
-                "dispatching event to handler"
-            );
             tokio::spawn(async move {
                 match handler.send_event(event) {
                     Ok(()) => diag.record_event_dispatched().await,
@@ -441,7 +535,6 @@ impl Dispatch {
                 }
             });
         }
-
         let deadline = Instant::now() + self.dispatch_timeout;
         let mut responses = Vec::new();
         let mut any_defer = false;
@@ -710,7 +803,10 @@ impl Dispatch {
                 self.handle_publish_key_package(handler_id, params).await
             }
             Method::AdminSendTestDm => self.handle_admin_send_test_dm(handler_id, params).await,
-            Method::AgentEvent | Method::AgentStatus => Err(DaemonError::MethodNotFound),
+            Method::AgentIsSquadMember => self.handle_is_squad_member(handler_id, params).await,
+            Method::AgentEvent | Method::AgentStatus | Method::AgentRateLimited => {
+                Err(DaemonError::MethodNotFound)
+            }
         };
 
         match result {
@@ -1347,6 +1443,89 @@ impl Dispatch {
         Ok(event_id)
     }
 
+    async fn handle_is_squad_member(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.is_squad_member missing params".into()))?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.is_squad_member missing bot_id".into()))?;
+        let group_id = params
+            .get("group_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.is_squad_member missing group_id".into()))?;
+        let member_pubkey = params
+            .get("member_pubkey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DaemonError::Config("agent.is_squad_member missing member_pubkey".into())
+            })?;
+
+        let result = self
+            .handle_is_squad_member_inner(bot_id, group_id, member_pubkey, handler_id)
+            .await?;
+        Ok(Some(serde_json::to_value(AgentIsSquadMemberResponse {
+            is_member: result,
+        })?))
+    }
+
+    async fn handle_is_squad_member_inner(
+        &self,
+        bot_id: &str,
+        group_id: &str,
+        member_pubkey: &str,
+        handler_id: Option<&str>,
+    ) -> Result<bool, DaemonError> {
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            let can_receive = cm
+                .is_authorized(hid, bot_id, "ReceiveGroupMessages")
+                .unwrap_or(false);
+            let can_send = cm
+                .is_authorized(hid, bot_id, "SendGroupMessages")
+                .unwrap_or(false);
+            can_receive || can_send
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+
+        let member = nostr::PublicKey::parse(member_pubkey)
+            .map_err(|e| DaemonError::Config(format!("invalid member_pubkey: {e}")))?;
+        // Validate that group_id is a valid hex string before calling mls_engine.is_group_member
+        hex::decode(group_id)
+            .map_err(|e| DaemonError::Config(format!("invalid group_id hex: {e}")))?;
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let mls_engine = bot
+            .mls
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+
+        mls_engine
+            .is_group_member(group_id, &member)
+            .await
+            .map_err(DaemonError::from)
+            .or_else(|e| match e {
+                DaemonError::Mls(crate::mls::MlsError::GroupNotFound) => {
+                    // Return false instead of propagating GroupNotFound to prevent
+                    // leaking group existence information
+                    Ok(false)
+                }
+                _ => Err(DaemonError::Nostr(format!(
+                    "failed to check squad membership: {e}"
+                ))),
+            })
+    }
+
     /// Spawn a background task that removes disconnected handlers that have
     /// been stale longer than `stale_timeout`.
     pub fn spawn_handler_reaper(
@@ -1416,6 +1595,56 @@ impl Dispatch {
 
     /// Mark a handler's live connection as dead without removing its persisted
     /// registration. A later reconnect can reuse the stored row.
+    /// Process MLS group message events with authorization, deduplication, and rate limiting.
+    /// Returns true if processing should continue, false if the event should be dropped.
+    async fn process_mls_group_message(
+        &self,
+        event: &AgentEvent,
+        handlers: &mut Vec<HandlerRef>,
+        bot_config: &BotConfig,
+    ) -> Result<bool, DaemonError> {
+        // Authorization check - filter handlers that are authorized for ReceiveGroupMessages
+        handlers.retain(|h| h.is_authorized(&event.bot_id, "ReceiveGroupMessages"));
+
+        // Deduplication check
+        let event_id = event.event_id.clone();
+        let window = Duration::from_secs(bot_config.dedup_window());
+        let mut cache = self.mls_dedup_cache.lock().await;
+        if cache.is_duplicate(&event_id, window) {
+            debug!(
+                bot_id = %event.bot_id,
+                event_id = %event_id,
+                "dropping duplicate MLS group message"
+            );
+            return Ok(false);
+        }
+
+        // Rate limiting check
+        let group_id = event.chat_id.as_deref().unwrap_or_default();
+        let now = Instant::now();
+        if !self
+            .rate_limiter
+            .check_group(&event.bot_id, group_id, now)
+            .await
+        {
+            self.diagnostics.record_group_message_rate_limited().await;
+            let window_seconds = GROUP_RATE_WINDOW.as_secs();
+            for handler in &*handlers {
+                if let Err(e) = handler.send_rate_limited(&event.bot_id, group_id, window_seconds) {
+                    warn!(
+                        bot_id = %event.bot_id,
+                        group_id = %group_id,
+                        handler_id = %handler.id,
+                        error = %e,
+                        "failed to send rate_limited notification"
+                    );
+                }
+            }
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
     pub async fn disconnect_handler(&self, handler_id: &str) {
         let mut cm = self.client_manager.write().await;
         if let Some(handler) = cm.handler_registry.get_handler_mut(handler_id) {
@@ -2435,6 +2664,14 @@ mod tests {
                 _since: Option<nostr::Timestamp>,
             ) -> Result<nostr::SubscriptionId, DaemonError> {
                 Ok(nostr::SubscriptionId::new("sub-deadlock-test"))
+            }
+
+            async fn subscribe_group_messages_with_since(
+                &self,
+                _npub: &nostr::PublicKey,
+                _since: Option<nostr::Timestamp>,
+            ) -> Result<nostr::SubscriptionId, DaemonError> {
+                Ok(nostr::SubscriptionId::new("group-sub-deadlock-test"))
             }
         }
 

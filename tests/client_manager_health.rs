@@ -16,6 +16,7 @@ fn bot_config(id: &str, keys: &nostr::Keys, relays: Vec<String>) -> BotConfig {
         },
         relays,
         capabilities: vec!["ReadMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     }
 }
@@ -74,6 +75,7 @@ async fn bot_health_snapshot_reflects_bot_config() {
             "wss://relay.b.example".into(),
         ],
         capabilities: vec!["ReadMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     }])
     .await;

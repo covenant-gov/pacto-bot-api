@@ -249,6 +249,7 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
         },
         relays: vec![relay.url()],
         capabilities: vec!["ReadMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
 
@@ -307,6 +308,7 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
         },
         relays: vec![relay_url],
         capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
     let config = common::make_config(&dir, vec![bot])?;

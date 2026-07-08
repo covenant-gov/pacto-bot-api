@@ -22,7 +22,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
@@ -39,6 +39,7 @@ type BotSigners = HashMap<PublicKey, (String, Arc<dyn Signer>)>;
 pub struct NostrClient {
     client: Client,
     signers: Arc<RwLock<BotSigners>>,
+    mls_engines: Arc<RwLock<HashMap<PublicKey, (String, MlsEngineHandle)>>>,
     diagnostics: Option<Diagnostics>,
 }
 
@@ -57,6 +58,7 @@ impl NostrClient {
         let this = Self {
             client,
             signers: Arc::new(RwLock::new(HashMap::new())),
+            mls_engines: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: None,
         };
         this.add_relays(&relays).await?;
@@ -114,6 +116,12 @@ impl NostrClient {
         self.signers.write().await.insert(pubkey, (bot_id, signer));
     }
 
+    /// Register an MLS engine for a bot so that inbound kind:445 group
+    /// messages addressed to `pubkey` can be decrypted.
+    pub async fn add_mls_engine(&self, pubkey: PublicKey, bot_id: String, mls: MlsEngineHandle) {
+        self.mls_engines.write().await.insert(pubkey, (bot_id, mls));
+    }
+
     /// Subscribe to kind 1059 gift wraps addressed to `npub`, optionally
     /// restricted to events with `created_at` >= `since`.
     pub async fn subscribe_bot_with_since(
@@ -136,6 +144,33 @@ impl NostrClient {
     /// Subscribe to kind 1059 gift wraps addressed to `npub`.
     pub async fn subscribe_bot(&self, npub: &PublicKey) -> Result<SubscriptionId, DaemonError> {
         self.subscribe_bot_with_since(npub, None).await
+    }
+
+    /// Subscribe to kind:445 MLS group messages addressed to `npub`, optionally
+    /// restricted to events with `created_at` >= `since`.
+    pub async fn subscribe_group_messages_with_since(
+        &self,
+        _npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError> {
+        let mut filter = Filter::new().kind(Kind::MlsGroupMessage);
+        if let Some(since) = since {
+            filter = filter.since(since);
+        }
+        let output = self
+            .client
+            .subscribe(filter, None)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("subscribe failed: {e}")))?;
+        Ok(output.val)
+    }
+
+    /// Subscribe to kind:445 MLS group messages addressed to `npub`.
+    pub async fn subscribe_group_messages(
+        &self,
+        npub: &PublicKey,
+    ) -> Result<SubscriptionId, DaemonError> {
+        self.subscribe_group_messages_with_since(npub, None).await
     }
 
     /// Unsubscribe a previously created bot subscription.
@@ -439,10 +474,11 @@ impl NostrClient {
     }
 
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
-    pub fn receive_events(&self) -> impl Stream<Item = Result<AgentEvent, DaemonError>> {
+    pub fn receive_events(&self) -> impl Stream<Item = Result<AgentEvent, DaemonError>> + use<> {
         let (tx, rx) = unbounded_channel();
         let client = self.client.clone();
         let signers = Arc::clone(&self.signers);
+        let mls_engines = Arc::clone(&self.mls_engines);
         let diagnostics = self.diagnostics.clone();
 
         tokio::spawn(async move {
@@ -450,6 +486,7 @@ impl NostrClient {
                 .handle_notifications(|notification| {
                     let tx: UnboundedSender<Result<AgentEvent, DaemonError>> = tx.clone();
                     let signers = Arc::clone(&signers);
+                    let mls_engines = Arc::clone(&mls_engines);
                     let diagnostics = diagnostics.clone();
                     async move {
                         match notification {
@@ -470,6 +507,31 @@ impl NostrClient {
                                         )
                                         .await;
                                         let _ = tx.send(result);
+                                    });
+                                } else if event.kind == Kind::MlsGroupMessage {
+                                    // Spawn each group message decryption in its own task so that
+                                    // one bot's slow MLS engine does not block other bots.
+                                    let tx = tx.clone();
+                                    let signers = Arc::clone(&signers);
+                                    let mls_engines = Arc::clone(&mls_engines);
+                                    tokio::spawn(async move {
+                                        let signers = signers.read().await.clone();
+                                        let mls_engines = mls_engines.read().await.clone();
+                                        match Self::process_group_message(
+                                            &signers,
+                                            &mls_engines,
+                                            &event,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(agent_event)) => {
+                                                let _ = tx.send(Ok(agent_event));
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e));
+                                            }
+                                        }
                                     });
                                 }
                                 Ok(false)
@@ -585,6 +647,110 @@ impl NostrClient {
             timestamp: rumor.created_at.as_u64(),
         })
     }
+
+    /// Decrypt a kind:445 MLS group message wrapper and produce an
+    /// [`AgentEvent`] for application messages.
+    ///
+    /// Protocol-only messages (proposals, commits, etc.) return `Ok(None)` so
+    /// they do not fan out to handlers. Skip-own and membership checks are
+    /// intentionally stubbed here and will be implemented in U3.
+    async fn process_group_message(
+        signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
+        mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
+        event: &Event,
+    ) -> Result<Option<AgentEvent>, DaemonError> {
+        info!(
+            event_id = %event.id.to_hex(),
+            kind = %event.kind.as_u16(),
+            "received group message from relay"
+        );
+
+        if let Err(e) = event.verify() {
+            return Err(DaemonError::Nostr(format!(
+                "group message signature verification failed: {e}"
+            )));
+        }
+
+        // Group messages are addressed to a Squad, not to a specific bot, so
+        // we identify the recipient by finding a bot that is a member of the
+        // group identified by the h tag.
+        let group_id = event
+            .tags
+            .iter()
+            .find(|t| t.kind() == nostr::TagKind::h())
+            .and_then(|t| t.content())
+            .map(|s| s.to_string())
+            .ok_or_else(|| DaemonError::Nostr("group message missing h tag".into()))?;
+
+        let mut recipient: Option<PublicKey> = None;
+        debug!(
+            "looking for group_id={} among {} engines",
+            group_id,
+            mls_engines.len()
+        );
+        for (pubkey, (_, mls)) in mls_engines {
+            match mls.has_group_with_wire_id(&group_id).await {
+                Ok(true) => {
+                    debug!("found engine for pubkey={} with group {}", pubkey, group_id);
+                    recipient = Some(*pubkey);
+                    break;
+                }
+                Ok(false) => {
+                    debug!(
+                        "engine for pubkey={} does NOT have group {}",
+                        pubkey, group_id
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    return Err(DaemonError::Nostr(format!(
+                        "failed to check squad membership: {e}"
+                    )));
+                }
+            }
+        }
+
+        let recipient = recipient.ok_or_else(|| {
+            DaemonError::Nostr("group message not addressed to a bot with an MLS engine".into())
+        })?;
+
+        let (bot_id, signer) = signers
+            .get(&recipient)
+            .ok_or_else(|| DaemonError::Nostr(format!("no signer registered for {recipient}")))?;
+        let (_mls_bot_id, mls) = mls_engines.get(&recipient).ok_or_else(|| {
+            DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
+        })?;
+
+        // U3: skip own events.
+        if event.pubkey == signer.public_key() {
+            debug!(
+                event_id = %event.id.to_hex(),
+                bot_id = %bot_id,
+                "skipping own group message"
+            );
+            return Ok(None);
+        }
+
+        let decrypted = mls
+            .decrypt_group_message(event)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("failed to decrypt group message: {e}")))?;
+
+        if let Some(decrypted) = decrypted {
+            Ok(Some(AgentEvent {
+                bot_id: bot_id.clone(),
+                event_id: decrypted.event_id,
+                event_type: EventType::MlsGroupMessageReceived,
+                chat_id: Some(decrypted.group_id),
+                content: decrypted.content,
+                rumor_id: event.id.to_hex(),
+                author: decrypted.author,
+                timestamp: decrypted.timestamp,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 /// Trait for the subset of Nostr client operations needed by
@@ -600,6 +766,14 @@ pub trait NostrSubscribe: Send + Sync {
         npub: &PublicKey,
         since: Option<Timestamp>,
     ) -> Result<SubscriptionId, DaemonError>;
+
+    /// Subscribe to kind:445 MLS group messages addressed to `npub`, optionally
+    /// restricted to events with `created_at` >= `since`.
+    async fn subscribe_group_messages_with_since(
+        &self,
+        npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError>;
 }
 
 #[async_trait::async_trait]
@@ -610,6 +784,14 @@ impl NostrSubscribe for NostrClient {
         since: Option<Timestamp>,
     ) -> Result<SubscriptionId, DaemonError> {
         NostrClient::subscribe_bot_with_since(self, npub, since).await
+    }
+
+    async fn subscribe_group_messages_with_since(
+        &self,
+        npub: &PublicKey,
+        since: Option<Timestamp>,
+    ) -> Result<SubscriptionId, DaemonError> {
+        NostrClient::subscribe_group_messages_with_since(self, npub, since).await
     }
 }
 

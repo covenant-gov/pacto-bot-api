@@ -102,6 +102,8 @@ pub struct HealthSnapshot {
     pub send_dm_total: u64,
     /// Total plain DMs that failed to publish.
     pub send_dm_failed_total: u64,
+    /// Total MLS group messages dropped due to per-Squad rate limiting.
+    pub group_messages_rate_limited_total: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
     /// Recent redacted error records, oldest first.
@@ -131,6 +133,7 @@ impl Default for HealthSnapshot {
             reply_send_failed_total: 0,
             send_dm_total: 0,
             send_dm_failed_total: 0,
+            group_messages_rate_limited_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
             reported_at: now,
@@ -340,6 +343,13 @@ impl Diagnostics {
     /// Increment the counter for rate-limited events.
     pub async fn record_rate_limited(&self) {
         self.with_snapshot(|snapshot| snapshot.rate_limited_total += 1)
+            .await;
+    }
+
+    /// Increment the counter for MLS group messages dropped due to per-Squad
+    /// rate limiting.
+    pub async fn record_group_message_rate_limited(&self) {
+        self.with_snapshot(|snapshot| snapshot.group_messages_rate_limited_total += 1)
             .await;
     }
 
@@ -816,6 +826,7 @@ mod tests {
         assert_eq!(snap.rate_limited_total, 0);
         assert_eq!(snap.relay_reconnects_total, 0);
         assert_eq!(snap.bunker_sign_failures_total, 0);
+        assert_eq!(snap.group_messages_rate_limited_total, 0);
         assert!(snap.bots.is_empty());
         assert!(snap.errors.is_empty());
     }
@@ -830,6 +841,7 @@ mod tests {
         diag.record_relay_reconnect().await;
         diag.record_bunker_sign_failure().await;
         diag.record_bunker_sign_failure().await;
+        diag.record_group_message_rate_limited().await;
         diag.set_handlers_registered(5).await;
 
         let snap = diag.snapshot().await;
@@ -838,6 +850,7 @@ mod tests {
         assert_eq!(snap.rate_limited_total, 1);
         assert_eq!(snap.relay_reconnects_total, 1);
         assert_eq!(snap.bunker_sign_failures_total, 2);
+        assert_eq!(snap.group_messages_rate_limited_total, 1);
         assert_eq!(snap.handlers_registered, 5);
     }
 

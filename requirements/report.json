@@ -225,10 +225,12 @@
       "tests": [
         "tests/nostr_client.rs",
         "tests/integration_test.rs",
+        "tests/mls_inbound.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
+        "tests/mls_inbound.rs",
         "tests/multi_bot.rs",
         "tests/nostr_client.rs"
       ],

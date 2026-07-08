@@ -26,6 +26,7 @@ fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
         },
         relays: vec![],
         capabilities: vec!["SendGroupMessages".into()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     }
 }

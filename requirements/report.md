@@ -25,7 +25,7 @@ The following requirements were tagged directly in test source files:
 - **R10** — tests/admin_cli_migration.rs
 - **R11** — tests/admin_cli_creation.rs
 - **R12** — tests/integration_test.rs, tests/multi_bot.rs, tests/nostr_client.rs
-- **R13** — tests/integration_test.rs, tests/multi_bot.rs, tests/nostr_client.rs
+- **R13** — tests/integration_test.rs, tests/mls_inbound.rs, tests/multi_bot.rs, tests/nostr_client.rs
 - **R14** — tests/dispatch_integration.rs
 - **R15** — tests/dispatch_integration.rs, tests/integration_test.rs, tests/multi_bot.rs
 - **R16** — tests/dispatch_integration.rs
@@ -67,7 +67,7 @@ The following requirements were tagged directly in test source files:
 | R10 | Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co... | tests/admin_cli_migration.rs | src/admin.rs<br>src/db.rs | — | ✅ covered |
 | R11 | The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations. | tests/admin_cli_creation.rs | src/main.rs<br>src/admin.rs | Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods. | ✅ covered |
 | R12 | The daemon sends and receives NIP-17/44/59 DMs (gift wrap pipeline) for each registered bot identity. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/bot_state.rs | — | ✅ covered |
-| R13 | The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/dispatch.rs<br>src/events.rs | — | ✅ covered |
+| R13 | The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/mls_inbound.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/dispatch.rs<br>src/events.rs | — | ✅ covered |
 | R14 | Handlers send DM replies via `agent.send_dm` notifications to the daemon. The daemon encrypts, wraps, and publishes the gift wrap. The daemon verifies that the calling handler is authorized for the... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R15 | Handlers connect to the daemon and register via a `handler.register` JSON-RPC request, declaring which event types they handle and which bot identities they serve. The daemon assigns a server-gener... | tests/dispatch_integration.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | src/handlers.rs<br>src/transport/protocol.rs | — | ✅ covered |
 | R16 | The daemon dispatches events to registered handlers based on event type and bot identity. A handler receives only events for bot identities it registered for. The daemon enforces per-call capabilit... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |

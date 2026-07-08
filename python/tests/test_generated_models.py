@@ -11,19 +11,19 @@ from pacto_bot_sdk import (
     AgentErrorParams,
     AgentEventParams,
     AgentMetricsParams,
-    AgentMetricsResult,
+    AgentMetricsResponse,
     AgentSendDmParams,
-    AgentSendDmResult,
+    AgentSendDmResponse,
     AgentSetProfileParams,
-    AgentSetProfileResult,
+    AgentSetProfileResponse,
     AgentStatusParams,
     AgentVersionParams,
-    AgentVersionResult,
+    AgentVersionResponse,
     HandlerRegisterParams,
-    HandlerRegisterResult,
+    HandlerRegisterResponse,
     HandlerResponseParams,
     HandlerUnregisterParams,
-    HandlerUnregisterResult,
+    HandlerUnregisterResponse,
 )
 
 
@@ -63,10 +63,10 @@ def _assert_optional_defaults_to_none(
 
 def test_result_type_aliases_are_expected_types():
     """The unresolved-schema result aliases keep their declared shapes."""
-    assert AgentMetricsResult == dict[str, Any]
-    assert AgentVersionResult == dict[str, Any]
-    assert AgentSendDmResult == str
-    assert AgentSetProfileResult == str
+    assert AgentMetricsResponse == dict[str, Any]
+    assert AgentVersionResponse == dict[str, Any]
+    assert AgentSendDmResponse == str
+    assert AgentSetProfileResponse == str
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +273,12 @@ def test_handler_register_params_requires_all_fields():
 
 
 # ---------------------------------------------------------------------------
-# HandlerRegisterResult
+    # HandlerRegisterResponse
 # ---------------------------------------------------------------------------
 
 
 def test_handler_register_result_constructs_with_valid_data():
-    result = HandlerRegisterResult(
+    result = HandlerRegisterResponse(
         handler_id="h-123",
         reconnect_token="rt-123",
         registered_events=["dm_received"],
@@ -294,7 +294,7 @@ def test_handler_register_result_requires_all_fields():
         "registered_events": ["dm_received"],
     }
     _assert_required_fields(
-        HandlerRegisterResult, sample, ["handler_id", "registered_events"]
+        HandlerRegisterResponse, sample, ["handler_id", "registered_events"]
     )
 
 
@@ -326,19 +326,19 @@ def test_handler_response_params_requires_action_and_event_id():
 
 
 # ---------------------------------------------------------------------------
-# HandlerUnregisterResult
+    # HandlerUnregisterResponse
 # ---------------------------------------------------------------------------
 
 
 def test_handler_unregister_result_constructs_with_valid_data():
-    result = HandlerUnregisterResult(unregistered=True)
+    result = HandlerUnregisterResponse(unregistered=True)
     assert result.unregistered is True
     assert result.jsonrpc_method == "handler.unregister"
 
 
 def test_handler_unregister_result_requires_unregistered():
     with pytest.raises(ValidationError):
-        HandlerUnregisterResult()
+        HandlerUnregisterResponse()
 
 
 # ---------------------------------------------------------------------------

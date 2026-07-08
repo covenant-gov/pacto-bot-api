@@ -131,6 +131,26 @@ impl HandlerRef {
         }
     }
 
+    /// Send an `agent.rate_limited` notification to this handler if it has a
+    /// live connection.
+    pub fn send_rate_limited(
+        &self,
+        bot_id: &str,
+        group_id: &str,
+        window_seconds: u64,
+    ) -> Result<(), DaemonError> {
+        let params = serde_json::json!({
+            "bot_id": bot_id,
+            "group_id": group_id,
+            "window_seconds": window_seconds,
+        });
+        let msg = JsonRpcMessage::notification("agent.rate_limited", Some(params));
+        match &self.connection {
+            Some(conn) => conn.send(msg),
+            None => Ok(()),
+        }
+    }
+
     /// Send an `agent.metrics` notification to this handler if it has a live connection.
     pub fn send_metrics(&self, response: &MetricsResponse) -> Result<(), DaemonError> {
         let msg =
@@ -332,6 +352,7 @@ fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
     match event_type {
         "dm_received" => Ok(EventType::DmReceived),
         "mls_welcome_received" => Ok(EventType::MlsWelcomeReceived),
+        "mls_group_message_received" => Ok(EventType::MlsGroupMessageReceived),
         _ => Err(DaemonError::InvalidEventType(event_type.to_string())),
     }
 }

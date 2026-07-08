@@ -78,6 +78,7 @@ pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>
         },
         relays: vec!["wss://127.0.0.1:65535".to_string()],
         capabilities: vec!["ReadMessages".to_string()],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
     Ok((bot, nsec))
@@ -108,6 +109,7 @@ pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     })
 }
@@ -141,6 +143,7 @@ pub fn generate_bunker_bot_with_keys(
         },
         relays: vec![],
         capabilities: vec![],
+        mls_dedup_window_secs: None,
         ..Default::default()
     };
     Ok((bot, remote_keys))

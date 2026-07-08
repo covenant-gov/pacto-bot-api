@@ -43,6 +43,9 @@ pub struct BotConfigGenerated {
     pub display_name: Option<String>,
     /// id
     pub id: String,
+    /// Time window in seconds for MLS group-message deduplication
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_dedup_window_secs: Option<u64>,
     /// npub
     pub npub: String,
     /// URL to the bot's profile picture

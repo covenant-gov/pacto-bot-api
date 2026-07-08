@@ -284,7 +284,7 @@ def generate_models(schema: dict[str, Any], output_path: Path) -> None:
         )
 
         # Result model or alias.
-        result_def = _result_annotation(method, f"{base_name}Result")
+        result_def = _result_annotation(method, f"{base_name}Response")
         if isinstance(result_def, ModelDef):
             models[result_def.name] = result_def
         elif isinstance(result_def, ResultAlias):
@@ -504,7 +504,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
         params_by_method[method_name] = f"{base_name}Params"
         if method.get("result"):
             result_schema = method["result"].get("schema", {})
-            result_base = f"{base_name}Result"
+            result_base = f"{base_name}Response"
             if result_schema.get("type") == "object" and "$ref" not in result_schema:
                 result_by_method[method_name] = ("model", result_base, result_base)
             else:
