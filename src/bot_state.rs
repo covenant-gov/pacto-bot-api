@@ -100,6 +100,7 @@ mod tests {
             },
             relays: vec![],
             capabilities: vec![],
+            mls_dedup_window_secs: None,
             ..Default::default()
         }
     }

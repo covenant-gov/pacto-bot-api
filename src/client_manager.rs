@@ -174,6 +174,13 @@ impl ClientManager {
 
             let sub_id = client.subscribe_bot_with_since(pubkey, since).await?;
             bot.add_subscription(sub_id.to_string());
+
+            if bot.mls.is_some() {
+                let mls_sub_id = client
+                    .subscribe_group_messages_with_since(pubkey, since)
+                    .await?;
+                bot.add_subscription(mls_sub_id.to_string());
+            }
         }
         Ok(())
     }
@@ -223,6 +230,7 @@ mod tests {
             },
             relays: vec![],
             capabilities: vec!["ReadMessages".into()],
+            mls_dedup_window_secs: None,
             ..Default::default()
         }
     }
@@ -448,6 +456,7 @@ mod tests {
                 },
                 relays: vec![],
                 capabilities: vec![],
+                mls_dedup_window_secs: None,
                 ..Default::default()
             }],
         };
@@ -510,6 +519,16 @@ mod tests {
             since: Option<Timestamp>,
         ) -> Result<SubscriptionId, DaemonError> {
             let sub_id = format!("sub-{}", self.calls.lock().len());
+            self.calls.lock().push((*npub, since));
+            Ok(SubscriptionId::new(sub_id))
+        }
+
+        async fn subscribe_group_messages_with_since(
+            &self,
+            npub: &PublicKey,
+            since: Option<Timestamp>,
+        ) -> Result<SubscriptionId, DaemonError> {
+            let sub_id = format!("group-sub-{}", self.calls.lock().len());
             self.calls.lock().push((*npub, since));
             Ok(SubscriptionId::new(sub_id))
         }

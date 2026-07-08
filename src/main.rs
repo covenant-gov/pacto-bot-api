@@ -305,13 +305,19 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     client_manager.update_diagnostics(&diagnostics).await;
 
     // Register every bot signer so gift wraps addressed to its pubkey can be
-    // decrypted. The NostrClient clone held by ClientManager shares the same
-    // signer map, so registrations apply to both handles.
+    // decrypted, and register every bot MLS engine so kind:445 group messages
+    // addressed to its squads can be decrypted. The NostrClient clone held by
+    // ClientManager shares the same maps, so registrations apply to both handles.
     for (pubkey, bot) in client_manager.bots() {
         let signer: Arc<dyn Signer> = Arc::new(bot.signer.clone());
         nostr_client
             .add_signer(*pubkey, bot.bot_id().to_string(), signer)
             .await;
+        if let Some(mls) = bot.mls.clone() {
+            nostr_client
+                .add_mls_engine(*pubkey, bot.bot_id().to_string(), mls)
+                .await;
+        }
     }
 
     // Subscribe each bot to its gift-wrap filter, using the persisted cursor
