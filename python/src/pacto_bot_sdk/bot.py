@@ -13,7 +13,7 @@ import traceback
 from typing import Any, Callable
 
 from ._generated.client import PactoClient, PactoClientError
-from ._generated.models import AgentEventParams, AgentStatusParams
+from ._generated.models import AgentEventParams, AgentRateLimitedParams, AgentStatusParams
 from .logger import Logger
 from .parser import parse_command
 from .retry_circuit import RetryCircuit
@@ -32,6 +32,7 @@ from .transports import (
 
 CommandHandler = Callable[[AgentEventParams, "Bot"], Any]
 StatusHandler = Callable[[AgentStatusParams, "Bot"], Any]
+RateLimitedHandler = Callable[[AgentRateLimitedParams, "Bot"], Any]
 
 
 class Bot:
@@ -108,6 +109,7 @@ class Bot:
         self._commands: dict[str, CommandHandler] = {}
         self._default_handler: CommandHandler | None = None
         self._status_handler: StatusHandler | None = None
+        self._rate_limited_handler: RateLimitedHandler | None = None
 
         self._shutdown = asyncio.Event()
         self._reader_task: asyncio.Task[None] | None = None
@@ -247,6 +249,11 @@ class Bot:
     def status(self, handler: StatusHandler) -> StatusHandler:
         """Register a callback for ``agent.status`` notifications."""
         self._status_handler = handler
+        return handler
+
+    def rate_limited(self, handler: RateLimitedHandler) -> RateLimitedHandler:
+        """Register a callback for ``agent.rate_limited`` notifications."""
+        self._rate_limited_handler = handler
         return handler
 
     # -----------------------------------------------------------------------
@@ -561,6 +568,8 @@ class Bot:
                     await self._handle_event(notification)
                 elif isinstance(notification, AgentStatusParams):
                     await self._handle_status(notification)
+                elif isinstance(notification, AgentRateLimitedParams):
+                    await self._handle_rate_limited(notification)
         except asyncio.CancelledError:
             pass
 
@@ -641,3 +650,10 @@ class Bot:
                 await result
         else:
             self._logger.info(f"daemon status: {status.state}")
+
+    async def _handle_rate_limited(self, params: AgentRateLimitedParams) -> None:
+        self._logger.info(f"agent rate limited: {params.window_seconds}s window")
+        if self._rate_limited_handler is not None:
+            result = self._rate_limited_handler(params, self)
+            if inspect.isawaitable(result):
+                await result
