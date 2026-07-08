@@ -28,7 +28,7 @@
               "capabilities": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Capabilities the handler requests."
+                "description": "Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, and ReceiveGroupMessages."
               }
             },
             "required": ["bot_ids", "event_types", "capabilities"]
@@ -278,12 +278,12 @@
               },
               "type": {
                 "type": "string",
-                "enum": ["dm_received"],
+                "enum": ["dm_received", "mls_group_message_received"],
                 "description": "Event type."
               },
               "chat_id": {
                 "type": "string",
-                "description": "Conversation identifier, often the sender's npub."
+                "description": "Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS group messages."
               },
               "content": {
                 "type": "string",
@@ -307,6 +307,74 @@
           }
         }
       ]
+    },
+    {
+      "name": "agent.rate_limited",
+      "summary": "Notification that an inbound MLS group message was dropped because the per-Squad rate limit was exceeded.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity the Squad belongs to."
+              },
+              "group_id": {
+                "type": "string",
+                "description": "Hex-encoded Squad wire id."
+              },
+              "window_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Duration of the rate-limit window in seconds."
+              }
+            },
+            "required": ["bot_id", "group_id", "window_seconds"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent.is_squad_member",
+      "summary": "Verify whether a Nostr public key is a member of a Squad.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that participates in the Squad."
+              },
+              "group_id": {
+                "type": "string",
+                "description": "Hex-encoded Squad wire id."
+              },
+              "member_pubkey": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the member to check."
+              }
+            },
+            "required": ["bot_id", "group_id", "member_pubkey"]
+          }
+        }
+      ],
+      "result": {
+        "name": "is_member",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "is_member": {
+              "type": "boolean",
+              "description": "True when the public key is a member of the Squad."
+            }
+          },
+          "required": ["is_member"]
+        }
+      }
     },
     {
       "name": "agent.status",

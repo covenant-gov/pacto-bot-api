@@ -109,7 +109,7 @@ class AgentEventParams(BaseModel):
     author: str
     # Bot identity the event is for.
     bot_id: str
-    # Conversation identifier, often the sender's npub.
+    # Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS group messages.
     chat_id: str | None = None
     # Decrypted rumor content.
     content: str
@@ -121,6 +121,44 @@ class AgentEventParams(BaseModel):
     timestamp: int
     # Event type.
     type: str
+
+
+class AgentIsSquadMemberParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.is_squad_member`.
+
+    Verify whether a Nostr public key is a member of a Squad.
+
+    Example:
+
+        >>> AgentIsSquadMemberParams(bot_id="...", group_id="...", member_pubkey="...")
+
+    jsonrpc_method: ``"agent.is_squad_member"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.is_squad_member"
+    # Bot identity that participates in the Squad.
+    bot_id: str
+    # Hex-encoded Squad wire id.
+    group_id: str
+    # Nostr public key (npub or hex) of the member to check.
+    member_pubkey: str
+
+
+class AgentIsSquadMemberResult(BaseModel):
+    """
+    Model for JSON-RPC method `agent.is_squad_member`.
+
+    Verify whether a Nostr public key is a member of a Squad.
+
+    Example:
+
+        >>> AgentIsSquadMemberResult(is_member=True)
+
+    jsonrpc_method: ``"agent.is_squad_member"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.is_squad_member"
+    # True when the public key is a member of the Squad.
+    is_member: bool
 
 
 class AgentListHandlersParams(BaseModel):
@@ -200,6 +238,27 @@ class AgentPublishKeyPackageParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "agent.publish_key_package"
     # Bot identity that will publish the KeyPackage.
     bot_id: str
+
+
+class AgentRateLimitedParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.rate_limited`.
+
+    Notification that an inbound MLS group message was dropped because the per-Squad rate limit was exceeded.
+
+    Example:
+
+        >>> AgentRateLimitedParams(bot_id="...", group_id="...", window_seconds=0)
+
+    jsonrpc_method: ``"agent.rate_limited"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.rate_limited"
+    # Bot identity the Squad belongs to.
+    bot_id: str
+    # Hex-encoded Squad wire id.
+    group_id: str
+    # Duration of the rate-limit window in seconds.
+    window_seconds: int
 
 
 class AgentSendDmParams(BaseModel):
@@ -386,7 +445,7 @@ class HandlerRegisterParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Bot identities this handler wants to serve.
     bot_ids: list[str]
-    # Capabilities the handler requests.
+    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, and ReceiveGroupMessages.
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
@@ -484,4 +543,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'SystemHealthResult', 'SystemVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'SystemHealthResult', 'SystemVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResult', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult', 'SystemHealthParams', 'SystemVersionParams']

@@ -149,6 +149,25 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
+    async def agent_is_squad_member(self, bot_id: str, group_id: str, member_pubkey: str) -> models.AgentIsSquadMemberResult:
+        """
+        Call JSON-RPC method `agent.is_squad_member`.
+
+        Verify whether a Nostr public key is a member of a Squad.
+
+        Example:
+
+            >>> result = await client.agent_is_squad_member(...)
+            >>> isinstance(result, AgentIsSquadMemberResult)
+
+        jsonrpc_method: ``"agent.is_squad_member"``
+        """
+        params = models.AgentIsSquadMemberParams(bot_id=bot_id, group_id=group_id, member_pubkey=member_pubkey)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.is_squad_member", params_dict)
+        result = response.get('result')
+        return models.AgentIsSquadMemberResult.model_validate(result)
+
     async def agent_list_handlers(self) -> models.AgentListHandlersResult:
         """
         Call JSON-RPC method `agent.list_handlers`.
@@ -203,6 +222,27 @@ class PactoClient:
         response = await self._request("agent.publish_key_package", params_dict)
         result = response.get('result')
         return result
+
+    async def agent_rate_limited(self, bot_id: str, group_id: str, window_seconds: int) -> None:
+        """
+        Send JSON-RPC notification `agent.rate_limited`.
+
+        Notification that an inbound MLS group message was dropped because the per-Squad rate limit was exceeded.
+
+        Example:
+
+            >>> await client.agent_rate_limited(...)
+
+        jsonrpc_method: ``"agent.rate_limited"``
+        """
+        params = models.AgentRateLimitedParams(bot_id=bot_id, group_id=group_id, window_seconds=window_seconds)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        frame = {
+            "jsonrpc": "2.0",
+            "method": "agent.rate_limited",
+            "params": params_dict,
+        }
+        await self.transport.write_frame(frame)
 
     async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResult:
         """

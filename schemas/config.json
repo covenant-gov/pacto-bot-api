@@ -27,7 +27,8 @@
           "capabilities": { "type": "array", "items": { "type": "string" } },
           "display_name": { "type": "string", "description": "Human-readable display name for the bot profile" },
           "about": { "type": "string", "description": "Description text for the bot profile" },
-          "picture": { "type": "string", "description": "URL to the bot's profile picture" }
+          "picture": { "type": "string", "description": "URL to the bot's profile picture" },
+          "mls_dedup_window_secs": { "type": "integer", "minimum": 0, "description": "Time window in seconds for MLS group-message deduplication" }
         },
         "required": ["id", "npub", "signing"]
       }
