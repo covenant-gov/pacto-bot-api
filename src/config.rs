@@ -245,6 +245,15 @@ fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError
     Ok(())
 }
 
+/// Valid bot capability strings.
+const VALID_CAPABILITIES: &[&str] = &[
+    "ReadMessages",
+    "SendMessages",
+    "ManageProfile",
+    "SendGroupMessages",
+    "Admin",
+];
+
 /// Redact query-parameter values from a `bunker://` URI.
 ///
 /// Keeps the scheme and host/path portion visible for debugging while
@@ -328,6 +337,17 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
         validate_bot_id(&bot.id)?;
         if !seen.insert(bot.id.clone()) {
             return Err(DaemonError::Config(format!("duplicate bot_id: {}", bot.id)));
+        }
+
+        for cap in &bot.capabilities {
+            if !VALID_CAPABILITIES.contains(&cap.as_str()) {
+                return Err(DaemonError::Config(format!(
+                    "bot {}: unknown capability {}; expected one of: {}",
+                    bot.id,
+                    cap,
+                    VALID_CAPABILITIES.join(", ")
+                )));
+            }
         }
 
         match &bot.signing {

@@ -259,7 +259,10 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
     for method in &catalog.methods {
         assert!(
             !method.params.is_empty()
-                || matches!(method.name.as_str(), "agent.metrics" | "agent.version"),
+                || matches!(
+                    method.name.as_str(),
+                    "agent.metrics" | "agent.version" | "system.version" | "system.health"
+                ),
             "{} must declare params (or explicitly declare no params)",
             method.name
         );
@@ -275,6 +278,8 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.list_handlers"
                 | "agent.unregister_handler"
                 | "agent.version"
+                | "system.version"
+                | "system.health"
                 | "agent.send_group_message"
                 | "agent.publish_key_package"
                 | "admin.send_test_dm"
@@ -385,6 +390,11 @@ fn handwritten_response_types_match_schemas() {
                 type_string == "String"
             } else if field_name == "bots" {
                 is_optional && type_string.contains("Vec")
+            } else if field_name == "config_valid" {
+                type_string == "bool" || type_string == "Option < bool >"
+            } else if field_name == "relay_state" {
+                type_string == "HashMap < String , String >"
+                    || type_string == "Option < HashMap < String , String > >"
             } else {
                 type_string == "u64" || type_string == "Option < u64 >"
             };

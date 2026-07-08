@@ -6,11 +6,11 @@
       "type": "string",
       "description": "Cargo package version of the daemon."
     },
-    "commit": {
+    "git_sha": {
       "type": "string",
       "description": "Short git commit hash (8 characters)."
     }
   },
-  "required": ["version", "commit"],
+  "required": ["version", "git_sha"],
   "additionalProperties": false
 }

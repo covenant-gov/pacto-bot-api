@@ -26,6 +26,12 @@ AgentSetProfileResult = str
 # Result type alias for `agent.version`.
 AgentVersionResult = dict[str, Any]
 
+# Result type alias for `system.health`.
+SystemHealthResult = dict[str, Any]
+
+# Result type alias for `system.version`.
+SystemVersionResult = dict[str, Any]
+
 class AdminSendTestDmParams(BaseModel):
     """
     Model for JSON-RPC method `admin.send_test_dm`.
@@ -456,4 +462,26 @@ class HandlerUnregisterResult(BaseModel):
     unregistered: bool
 
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult']
+class SystemHealthParams(BaseModel):
+    """
+    Model for JSON-RPC method `system.health`.
+
+    Return a machine-readable health and metrics snapshot.
+
+    jsonrpc_method: ``"system.health"``
+    """
+    jsonrpc_method: ClassVar[str] = "system.health"
+    pass
+
+class SystemVersionParams(BaseModel):
+    """
+    Model for JSON-RPC method `system.version`.
+
+    Return the daemon version and git commit hash.
+
+    jsonrpc_method: ``"system.version"``
+    """
+    jsonrpc_method: ClassVar[str] = "system.version"
+    pass
+
+__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'SystemHealthResult', 'SystemVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult', 'SystemHealthParams', 'SystemVersionParams']

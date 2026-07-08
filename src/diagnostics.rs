@@ -82,8 +82,12 @@ pub struct HealthSnapshot {
     pub handlers_registered: u64,
     /// Total incoming events accepted by the daemon.
     pub events_received_total: u64,
+    /// Total events successfully decrypted from gift wraps.
+    pub events_decrypted_total: u64,
     /// Total events dispatched to handlers.
     pub events_dispatched_total: u64,
+    /// Total handler responses received for dispatched events.
+    pub handler_responses_total: u64,
     /// Total events dropped due to rate limiting.
     pub rate_limited_total: u64,
     /// Total relay reconnections observed across all bots.
@@ -117,7 +121,9 @@ impl Default for HealthSnapshot {
             uptime_seconds: 0,
             handlers_registered: 0,
             events_received_total: 0,
+            events_decrypted_total: 0,
             events_dispatched_total: 0,
+            handler_responses_total: 0,
             rate_limited_total: 0,
             relay_reconnects_total: 0,
             bunker_sign_failures_total: 0,
@@ -145,8 +151,12 @@ impl HealthSnapshot {
 pub struct RecentCounts {
     /// Number of events received from Nostr relays.
     pub events_received: u64,
+    /// Number of gift-wrap events successfully decrypted.
+    pub events_decrypted: u64,
     /// Number of events dispatched to registered handlers.
     pub events_dispatched: u64,
+    /// Number of handler responses received.
+    pub handler_responses: u64,
     /// Number of reply DMs attempted.
     pub replies: u64,
     /// Number of reply DMs that failed to publish.
@@ -235,6 +245,8 @@ struct Inner {
     reply_failed: RecentBuckets,
     send_dm: RecentBuckets,
     send_dm_failed: RecentBuckets,
+    decrypted: RecentBuckets,
+    handler_responses: RecentBuckets,
 }
 
 /// Thread-safe diagnostics aggregator.
@@ -266,6 +278,8 @@ impl Diagnostics {
                 reply_failed: RecentBuckets::new(60),
                 send_dm: RecentBuckets::new(60),
                 send_dm_failed: RecentBuckets::new(60),
+                decrypted: RecentBuckets::new(60),
+                handler_responses: RecentBuckets::new(60),
             })),
             metrics_tx,
         }
@@ -280,7 +294,9 @@ impl Diagnostics {
         inner.snapshot.uptime_seconds = inner.startup_instant.elapsed().as_secs();
         inner.snapshot.recent_counts = RecentCounts {
             events_received: inner.received.count_last_n_minutes(10),
+            events_decrypted: inner.decrypted.count_last_n_minutes(10),
             events_dispatched: inner.dispatched.count_last_n_minutes(10),
+            handler_responses: inner.handler_responses.count_last_n_minutes(10),
             replies: inner.replies.count_last_n_minutes(10),
             reply_send_failed: inner.reply_failed.count_last_n_minutes(10),
             send_dm: inner.send_dm.count_last_n_minutes(10),
@@ -337,6 +353,24 @@ impl Diagnostics {
     pub async fn record_bunker_sign_failure(&self) {
         self.with_snapshot(|snapshot| snapshot.bunker_sign_failures_total += 1)
             .await;
+    }
+
+    /// Increment the counter for events successfully decrypted from gift wraps.
+    pub async fn record_event_decrypted(&self) {
+        let mut inner = write_guard(&self.inner).await;
+        inner.snapshot.events_decrypted_total += 1;
+        inner.decrypted.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Increment the counter for handler responses received after dispatch.
+    pub async fn record_handler_response(&self) {
+        let mut inner = write_guard(&self.inner).await;
+        inner.snapshot.handler_responses_total += 1;
+        inner.handler_responses.record();
+        let snap = inner.snapshot.clone();
+        let _ = inner.metrics_tx.send(snap);
     }
 
     /// Increment the counter for events rejected due to failed verification.

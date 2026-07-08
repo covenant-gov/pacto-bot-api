@@ -8,6 +8,16 @@ pub enum EventType {
     MlsWelcomeReceived,
 }
 
+impl EventType {
+    /// Return the snake_case wire name for this event type.
+    pub fn as_wire_name(self) -> &'static str {
+        match self {
+            EventType::DmReceived => "dm_received",
+            EventType::MlsWelcomeReceived => "mls_welcome_received",
+        }
+    }
+}
+
 /// Notification sent from daemon to handler when an event arrives for a bot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentEvent {

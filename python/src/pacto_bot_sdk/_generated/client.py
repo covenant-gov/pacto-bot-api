@@ -375,4 +375,40 @@ class PactoClient:
         result = response.get('result')
         return models.HandlerUnregisterResult.model_validate(result)
 
+    async def system_health(self) -> models.SystemHealthResult:
+        """
+        Call JSON-RPC method `system.health`.
+
+        Return a machine-readable health and metrics snapshot.
+
+        Example:
+
+            >>> result = await client.system_health(...)
+            >>> isinstance(result, SystemHealthResult)
+
+        jsonrpc_method: ``"system.health"``
+        """
+        params_dict: dict[str, Any] = {}
+        response = await self._request("system.health", params_dict)
+        result = response.get('result')
+        return result
+
+    async def system_version(self) -> models.SystemVersionResult:
+        """
+        Call JSON-RPC method `system.version`.
+
+        Return the daemon version and git commit hash.
+
+        Example:
+
+            >>> result = await client.system_version(...)
+            >>> isinstance(result, SystemVersionResult)
+
+        jsonrpc_method: ``"system.version"``
+        """
+        params_dict: dict[str, Any] = {}
+        response = await self._request("system.version", params_dict)
+        result = response.get('result')
+        return result
+
 __all__ = ['PactoClient', 'PactoClientError']

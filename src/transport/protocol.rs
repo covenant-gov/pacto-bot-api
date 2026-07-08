@@ -286,6 +286,10 @@ pub enum Method {
     AgentListHandlers,
     #[serde(rename = "agent.unregister_handler")]
     AgentUnregisterHandler,
+    #[serde(rename = "system.version")]
+    SystemVersion,
+    #[serde(rename = "system.health")]
+    SystemHealth,
     #[serde(rename = "agent.version")]
     AgentVersion,
     #[serde(rename = "agent.send_group_message")]
@@ -312,6 +316,8 @@ impl Method {
             Method::AgentMetrics,
             Method::AgentListHandlers,
             Method::AgentUnregisterHandler,
+            Method::SystemVersion,
+            Method::SystemHealth,
             Method::AgentVersion,
             Method::AgentSendGroupMessage,
             Method::AgentPublishKeyPackage,
@@ -337,6 +343,8 @@ impl FromStr for Method {
             "agent.metrics" => Ok(Self::AgentMetrics),
             "agent.list_handlers" => Ok(Self::AgentListHandlers),
             "agent.unregister_handler" => Ok(Self::AgentUnregisterHandler),
+            "system.version" => Ok(Self::SystemVersion),
+            "system.health" => Ok(Self::SystemHealth),
             "agent.version" => Ok(Self::AgentVersion),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
@@ -400,12 +408,24 @@ pub struct MetricsResponse {
     /// Total incoming events accepted by the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_total: Option<u64>,
+    /// Total gift-wrap events successfully decrypted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_decrypted_total: Option<u64>,
     /// Total events dispatched to handlers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_dispatched_total: Option<u64>,
+    /// Total handler responses received after dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_responses_total: Option<u64>,
     /// Total events dropped due to rate limiting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limited_total: Option<u64>,
+    /// Whether the daemon configuration is valid (always true once running).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_valid: Option<bool>,
+    /// Per-relay connection status summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_state: Option<HashMap<String, String>>,
     /// Total relay reconnections observed across all bots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_reconnects_total: Option<u64>,
@@ -427,9 +447,15 @@ pub struct MetricsResponse {
     /// Events received in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_last_10_min: Option<u64>,
+    /// Gift-wrap events decrypted in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub events_decrypted_last_10_min: Option<u64>,
     /// Events dispatched in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_dispatched_last_10_min: Option<u64>,
+    /// Handler responses received in the last 10 minutes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handler_responses_last_10_min: Option<u64>,
     /// Reply DMs attempted in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replies_last_10_min: Option<u64>,
@@ -453,7 +479,9 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             uptime_seconds: Some(snapshot.uptime_seconds),
             handlers_registered: Some(snapshot.handlers_registered),
             events_received_total: Some(snapshot.events_received_total),
+            events_decrypted_total: Some(snapshot.events_decrypted_total),
             events_dispatched_total: Some(snapshot.events_dispatched_total),
+            handler_responses_total: Some(snapshot.handler_responses_total),
             rate_limited_total: Some(snapshot.rate_limited_total),
             relay_reconnects_total: Some(snapshot.relay_reconnects_total),
             bunker_sign_failures_total: Some(snapshot.bunker_sign_failures_total),
@@ -462,12 +490,16 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             send_dm_total: Some(snapshot.send_dm_total),
             send_dm_failed_total: Some(snapshot.send_dm_failed_total),
             events_received_last_10_min: Some(snapshot.recent_counts.events_received),
+            events_decrypted_last_10_min: Some(snapshot.recent_counts.events_decrypted),
             events_dispatched_last_10_min: Some(snapshot.recent_counts.events_dispatched),
+            handler_responses_last_10_min: Some(snapshot.recent_counts.handler_responses),
             replies_last_10_min: Some(snapshot.recent_counts.replies),
             reply_send_failed_last_10_min: Some(snapshot.recent_counts.reply_send_failed),
             send_dm_last_10_min: Some(snapshot.recent_counts.send_dm),
             send_dm_failed_last_10_min: Some(snapshot.recent_counts.send_dm_failed),
             bots: Some(snapshot.bots),
+            config_valid: None,
+            relay_state: None,
         }
     }
 }
@@ -533,7 +565,7 @@ pub struct AgentVersionResponse {
     /// Cargo package version.
     pub version: String,
     /// Short git commit hash (8 characters).
-    pub commit: String,
+    pub git_sha: String,
 }
 
 #[cfg(test)]
@@ -556,6 +588,8 @@ mod tests {
             "agent.list_handlers",
             "agent.unregister_handler",
             "agent.version",
+            "agent.send_group_message",
+            "agent.publish_key_package",
             "admin.send_test_dm",
         ];
 

@@ -952,8 +952,8 @@ async fn unix_agent_version_returns_version_and_commit() -> Result<(), Box<dyn s
                     .as_object()
                     .ok_or("expected object result for agent.version")?;
                 assert!(obj.contains_key("version"));
-                assert!(obj.contains_key("commit"));
-                assert_eq!(obj["commit"].as_str().map(|s| s.len()), Some(8));
+                assert!(obj.contains_key("git_sha"));
+                assert_eq!(obj["git_sha"].as_str().map(|s| s.len()), Some(8));
                 assert_matches_version_schema(&r)?;
             }
             JsonRpcMessage::Error { error, .. } => {

@@ -435,6 +435,28 @@
       }
     },
     {
+      "name": "system.version",
+      "summary": "Return the daemon version and git commit hash.",
+      "params": [],
+      "result": {
+        "name": "version",
+        "schema": {
+          "$ref": "version.json"
+        }
+      }
+    },
+    {
+      "name": "system.health",
+      "summary": "Return a machine-readable health and metrics snapshot.",
+      "params": [],
+      "result": {
+        "name": "health",
+        "schema": {
+          "$ref": "metrics.json"
+        }
+      }
+    },
+    {
       "name": "agent.send_group_message",
       "summary": "Send an encrypted MLS group message as the specified bot.",
       "params": [
