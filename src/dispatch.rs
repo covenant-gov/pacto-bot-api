@@ -479,10 +479,12 @@ impl Dispatch {
         };
 
         // Process MLS group message events with dedicated helper
-        if event.event_type == EventType::MlsGroupMessageReceived {
-            if !self.process_mls_group_message(&event, &mut handlers, &bot_config).await? {
-                return Ok(());
-            }
+        if event.event_type == EventType::MlsGroupMessageReceived
+            && !self
+                .process_mls_group_message(&event, &mut handlers, &bot_config)
+                .await?
+        {
+            return Ok(());
         }
 
         self.diagnostics
@@ -1518,7 +1520,9 @@ impl Dispatch {
                     // leaking group existence information
                     Ok(false)
                 }
-                _ => Err(DaemonError::Nostr(format!("failed to check squad membership: {e}"))),
+                _ => Err(DaemonError::Nostr(format!(
+                    "failed to check squad membership: {e}"
+                ))),
             })
     }
 
@@ -1626,9 +1630,7 @@ impl Dispatch {
             self.diagnostics.record_group_message_rate_limited().await;
             let window_seconds = GROUP_RATE_WINDOW.as_secs();
             for handler in &*handlers {
-                if let Err(e) =
-                    handler.send_rate_limited(&event.bot_id, group_id, window_seconds)
-                {
+                if let Err(e) = handler.send_rate_limited(&event.bot_id, group_id, window_seconds) {
                     warn!(
                         bot_id = %event.bot_id,
                         group_id = %group_id,
