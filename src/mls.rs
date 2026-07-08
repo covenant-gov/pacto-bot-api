@@ -92,6 +92,19 @@ enum MlsCommand {
         rumor: nostr::UnsignedEvent,
         tx: oneshot::Sender<Result<Event, MlsError>>,
     },
+    IsGroupMember {
+        wire_id: String,
+        member: PublicKey,
+        tx: oneshot::Sender<Result<bool, MlsError>>,
+    },
+    DecryptGroupMessage {
+        event: nostr::Event,
+        tx: oneshot::Sender<Result<Option<DecryptedMessage>, MlsError>>,
+    },
+    HasGroupWithWireId {
+        group_id: String,
+        tx: oneshot::Sender<Result<bool, MlsError>>,
+    },
 }
 
 /// Cloneable handle to the per-bot MLS engine.
@@ -214,6 +227,64 @@ impl MlsEngineHandle {
                         })();
                         let _ = tx.send(result);
                     }
+                    MlsCommand::DecryptGroupMessage { event, tx } => {
+                        let group_id = event
+                            .tags
+                            .iter()
+                            .find(|t| t.kind() == nostr::TagKind::h())
+                            .and_then(|t| t.content())
+                            .map(|s| s.to_string());
+
+                        let result = match group_id {
+                            Some(group_id) => match engine.process_message(&event) {
+                                Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
+                                    Ok(Some(DecryptedMessage {
+                                        content: msg.content,
+                                        group_id,
+                                        author: msg.pubkey.to_hex(),
+                                        event_id: event.id.to_hex(),
+                                        timestamp: event.created_at.as_u64(),
+                                    }))
+                                }
+                                Ok(
+                                    MessageProcessingResult::Proposal(_)
+                                    | MessageProcessingResult::Commit { .. }
+                                    | MessageProcessingResult::ExternalJoinProposal { .. }
+                                    | MessageProcessingResult::Unprocessable { .. },
+                                ) => Ok(None),
+                                Err(_) => {
+                                    Err(MlsError::Engine("failed to process group message".into()))
+                                }
+                            },
+                            None => Err(MlsError::Engine("missing group id h tag".into())),
+                        };
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::HasGroupWithWireId { group_id, tx } => {
+                        let result: Result<bool, MlsError> = (|| {
+                            let groups = engine.get_groups()?;
+                            Ok(groups
+                                .iter()
+                                .any(|g| hex::encode(g.nostr_group_id.as_slice()) == group_id))
+                        })();
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::IsGroupMember {
+                        wire_id,
+                        member,
+                        tx,
+                    } => {
+                        let result: Result<bool, MlsError> = (|| {
+                            let groups = engine.get_groups()?;
+                            let group = groups
+                                .iter()
+                                .find(|g| hex::encode(g.nostr_group_id.as_slice()) == wire_id)
+                                .ok_or(MlsError::GroupNotFound)?;
+                            let members = engine.get_members(&group.mls_group_id)?;
+                            Ok(members.contains(&member))
+                        })();
+                        let _ = tx.send(result);
+                    }
                 }
             }
 
@@ -301,9 +372,61 @@ impl MlsEngineHandle {
         rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
 
+    /// Decrypt an inbound MLS group message wrapper (kind:445).
+    ///
+    /// Returns `Ok(None)` for protocol-only messages (proposals, commits, etc.)
+    /// and `Ok(Some(DecryptedMessage))` for application messages.
+    pub async fn decrypt_group_message(
+        &self,
+        event: &nostr::Event,
+    ) -> Result<Option<DecryptedMessage>, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::DecryptGroupMessage {
+                event: event.clone(),
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Check whether `member` is a member of the group identified by its
+    /// Squad wire id (`hex(nostr_group_id)`).
+    pub async fn is_group_member(
+        &self,
+        wire_id: &str,
+        member: &PublicKey,
+    ) -> Result<bool, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::IsGroupMember {
+                wire_id: wire_id.to_string(),
+                member: *member,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
     /// Return the path to the underlying `vector-mls.db` file.
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Check whether the engine knows a group whose `nostr_group_id` hex-matches
+    /// the given wire id.
+    pub async fn has_group_with_wire_id(&self, group_id: &str) -> Result<bool, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::HasGroupWithWireId {
+                group_id: group_id.to_string(),
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
 }
 
@@ -313,6 +436,21 @@ pub struct GroupInfo {
     pub mls_group_id: Vec<u8>,
     pub nostr_group_id: Vec<u8>,
     pub name: String,
+}
+
+/// A decrypted MLS application message.
+#[derive(Debug, Clone)]
+pub struct DecryptedMessage {
+    /// Plaintext content of the application message.
+    pub content: String,
+    /// Squad wire id from the wrapper event's `h` tag.
+    pub group_id: String,
+    /// Sender's Nostr pubkey in hex.
+    pub author: String,
+    /// Wrapper event id in hex.
+    pub event_id: String,
+    /// Wrapper event `created_at` timestamp.
+    pub timestamp: u64,
 }
 
 /// Enforce `0o600` on the SQLite database and its WAL/SHM sidecars if present.
