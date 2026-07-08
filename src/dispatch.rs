@@ -10,13 +10,15 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 
 use crate::client_manager::ClientManager;
+use crate::config::BotConfig;
 use crate::db::Db;
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
+use crate::handlers::HandlerRef;
 use crate::transport::protocol::{
-    AdminSendTestDmResponse, AgentIsSquadMemberResult, AgentListHandlersEntry,
+    AdminSendTestDmResponse, AgentIsSquadMemberResponse, AgentListHandlersEntry,
     AgentListHandlersResponse, AgentUnregisterHandlerResponse, AgentVersionResponse,
     HandlerReconnectParams, HandlerReconnectResponse, HandlerRegisterResponse,
     HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse, parse_method,
@@ -464,7 +466,7 @@ impl Dispatch {
     pub async fn dispatch_event(&self, event: AgentEvent) -> Result<(), DaemonError> {
         self.diagnostics.record_event_received().await;
 
-        let (handlers, npub, bot_config) = {
+        let (mut handlers, npub, bot_config) = {
             let cm = self.client_manager.read().await;
             let bot = cm
                 .get_bot_by_id(&event.bot_id)
@@ -472,54 +474,13 @@ impl Dispatch {
             let handlers = cm.handler_registry.find(&event.bot_id, event.event_type);
             let npub = bot.npub().to_string();
             let bot_config = bot.config.clone();
-            let handlers = if event.event_type == EventType::MlsGroupMessageReceived {
-                handlers
-                    .into_iter()
-                    .filter(|h| h.is_authorized(&event.bot_id, "ReceiveGroupMessages"))
-                    .collect()
-            } else {
-                handlers
-            };
+            // Authorization check for MLS group messages is now handled in the helper
             (handlers, npub, bot_config)
         };
 
+        // Process MLS group message events with dedicated helper
         if event.event_type == EventType::MlsGroupMessageReceived {
-            let event_id = event.event_id.clone();
-            let window = Duration::from_secs(bot_config.dedup_window());
-            let mut cache = self.mls_dedup_cache.lock().await;
-            if cache.is_duplicate(&event_id, window) {
-                debug!(
-                    bot_id = %event.bot_id,
-                    event_id = %event_id,
-                    "dropping duplicate MLS group message"
-                );
-                return Ok(());
-            }
-        }
-
-        if event.event_type == EventType::MlsGroupMessageReceived {
-            let group_id = event.chat_id.as_deref().unwrap_or_default();
-            let now = Instant::now();
-            if !self
-                .rate_limiter
-                .check_group(&event.bot_id, group_id, now)
-                .await
-            {
-                self.diagnostics.record_group_message_rate_limited().await;
-                let window_seconds = GROUP_RATE_WINDOW.as_secs();
-                for handler in &handlers {
-                    if let Err(e) =
-                        handler.send_rate_limited(&event.bot_id, group_id, window_seconds)
-                    {
-                        warn!(
-                            bot_id = %event.bot_id,
-                            group_id = %group_id,
-                            handler_id = %handler.id,
-                            error = %e,
-                            "failed to send rate_limited notification"
-                        );
-                    }
-                }
+            if !self.process_mls_group_message(&event, &mut handlers, &bot_config).await? {
                 return Ok(());
             }
         }
@@ -572,7 +533,6 @@ impl Dispatch {
                 }
             });
         }
-
         let deadline = Instant::now() + self.dispatch_timeout;
         let mut responses = Vec::new();
         let mut any_defer = false;
@@ -1506,7 +1466,7 @@ impl Dispatch {
         let result = self
             .handle_is_squad_member_inner(bot_id, group_id, member_pubkey, handler_id)
             .await?;
-        Ok(Some(serde_json::to_value(AgentIsSquadMemberResult {
+        Ok(Some(serde_json::to_value(AgentIsSquadMemberResponse {
             is_member: result,
         })?))
     }
@@ -1535,6 +1495,9 @@ impl Dispatch {
 
         let member = nostr::PublicKey::parse(member_pubkey)
             .map_err(|e| DaemonError::Config(format!("invalid member_pubkey: {e}")))?;
+        // Validate that group_id is a valid hex string before calling mls_engine.is_group_member
+        hex::decode(group_id)
+            .map_err(|e| DaemonError::Config(format!("invalid group_id hex: {e}")))?;
 
         let cm = self.client_manager.read().await;
         let bot = cm
@@ -1548,7 +1511,15 @@ impl Dispatch {
         mls_engine
             .is_group_member(group_id, &member)
             .await
-            .map_err(|e| DaemonError::Nostr(format!("failed to check squad membership: {e}")))
+            .map_err(DaemonError::from)
+            .or_else(|e| match e {
+                DaemonError::Mls(crate::mls::MlsError::GroupNotFound) => {
+                    // Return false instead of propagating GroupNotFound to prevent
+                    // leaking group existence information
+                    Ok(false)
+                }
+                _ => Err(DaemonError::Nostr(format!("failed to check squad membership: {e}"))),
+            })
     }
 
     /// Spawn a background task that removes disconnected handlers that have
@@ -1620,6 +1591,58 @@ impl Dispatch {
 
     /// Mark a handler's live connection as dead without removing its persisted
     /// registration. A later reconnect can reuse the stored row.
+    /// Process MLS group message events with authorization, deduplication, and rate limiting.
+    /// Returns true if processing should continue, false if the event should be dropped.
+    async fn process_mls_group_message(
+        &self,
+        event: &AgentEvent,
+        handlers: &mut Vec<HandlerRef>,
+        bot_config: &BotConfig,
+    ) -> Result<bool, DaemonError> {
+        // Authorization check - filter handlers that are authorized for ReceiveGroupMessages
+        handlers.retain(|h| h.is_authorized(&event.bot_id, "ReceiveGroupMessages"));
+
+        // Deduplication check
+        let event_id = event.event_id.clone();
+        let window = Duration::from_secs(bot_config.dedup_window());
+        let mut cache = self.mls_dedup_cache.lock().await;
+        if cache.is_duplicate(&event_id, window) {
+            debug!(
+                bot_id = %event.bot_id,
+                event_id = %event_id,
+                "dropping duplicate MLS group message"
+            );
+            return Ok(false);
+        }
+
+        // Rate limiting check
+        let group_id = event.chat_id.as_deref().unwrap_or_default();
+        let now = Instant::now();
+        if !self
+            .rate_limiter
+            .check_group(&event.bot_id, group_id, now)
+            .await
+        {
+            self.diagnostics.record_group_message_rate_limited().await;
+            let window_seconds = GROUP_RATE_WINDOW.as_secs();
+            for handler in &*handlers {
+                if let Err(e) =
+                    handler.send_rate_limited(&event.bot_id, group_id, window_seconds)
+                {
+                    warn!(
+                        bot_id = %event.bot_id,
+                        group_id = %group_id,
+                        handler_id = %handler.id,
+                        error = %e,
+                        "failed to send rate_limited notification"
+                    );
+                }
+            }
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
     pub async fn disconnect_handler(&self, handler_id: &str) {
         let mut cm = self.client_manager.write().await;
         if let Some(handler) = cm.handler_registry.get_handler_mut(handler_id) {

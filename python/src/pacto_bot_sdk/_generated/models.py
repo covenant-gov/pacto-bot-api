@@ -9,28 +9,28 @@ from pydantic import BaseModel
 """Pydantic models generated from schemas/jsonrpc.json."""
 
 # Result type alias for `agent.metrics`.
-AgentMetricsResult = dict[str, Any]
+AgentMetricsResponse = dict[str, Any]
 
 # Result type alias for `agent.publish_key_package`.
-AgentPublishKeyPackageResult = str
+AgentPublishKeyPackageResponse = str
 
 # Result type alias for `agent.send_dm`.
-AgentSendDmResult = str
+AgentSendDmResponse = str
 
 # Result type alias for `agent.send_group_message`.
-AgentSendGroupMessageResult = str
+AgentSendGroupMessageResponse = str
 
 # Result type alias for `agent.set_profile`.
-AgentSetProfileResult = str
+AgentSetProfileResponse = str
 
 # Result type alias for `agent.version`.
-AgentVersionResult = dict[str, Any]
+AgentVersionResponse = dict[str, Any]
 
 # Result type alias for `system.health`.
-SystemHealthResult = dict[str, Any]
+SystemHealthResponse = dict[str, Any]
 
 # Result type alias for `system.version`.
-SystemVersionResult = dict[str, Any]
+SystemVersionResponse = dict[str, Any]
 
 class AdminSendTestDmParams(BaseModel):
     """
@@ -53,7 +53,7 @@ class AdminSendTestDmParams(BaseModel):
     recipient: str
 
 
-class AdminSendTestDmResult(BaseModel):
+class AdminSendTestDmResponse(BaseModel):
     """
     Model for JSON-RPC method `admin.send_test_dm`.
 
@@ -61,7 +61,7 @@ class AdminSendTestDmResult(BaseModel):
 
     Example:
 
-        >>> AdminSendTestDmResult(event_id="...")
+        >>> AdminSendTestDmResponse(event_id="...")
 
     jsonrpc_method: ``"admin.send_test_dm"``
     """
@@ -144,7 +144,7 @@ class AgentIsSquadMemberParams(BaseModel):
     member_pubkey: str
 
 
-class AgentIsSquadMemberResult(BaseModel):
+class AgentIsSquadMemberResponse(BaseModel):
     """
     Model for JSON-RPC method `agent.is_squad_member`.
 
@@ -152,7 +152,7 @@ class AgentIsSquadMemberResult(BaseModel):
 
     Example:
 
-        >>> AgentIsSquadMemberResult(is_member=True)
+        >>> AgentIsSquadMemberResponse(is_member=True)
 
     jsonrpc_method: ``"agent.is_squad_member"``
     """
@@ -172,7 +172,7 @@ class AgentListHandlersParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "agent.list_handlers"
     pass
 
-class AgentListHandlersResult(BaseModel):
+class AgentListHandlersResponse(BaseModel):
     """
     Model for JSON-RPC method `agent.list_handlers`.
 
@@ -180,15 +180,15 @@ class AgentListHandlersResult(BaseModel):
 
     Example:
 
-        >>> AgentListHandlersResult(handlers=[])
+        >>> AgentListHandlersResponse(handlers=[])
 
     jsonrpc_method: ``"agent.list_handlers"``
     """
     jsonrpc_method: ClassVar[str] = "agent.list_handlers"
-    handlers: list[AgentListHandlersResultHandlersModel]
+    handlers: list[AgentListHandlersResponseHandlersModel]
 
 
-class AgentListHandlersResultHandlersModel(BaseModel):
+class AgentListHandlersResponseHandlersModel(BaseModel):
     """
     Model for JSON-RPC method `agent.list_handlers`.
 
@@ -196,7 +196,7 @@ class AgentListHandlersResultHandlersModel(BaseModel):
 
     Example:
 
-        >>> AgentListHandlersResultHandlersModel(bot_ids=[], capabilities=[], connected=True, event_types=[], handler_id="...", last_seen="...", registered_at="...", state="...", transport="...")
+        >>> AgentListHandlersResponseHandlersModel(bot_ids=[], capabilities=[], connected=True, event_types=[], handler_id="...", last_seen="...", registered_at="...", state="...", transport="...")
 
     jsonrpc_method: ``"agent.list_handlers"``
     """
@@ -365,7 +365,7 @@ class AgentUnregisterHandlerParams(BaseModel):
     handler_id: str
 
 
-class AgentUnregisterHandlerResult(BaseModel):
+class AgentUnregisterHandlerResponse(BaseModel):
     """
     Model for JSON-RPC method `agent.unregister_handler`.
 
@@ -373,7 +373,7 @@ class AgentUnregisterHandlerResult(BaseModel):
 
     Example:
 
-        >>> AgentUnregisterHandlerResult(unregistered=True)
+        >>> AgentUnregisterHandlerResponse(unregistered=True)
 
     jsonrpc_method: ``"agent.unregister_handler"``
     """
@@ -411,7 +411,7 @@ class HandlerReconnectParams(BaseModel):
     reconnect_token: str
 
 
-class HandlerReconnectResult(BaseModel):
+class HandlerReconnectResponse(BaseModel):
     """
     Model for JSON-RPC method `handler.reconnect`.
 
@@ -419,7 +419,7 @@ class HandlerReconnectResult(BaseModel):
 
     Example:
 
-        >>> HandlerReconnectResult(handler_id="...", registered_events=[])
+        >>> HandlerReconnectResponse(handler_id="...", registered_events=[])
 
     jsonrpc_method: ``"handler.reconnect"``
     """
@@ -451,7 +451,7 @@ class HandlerRegisterParams(BaseModel):
     event_types: list[str]
 
 
-class HandlerRegisterResult(BaseModel):
+class HandlerRegisterResponse(BaseModel):
     """
     Model for JSON-RPC method `handler.register`.
 
@@ -459,7 +459,7 @@ class HandlerRegisterResult(BaseModel):
 
     Example:
 
-        >>> HandlerRegisterResult(handler_id="...", reconnect_token="...", registered_events=[])
+        >>> HandlerRegisterResponse(handler_id="...", reconnect_token="...", registered_events=[])
 
     jsonrpc_method: ``"handler.register"``
     """
@@ -504,7 +504,7 @@ class HandlerUnregisterParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.unregister"
     pass
 
-class HandlerUnregisterResult(BaseModel):
+class HandlerUnregisterResponse(BaseModel):
     """
     Model for JSON-RPC method `handler.unregister`.
 
@@ -512,7 +512,7 @@ class HandlerUnregisterResult(BaseModel):
 
     Example:
 
-        >>> HandlerUnregisterResult(unregistered=True)
+        >>> HandlerUnregisterResponse(unregistered=True)
 
     jsonrpc_method: ``"handler.unregister"``
     """
@@ -543,4 +543,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResult', 'AgentPublishKeyPackageResult', 'AgentSendDmResult', 'AgentSendGroupMessageResult', 'AgentSetProfileResult', 'AgentVersionResult', 'SystemHealthResult', 'SystemVersionResult', 'AdminSendTestDmParams', 'AdminSendTestDmResult', 'AgentErrorParams', 'AgentEventParams', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResult', 'AgentListHandlersParams', 'AgentListHandlersResult', 'AgentListHandlersResultHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResult', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResult', 'HandlerRegisterParams', 'HandlerRegisterResult', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResult', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

@@ -292,7 +292,7 @@ flowchart TB
 
 **Files:**
 - `schemas/jsonrpc.json` — add `agent.is_squad_member` method with params `bot_id`, `group_id`, `member_pubkey` and result `boolean`.
-- `src/transport/protocol.rs` — add `Method::AgentIsSquadMember` and `AgentIsSquadMemberParams` / `AgentIsSquadMemberResult` generated types.
+- `src/transport/protocol.rs` — add `Method::AgentIsSquadMember` and `AgentIsSquadMemberParams` / `AgentIsSquadMemberResponse` generated types.
 - `src/dispatch.rs` — implement `handle_is_squad_member` and route it through `handle_message`.
 - `src/mls.rs` — add `MlsCommand::GetGroupMembers` and `MlsEngineHandle::is_group_member(group_id, member_pubkey)` to query the engine's membership.
 

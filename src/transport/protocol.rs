@@ -584,7 +584,7 @@ pub struct AgentIsSquadMemberParams {
 
 /// Typed payload returned by the `agent.is_squad_member` JSON-RPC method.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentIsSquadMemberResult {
+pub struct AgentIsSquadMemberResponse {
     /// True if `member_pubkey` is a member of the Squad.
     pub is_member: bool,
 }

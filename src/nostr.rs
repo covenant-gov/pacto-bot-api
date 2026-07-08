@@ -683,7 +683,7 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("group message missing h tag".into()))?;
 
         let mut recipient: Option<PublicKey> = None;
-        eprintln!(
+        debug!(
             "looking for group_id={} among {} engines",
             group_id,
             mls_engines.len()
@@ -691,15 +691,15 @@ impl NostrClient {
         for (pubkey, (_, mls)) in mls_engines {
             match mls.has_group_with_wire_id(&group_id).await {
                 Ok(true) => {
-                    eprintln!("found engine for pubkey={} with group {}", pubkey, group_id);
+        debug!("found engine for pubkey={} with group {}", pubkey, group_id);
                     recipient = Some(*pubkey);
                     break;
                 }
                 Ok(false) => {
-                    eprintln!(
-                        "engine for pubkey={} does NOT have group {}",
-                        pubkey, group_id
-                    );
+        debug!(
+            "engine for pubkey={} does NOT have group {}",
+            pubkey, group_id
+        );
                     continue;
                 }
                 Err(e) => {
