@@ -652,8 +652,13 @@ class Bot:
             self._logger.info(f"daemon status: {status.state}")
 
     async def _handle_rate_limited(self, params: AgentRateLimitedParams) -> None:
-        self._logger.info(f"agent rate limited: {params.window_seconds}s window")
         if self._rate_limited_handler is not None:
-            result = self._rate_limited_handler(params, self)
-            if inspect.isawaitable(result):
-                await result
+            try:
+                result = self._rate_limited_handler(params, self)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                self._logger.debug(traceback.format_exc())
+                self._logger.error(f"rate limited handler error: {exc}")
+        else:
+            self._logger.info(f"agent rate limited: {params.window_seconds}s window")

@@ -21,7 +21,7 @@ class PactoClient:
     def __init__(self, transport: Any) -> None:
         self.transport = transport
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()
+        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue(maxsize=100)
         self._read_task: asyncio.Task[None] | None = None
         self._closed = False
 

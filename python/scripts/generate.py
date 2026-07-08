@@ -535,7 +535,7 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append(
         "        self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}\n"
     )
-    out.append("        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue()\n")
+    out.append("        self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue(maxsize=100)\n")
     out.append("        self._read_task: asyncio.Task[None] | None = None\n")
     out.append("        self._closed = False\n\n")
 
