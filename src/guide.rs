@@ -50,7 +50,7 @@ pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?rel
 
 # Create a bot and scaffold a Python handler project in one command
 pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo"#,
-        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
+        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
 - Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.",
     );
 
@@ -202,14 +202,14 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("npub = \"npub1...\"\n");
     out.push_str("signing = { backend = \"nsec\", nsec = \"<NSEC>\" }\n");
     out.push_str("relays = [\"ws://localhost:7000\"]\n");
-    out.push_str("capabilities = [\"ReadMessages\", \"SendMessages\"]\n");
+    out.push_str("capabilities = [\"ReadMessages\", \"SendMessages\", \"SendGroupMessages\"]\n");
     out.push('\n');
     out.push_str("[[bots]]\n");
     out.push_str("id = \"secure-bot\"\n");
     out.push_str("npub = \"npub1...\"\n");
     out.push_str("signing = { backend = \"bunker_remote\", uri = \"<BUNKER_URI>\" }\n");
     out.push_str("relays = [\"wss://relay.example.com\"]\n");
-    out.push_str("capabilities = [\"ReadMessages\"]\n");
+    out.push_str("capabilities = [\"ReadMessages\", \"SendGroupMessages\"]\n");
     out.push_str("```\n\n");
     out.push_str("Signing backends:\n\n");
     out.push_str("- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.\n");

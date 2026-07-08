@@ -998,11 +998,11 @@ async fn http_agent_version_returns_version_and_commit() -> Result<(), Box<dyn s
         .as_object()
         .ok_or("expected object result for agent.version")?;
     assert!(obj.contains_key("version"), "version field missing");
-    assert!(obj.contains_key("commit"), "commit field missing");
+    assert!(obj.contains_key("git_sha"), "git_sha field missing");
     assert_eq!(
-        obj["commit"].as_str().map(|s| s.len()),
+        obj["git_sha"].as_str().map(|s| s.len()),
         Some(8),
-        "commit must be 8 characters"
+        "git_sha must be 8 characters"
     );
     assert_matches_version_schema(&result)?;
 

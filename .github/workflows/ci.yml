@@ -459,3 +459,15 @@ jobs:
             GIT_COMMIT_SHORT=${{ steps.vars.outputs.sha_short }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke check embedded version
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          image="ghcr.io/${{ github.repository }}:main"
+          version_output=$(docker run --rm "$image" pacto-bot-api --version)
+          echo "Version output: $version_output"
+          if echo "$version_output" | grep -qi 'unknown'; then
+            echo "error: Docker image version still contains 'unknown' fallback" >&2
+            exit 1
+          fi
+          echo "OK: Docker image embeds a real git SHA"

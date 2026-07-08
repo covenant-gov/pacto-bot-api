@@ -36,7 +36,7 @@ pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7
 Notes:
 - `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.
 - `--relays` — relay URLs for the bot.
-- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`.
+- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.
 - `--uri` — bunker URI (required for bunker backends; omit to prompt).
 - `--scaffold` — also generate a handler project for the new identity (non-interactive).
 - `--language` — handler language (default: `python`).
@@ -252,14 +252,14 @@ id = "echo-bot"
 npub = "npub1..."
 signing = { backend = "nsec", nsec = "<NSEC>" }
 relays = ["ws://localhost:7000"]
-capabilities = ["ReadMessages", "SendMessages"]
+capabilities = ["ReadMessages", "SendMessages", "SendGroupMessages"]
 
 [[bots]]
 id = "secure-bot"
 npub = "npub1..."
 signing = { backend = "bunker_remote", uri = "<BUNKER_URI>" }
 relays = ["wss://relay.example.com"]
-capabilities = ["ReadMessages"]
+capabilities = ["ReadMessages", "SendGroupMessages"]
 ```
 
 Signing backends:

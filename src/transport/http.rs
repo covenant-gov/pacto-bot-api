@@ -163,6 +163,7 @@ impl HttpTransport {
 
         let app = Router::new()
             .route("/", post(http_handler))
+            .route("/version", get(version_handler))
             .route("/events", get(events_handler))
             .with_state(state);
 
@@ -308,6 +309,18 @@ async fn process_single_message(
     } else {
         SingleMessageResult::Response(response)
     }
+}
+
+async fn version_handler() -> impl IntoResponse {
+    let body = serde_json::json!({
+        "version": crate::version::VERSION,
+        "git_sha": crate::version::GIT_COMMIT_SHORT,
+    });
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "application/json; charset=utf-8")],
+        body.to_string().into_bytes(),
+    )
 }
 
 async fn http_handler(

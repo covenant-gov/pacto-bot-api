@@ -257,7 +257,7 @@ enum Command {
         relays: Vec<String>,
 
         /// Capabilities granted to handlers for the new bot.
-        /// Valid values: ReadMessages, SendMessages, ManageProfile.
+        /// Valid values: ReadMessages, SendMessages, ManageProfile, SendGroupMessages.
         /// Defaults to ReadMessages,SendMessages when omitted.
         #[arg(long, value_name = "CAPABILITY")]
         capabilities: Vec<String>,
@@ -1200,9 +1200,9 @@ fn validate_relay_url(url: &str) -> Result<(), DaemonError> {
 
 fn validate_capability(cap: &str) -> Result<(), DaemonError> {
     match cap {
-        "ReadMessages" | "SendMessages" | "ManageProfile" => Ok(()),
+        "ReadMessages" | "SendMessages" | "ManageProfile" | "SendGroupMessages" => Ok(()),
         _ => Err(DaemonError::Config(format!(
-            "unknown capability: {cap}; expected ReadMessages, SendMessages, or ManageProfile"
+            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, or SendGroupMessages"
         ))),
     }
 }
@@ -1663,7 +1663,9 @@ async fn cmd_diagnose(
 
     let recent_counts = live_snapshot.as_ref().map(|s| RecentCountsReport {
         events_received: s.recent_counts.events_received,
+        events_decrypted: s.recent_counts.events_decrypted,
         events_dispatched: s.recent_counts.events_dispatched,
+        handler_responses: s.recent_counts.handler_responses,
         replies: s.recent_counts.replies,
         reply_send_failed: s.recent_counts.reply_send_failed,
         window_minutes: s.recent_counts.window_seconds / 60,
@@ -3174,7 +3176,9 @@ struct BotCursorDiagnosis {
 #[derive(Debug, Clone, Serialize)]
 struct RecentCountsReport {
     events_received: u64,
+    events_decrypted: u64,
     events_dispatched: u64,
+    handler_responses: u64,
     replies: u64,
     reply_send_failed: u64,
     window_minutes: u64,
@@ -3545,9 +3549,14 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     if let Some(counts) = &report.recent_counts {
         write(&format!("  window_minutes: {}", counts.window_minutes))?;
         write(&format!("  events_received: {}", counts.events_received))?;
+        write(&format!("  events_decrypted: {}", counts.events_decrypted))?;
         write(&format!(
             "  events_dispatched: {}",
             counts.events_dispatched
+        ))?;
+        write(&format!(
+            "  handler_responses: {}",
+            counts.handler_responses
         ))?;
         write(&format!("  replies: {}", counts.replies))?;
         write(&format!(

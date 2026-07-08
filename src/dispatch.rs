@@ -61,6 +61,18 @@ enum HandlerAction {
 }
 
 impl HandlerAction {
+    fn action_label(&self) -> &'static str {
+        match self {
+            HandlerAction::Ack => "ack",
+            HandlerAction::Reply { .. } => "reply",
+            HandlerAction::SendDm { .. } => "send_dm",
+            HandlerAction::Defer => "defer",
+            HandlerAction::Ignore => "ignore",
+        }
+    }
+}
+
+impl HandlerAction {
     fn from_value(value: &Value) -> Result<Self, DaemonError> {
         let action = value
             .get("action")
@@ -381,6 +393,13 @@ impl Dispatch {
 
         let expected = handlers.len();
         let event_id = event.event_id.clone();
+        info!(
+            bot_id = %event.bot_id,
+            event_id = %event_id,
+            event_type = %event_type_name(&event.event_type),
+            handler_count = expected,
+            "dispatching event to handlers"
+        );
         let (response_tx, mut response_rx) = mpsc::unbounded_channel();
         let handler_ids: HashSet<String> = handlers.iter().map(|h| h.id.clone()).collect();
 
@@ -401,8 +420,14 @@ impl Dispatch {
         for handler in handlers {
             let event = event.clone();
             let diag = self.diagnostics.clone();
+            let handler_id = handler.id.clone();
+            info!(
+                bot_id = %event.bot_id,
+                event_id = %event_id,
+                handler_id = %handler_id,
+                "dispatching event to handler"
+            );
             tokio::spawn(async move {
-                let handler_id = handler.id.clone();
                 match handler.send_event(event) {
                     Ok(()) => diag.record_event_dispatched().await,
                     Err(e) => {
@@ -428,6 +453,13 @@ impl Dispatch {
             }
             match timeout(remaining, response_rx.recv()).await {
                 Ok(Some((handler_id, action))) => {
+                    info!(
+                        event_id = %event_id,
+                        handler_id = %handler_id,
+                        action = action.action_label(),
+                        "received handler response"
+                    );
+                    self.diagnostics.record_handler_response().await;
                     if matches!(action, HandlerAction::Defer) {
                         any_defer = true;
                         break;
@@ -444,13 +476,7 @@ impl Dispatch {
 
         // Process replies.
         for (handler_id, action) in &responses {
-            let mut action_label = match action {
-                HandlerAction::Ack => "ack",
-                HandlerAction::Reply { .. } => "reply",
-                HandlerAction::SendDm { .. } => "send_dm",
-                HandlerAction::Defer => "defer",
-                HandlerAction::Ignore => "ignore",
-            };
+            let mut action_label = action.action_label();
             let mut reply_event_id: Option<String> = None;
             match action {
                 HandlerAction::Reply { content } => {
@@ -675,7 +701,8 @@ impl Dispatch {
                 self.handle_admin_unregister_handler(handler_id, params)
                     .await
             }
-            Method::AgentVersion => self.handle_version().await,
+            Method::AgentVersion | Method::SystemVersion => self.handle_version().await,
+            Method::SystemHealth => self.handle_health().await,
             Method::AgentSendGroupMessage => {
                 self.handle_send_group_message(handler_id, params).await
             }
@@ -1179,8 +1206,20 @@ impl Dispatch {
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
         let response = AgentVersionResponse {
             version: crate::version::VERSION.to_string(),
-            commit: crate::version::GIT_COMMIT_SHORT.to_string(),
+            git_sha: crate::version::GIT_COMMIT_SHORT.to_string(),
         };
+        Ok(Some(serde_json::to_value(response)?))
+    }
+
+    async fn handle_health(&self) -> Result<Option<Value>, DaemonError> {
+        let snapshot = self.diagnostics.snapshot().await;
+        let mut response = MetricsResponse::from(snapshot);
+        response.config_valid = Some(true);
+        let nostr_client = {
+            let cm = self.client_manager.read().await;
+            cm.nostr_client.clone()
+        };
+        response.relay_state = Some(nostr_client.relay_statuses().await);
         Ok(Some(serde_json::to_value(response)?))
     }
     async fn handle_send_group_message(
@@ -1395,10 +1434,7 @@ fn message_params(msg: &JsonRpcMessage) -> Option<&Value> {
 }
 
 fn event_type_name(event_type: &EventType) -> String {
-    match event_type {
-        EventType::DmReceived => "dm_received".to_string(),
-        EventType::MlsWelcomeReceived => "mls_welcome_received".to_string(),
-    }
+    event_type.as_wire_name().to_string()
 }
 
 /// Truncate event content to a safe preview length for diagnostics.
@@ -1810,8 +1846,64 @@ mod tests {
             Some(crate::version::VERSION)
         );
         assert_eq!(
-            result.get("commit").and_then(|v| v.as_str()),
+            result.get("git_sha").and_then(|v| v.as_str()),
             Some(crate::version::GIT_COMMIT_SHORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn system_version_returns_version_and_commit() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let req = JsonRpcMessage::request(1.into(), "system.version", None);
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("version").and_then(|v| v.as_str()),
+            Some(crate::version::VERSION)
+        );
+        assert_eq!(
+            result.get("git_sha").and_then(|v| v.as_str()),
+            Some(crate::version::GIT_COMMIT_SHORT)
+        );
+    }
+
+    #[tokio::test]
+    async fn system_health_returns_metrics_and_relay_state() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let req = JsonRpcMessage::request(1.into(), "system.health", None);
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result = result.unwrap();
+        assert_eq!(
+            result.get("config_valid").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        assert!(
+            result.get("relay_state").is_some(),
+            "health response should include relay_state"
+        );
+        assert!(
+            result.get("uptime_seconds").is_some(),
+            "health response should include uptime_seconds"
         );
     }
 

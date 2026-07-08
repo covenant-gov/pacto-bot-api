@@ -23,7 +23,9 @@
     "uptime_seconds": { "type": "integer", "minimum": 0 },
     "handlers_registered": { "type": "integer", "minimum": 0 },
     "events_received_total": { "type": "integer", "minimum": 0 },
+    "events_decrypted_total": { "type": "integer", "minimum": 0 },
     "events_dispatched_total": { "type": "integer", "minimum": 0 },
+    "handler_responses_total": { "type": "integer", "minimum": 0 },
     "rate_limited_total": { "type": "integer", "minimum": 0 },
     "relay_reconnects_total": { "type": "integer", "minimum": 0 },
     "bunker_sign_failures_total": { "type": "integer", "minimum": 0 },
@@ -32,11 +34,18 @@
     "send_dm_total": { "type": "integer", "minimum": 0 },
     "send_dm_failed_total": { "type": "integer", "minimum": 0 },
     "events_received_last_10_min": { "type": "integer", "minimum": 0 },
+    "events_decrypted_last_10_min": { "type": "integer", "minimum": 0 },
     "events_dispatched_last_10_min": { "type": "integer", "minimum": 0 },
+    "handler_responses_last_10_min": { "type": "integer", "minimum": 0 },
     "replies_last_10_min": { "type": "integer", "minimum": 0 },
     "reply_send_failed_last_10_min": { "type": "integer", "minimum": 0 },
     "send_dm_last_10_min": { "type": "integer", "minimum": 0 },
     "send_dm_failed_last_10_min": { "type": "integer", "minimum": 0 },
+    "config_valid": { "type": "boolean" },
+    "relay_state": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
     "bots": {
       "type": "array",
       "items": { "$ref": "#/definitions/botHealth" }

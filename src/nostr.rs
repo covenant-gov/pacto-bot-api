@@ -98,6 +98,16 @@ impl NostrClient {
             .collect()
     }
 
+    /// Return the connection status of every configured relay as a map of URL to status name.
+    pub async fn relay_statuses(&self) -> HashMap<String, String> {
+        self.client
+            .relays()
+            .await
+            .into_iter()
+            .map(|(url, relay)| (url.to_string(), relay.status().to_string()))
+            .collect()
+    }
+
     /// Register a signer for a bot so that incoming gift wraps addressed to
     /// `pubkey` can be decrypted.
     pub async fn add_signer(&self, pubkey: PublicKey, bot_id: String, signer: Arc<dyn Signer>) {
@@ -480,6 +490,12 @@ impl NostrClient {
         event: &Event,
         diagnostics: Option<&Diagnostics>,
     ) -> Result<AgentEvent, DaemonError> {
+        info!(
+            event_id = %event.id.to_hex(),
+            kind = %event.kind.as_u16(),
+            "received gift wrap from relay"
+        );
+
         if let Err(e) = event.verify() {
             let message = format!("gift wrap signature verification failed: {e}");
             if let Some(d) = diagnostics {
@@ -500,6 +516,12 @@ impl NostrClient {
         let (bot_id, signer) = signers
             .get(&recipient)
             .ok_or_else(|| DaemonError::Nostr(format!("no signer registered for {recipient}")))?;
+
+        info!(
+            event_id = %event.id.to_hex(),
+            bot_id = %bot_id,
+            "decrypting gift wrap"
+        );
 
         // Gift-wrap is encrypted by the ephemeral key to the recipient.
         let seal_json = signer
@@ -532,12 +554,25 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("rumor missing id".into()))?
             .to_hex();
 
-        // Detect MLS Welcome messages (kind:444) and route them separately
         let event_type = if rumor.kind == Kind::MlsWelcome {
             EventType::MlsWelcomeReceived
         } else {
             EventType::DmReceived
         };
+
+        info!(
+            event_id = %event.id.to_hex(),
+            bot_id = %bot_id,
+            rumor_id = %rumor_id,
+            author = %seal_event.pubkey.to_hex(),
+            kind = %rumor.kind.as_u16(),
+            event_type = %event_type.as_wire_name(),
+            "gift wrap decrypted"
+        );
+
+        if let Some(d) = diagnostics {
+            d.record_event_decrypted().await;
+        }
 
         Ok(AgentEvent {
             bot_id: bot_id.clone(),
