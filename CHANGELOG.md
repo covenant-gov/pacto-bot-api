@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Python SDK usability improvements (Bosun Phase 2 review):
+  - `@bot.event(type)` and `@bot.dm` decorators route `agent.event` notifications by `event.type` without subclassing `Bot`.
+  - `@bot.hears(token)` decorator matches plain-text commands by the first token exactly.
+  - Guaranteed acknowledgement: decorated handlers returning `None` automatically send `handler_response(action="ignore")` when `auto_acknowledge=True` (the new default). `bot.ignore(event)` and `bot.reply(event, content)` helpers return the canonical response dict.
+  - `bot.own_pubkey` property populated from the daemon's `handler.register`/`handler.reconnect` response, which now includes an `own_pubkeys` map.
+  - High-level helpers `bot.send_group_message(group_id, content)` and `bot.is_squad_member(group_id, member_pubkey)`.
+  - Optional per-request timeouts on the generated `PactoClient` with a 30-second default.
+  - `@bot.throttle(key, window_seconds)` and `@bot.lock(name, on_conflict=..., max_waiters=...)` decorators for in-memory per-key throttling and serialized handler execution.
+  - New `pacto_bot_sdk.validate` module with `squad_id`, `pubkey`, and `event_id` validators.
+  - Unknown daemon notification types are now logged at warning level once per type.
+  - README updated with the handler-response contract and decorator examples.
+- Daemon `handler.register` and `handler.reconnect` responses now include `own_pubkeys: dict[str, str]` mapping each registered `bot_id` to its npub.
+
+### Changed
+
+- `Bot(...)` now defaults to `auto_acknowledge=True`. Existing bots that rely on the previous no-response semantics for `None` returns can set `auto_acknowledge=False` during a transition.
+
 ## [0.6.0] - 2026-07-04
 
 ### Changed

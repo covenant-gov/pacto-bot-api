@@ -426,6 +426,8 @@ class HandlerReconnectResponse(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.reconnect"
     # Server-generated UUID for this handler.
     handler_id: str
+    # Map from daemon-local bot_id to the bot's Nostr public key (npub).
+    own_pubkeys: dict[str, str] | None = None
     # Event types the handler is now subscribed to.
     registered_events: list[str]
 
@@ -466,6 +468,8 @@ class HandlerRegisterResponse(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Server-generated UUID for this handler.
     handler_id: str
+    # Map from daemon-local bot_id to the bot's Nostr public key (npub).
+    own_pubkeys: dict[str, str] | None = None
     # Server-generated secret token for reconnecting this handler.
     reconnect_token: str
     # Event types the handler is now subscribed to.

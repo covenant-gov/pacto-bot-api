@@ -144,6 +144,16 @@ def _type_annotation(
         )
         return f"list[{inner}]", nested
     if schema_type == "object":
+        props = schema.get("properties", {})
+        additional = schema.get("additionalProperties")
+        if not props and additional:
+            inner, nested = _type_annotation(
+                additional,
+                parent_name=parent_name,
+                prop_name=prop_name,
+                jsonrpc_method=jsonrpc_method,
+            )
+            return f"dict[str, {inner}]", nested
         nested_name = f"{parent_name}{to_pascal_case(prop_name)}Model"
         nested_model = _collect_object_model(
             nested_name,
@@ -412,6 +422,8 @@ def _emit_request_method(
         return_type = "Any"
         return_expr = "return result"
 
+    sig_parts.append("timeout: float | None = _DEFAULT_TIMEOUT")
+
     out.append(f"    async def {py_name}({', '.join(sig_parts)}) -> {return_type}:\n")
     out.append(
         _client_method_docstring(
@@ -435,7 +447,7 @@ def _emit_request_method(
         out.append("        params_dict: dict[str, Any] = {}\n")
 
     out.append("        response = await self._request(")
-    out.append(f'"{method_name}", params_dict)\n')
+    out.append(f'"{method_name}", params_dict, timeout=timeout)\n')
     out.append("        result = response.get('result')\n")
     out.append(f"        {return_expr}\n\n")
 
@@ -522,6 +534,8 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("from . import models\n")
     out.append("from pydantic import BaseModel\n\n")
     out.append('"""Low-level async JSON-RPC client generated from schemas/jsonrpc.json."""\n\n')
+    out.append("# Sentinel used to indicate 'use the client's default timeout' in method signatures.\n")
+    out.append("_DEFAULT_TIMEOUT: Any = object()\n\n")
 
     out.append("class PactoClientError(Exception):\n")
     out.append("    \"\"\"Error returned by the daemon for a JSON-RPC request.\"\"\"\n\n")
@@ -530,8 +544,9 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append(
         '    """Transport-agnostic async client for the Pacto daemon."""\n\n'
     )
-    out.append("    def __init__(self, transport: Any) -> None:\n")
+    out.append("    def __init__(self, transport: Any, timeout: float | None = None) -> None:\n")
     out.append("        self.transport = transport\n")
+    out.append("        self._default_timeout: float | None = timeout if timeout is not None else 30.0\n")
     out.append(
         "        self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}\n"
     )
@@ -559,9 +574,9 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("        await self.transport.close()\n\n")
 
     out.append("    async def _request(\n")
-    out.append("        self, method: str, params: dict[str, Any]\n")
+    out.append("        self, method: str, params: dict[str, Any], timeout: float | None = None\n")
     out.append("    ) -> dict[str, Any]:\n")
-    out.append('        \"\"\"Send a JSON-RPC request and await its correlated response.\"\"\"\n')
+    out.append('        """Send a JSON-RPC request and await its correlated response."""\n')
     out.append("        request_id = str(uuid.uuid4())\n")
     out.append('        frame = {\n')
     out.append('            "jsonrpc": "2.0",\n')
@@ -577,13 +592,24 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("            immediate = await self.transport.write_frame(frame)\n")
     out.append("            if immediate is not None:\n")
     out.append("                self._resolve(request_id, immediate)\n")
-    out.append("            response = await future\n")
-    out.append("            if \"error\" in response:\n")
+    out.append("            if timeout is _DEFAULT_TIMEOUT:\n")
+    out.append("                effective_timeout = self._default_timeout\n")
+    out.append("            else:\n")
+    out.append("                effective_timeout = timeout\n")
+    out.append("            if effective_timeout is not None:\n")
+    out.append("                response = await asyncio.wait_for(future, timeout=effective_timeout)\n")
+    out.append("            else:\n")
+    out.append("                response = await future\n")
+    out.append('            if "error" in response:\n')
     out.append("                error = response[\"error\"]\n")
     out.append("                raise PactoClientError(\n")
     out.append("                    error.get(\"message\", str(error))\n")
     out.append("                ) from None\n")
     out.append("            return response\n")
+    out.append("        except asyncio.TimeoutError as exc:\n")
+    out.append("            raise PactoClientError(\n")
+    out.append("                f\"Request timed out after {effective_timeout} seconds\"\n")
+    out.append("            ) from exc\n")
     out.append("        finally:\n")
     out.append("            self._inflight.pop(request_id, None)\n\n")
 

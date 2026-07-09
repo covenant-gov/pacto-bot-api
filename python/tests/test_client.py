@@ -11,8 +11,10 @@ from pacto_bot_sdk import (
     AgentRateLimitedParams,
     HandlerRegisterParams,
     HandlerRegisterResponse,
+    PactoClient,
     PactoClientError,
 )
+from conftest import MockTransport
 
 
 @pytest.fixture
@@ -206,3 +208,99 @@ async def test_unmatched_request_times_out_when_no_response(client):
             ),
             timeout=0.05,
         )
+
+
+def test_constructor_default_timeout():
+    """PactoClient stores a default timeout of 30.0 when none is provided."""
+    transport = MockTransport()
+    client = PactoClient(transport)
+    assert client._default_timeout == 30.0
+
+
+def test_constructor_custom_timeout():
+    """PactoClient stores the requested default timeout."""
+    transport = MockTransport()
+    client = PactoClient(transport, timeout=5.0)
+    assert client._default_timeout == 5.0
+
+
+@pytest.mark.asyncio
+async def test_per_call_timeout_overrides_default(mock_transport):
+    """A request method can override the client's default timeout."""
+    client = PactoClient(mock_transport, timeout=0.01)
+    await client.connect()
+    try:
+        task = asyncio.create_task(
+            client.handler_register(
+                bot_ids=["greeting-bot"],
+                capabilities=["ReadMessages"],
+                event_types=["dm_received"],
+                timeout=5.0,
+            )
+        )
+        await asyncio.sleep(0.05)
+        request = mock_transport.frames[0]
+        mock_transport.inject(
+            {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "handler_id": "h-1",
+                    "reconnect_token": "rt-1",
+                    "registered_events": ["dm_received"],
+                },
+            }
+        )
+        result = await task
+        assert result.handler_id == "h-1"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_call_timeout_none_disables_default(mock_transport):
+    """Passing timeout=None on a call disables the default timeout."""
+    client = PactoClient(mock_transport, timeout=0.01)
+    await client.connect()
+    try:
+        task = asyncio.create_task(
+            client.handler_register(
+                bot_ids=["greeting-bot"],
+                capabilities=["ReadMessages"],
+                event_types=["dm_received"],
+                timeout=None,
+            )
+        )
+        await asyncio.sleep(0.05)
+        request = mock_transport.frames[0]
+        mock_transport.inject(
+            {
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "handler_id": "h-1",
+                    "reconnect_token": "rt-1",
+                    "registered_events": ["dm_received"],
+                },
+            }
+        )
+        result = await task
+        assert result.handler_id == "h-1"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_request_timeout_raises_pacto_client_error(mock_transport):
+    """A request that exceeds its timeout raises ``PactoClientError``."""
+    client = PactoClient(mock_transport, timeout=0.01)
+    await client.connect()
+    try:
+        with pytest.raises(PactoClientError, match="timed out"):
+            await client.handler_register(
+                bot_ids=["greeting-bot"],
+                capabilities=["ReadMessages"],
+                event_types=["dm_received"],
+            )
+    finally:
+        await client.close()

@@ -98,3 +98,46 @@ def test_agent_event_required_and_optional_fields(run_generator):
     assert "\n    timestamp: int\n" in models_source
     # Optional chat_id defaults to None.
     assert "\n    chat_id: str | None = None\n" in models_source
+
+
+def test_client_init_accepts_timeout(run_generator):
+    """PactoClient.__init__ accepts an optional timeout parameter."""
+    client_source = run_generator[1].decode("utf-8")
+    assert (
+        "def __init__(self, transport: Any, timeout: float | None = None)"
+        in client_source
+    )
+
+
+def test_client_request_accepts_timeout(run_generator):
+    """The internal _request method accepts an optional timeout parameter."""
+    client_source = run_generator[1].decode("utf-8")
+    assert "async def _request(\n" in client_source
+    assert "timeout: float | None = None" in client_source
+
+
+def test_request_method_forwards_timeout(run_generator):
+    """Generated request methods accept timeout and pass it to _request."""
+    client_source = run_generator[1].decode("utf-8")
+    # handler.register is a representative request method.
+    assert (
+        "async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str], timeout: float | None = _DEFAULT_TIMEOUT)"
+        in client_source
+    )
+    assert (
+        'await self._request("handler.register", params_dict, timeout=timeout)'
+        in client_source
+    )
+
+
+def test_notification_method_has_no_timeout(run_generator):
+    """Generated notification methods do not accept a timeout parameter."""
+    client_source = run_generator[1].decode("utf-8")
+    assert (
+        "async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:"
+        in client_source
+    )
+    notification_block = client_source.split("async def agent_error")[1].split(
+        "async def"
+    )[0]
+    assert "timeout" not in notification_block

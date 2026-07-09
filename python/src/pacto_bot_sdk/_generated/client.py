@@ -12,14 +12,18 @@ from pydantic import BaseModel
 
 """Low-level async JSON-RPC client generated from schemas/jsonrpc.json."""
 
+# Sentinel used to indicate 'use the client's default timeout' in method signatures.
+_DEFAULT_TIMEOUT: Any = object()
+
 class PactoClientError(Exception):
     """Error returned by the daemon for a JSON-RPC request."""
 
 class PactoClient:
     """Transport-agnostic async client for the Pacto daemon."""
 
-    def __init__(self, transport: Any) -> None:
+    def __init__(self, transport: Any, timeout: float | None = None) -> None:
         self.transport = transport
+        self._default_timeout: float | None = timeout if timeout is not None else 30.0
         self._inflight: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._notify_queue: asyncio.Queue[BaseModel | None] = asyncio.Queue(maxsize=100)
         self._read_task: asyncio.Task[None] | None = None
@@ -43,7 +47,7 @@ class PactoClient:
         await self.transport.close()
 
     async def _request(
-        self, method: str, params: dict[str, Any]
+        self, method: str, params: dict[str, Any], timeout: float | None = None
     ) -> dict[str, Any]:
         """Send a JSON-RPC request and await its correlated response."""
         request_id = str(uuid.uuid4())
@@ -59,13 +63,24 @@ class PactoClient:
             immediate = await self.transport.write_frame(frame)
             if immediate is not None:
                 self._resolve(request_id, immediate)
-            response = await future
+            if timeout is _DEFAULT_TIMEOUT:
+                effective_timeout = self._default_timeout
+            else:
+                effective_timeout = timeout
+            if effective_timeout is not None:
+                response = await asyncio.wait_for(future, timeout=effective_timeout)
+            else:
+                response = await future
             if "error" in response:
                 error = response["error"]
                 raise PactoClientError(
                     error.get("message", str(error))
                 ) from None
             return response
+        except asyncio.TimeoutError as exc:
+            raise PactoClientError(
+                f"Request timed out after {effective_timeout} seconds"
+            ) from exc
         finally:
             self._inflight.pop(request_id, None)
 
@@ -111,7 +126,7 @@ class PactoClient:
                 break
             yield notification
 
-    async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str) -> models.AdminSendTestDmResponse:
+    async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminSendTestDmResponse:
         """
         Call JSON-RPC method `admin.send_test_dm`.
 
@@ -126,7 +141,7 @@ class PactoClient:
         """
         params = models.AdminSendTestDmParams(bot_id=bot_id, content=content, recipient=recipient)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("admin.send_test_dm", params_dict)
+        response = await self._request("admin.send_test_dm", params_dict, timeout=timeout)
         result = response.get('result')
         return models.AdminSendTestDmResponse.model_validate(result)
 
@@ -151,7 +166,7 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def agent_is_squad_member(self, bot_id: str, group_id: str, member_pubkey: str) -> models.AgentIsSquadMemberResponse:
+    async def agent_is_squad_member(self, bot_id: str, group_id: str, member_pubkey: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentIsSquadMemberResponse:
         """
         Call JSON-RPC method `agent.is_squad_member`.
 
@@ -166,11 +181,11 @@ class PactoClient:
         """
         params = models.AgentIsSquadMemberParams(bot_id=bot_id, group_id=group_id, member_pubkey=member_pubkey)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.is_squad_member", params_dict)
+        response = await self._request("agent.is_squad_member", params_dict, timeout=timeout)
         result = response.get('result')
         return models.AgentIsSquadMemberResponse.model_validate(result)
 
-    async def agent_list_handlers(self) -> models.AgentListHandlersResponse:
+    async def agent_list_handlers(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentListHandlersResponse:
         """
         Call JSON-RPC method `agent.list_handlers`.
 
@@ -184,11 +199,11 @@ class PactoClient:
         jsonrpc_method: ``"agent.list_handlers"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("agent.list_handlers", params_dict)
+        response = await self._request("agent.list_handlers", params_dict, timeout=timeout)
         result = response.get('result')
         return models.AgentListHandlersResponse.model_validate(result)
 
-    async def agent_metrics(self) -> models.AgentMetricsResponse:
+    async def agent_metrics(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentMetricsResponse:
         """
         Call JSON-RPC method `agent.metrics`.
 
@@ -202,11 +217,11 @@ class PactoClient:
         jsonrpc_method: ``"agent.metrics"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("agent.metrics", params_dict)
+        response = await self._request("agent.metrics", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def agent_publish_key_package(self, bot_id: str) -> models.AgentPublishKeyPackageResponse:
+    async def agent_publish_key_package(self, bot_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentPublishKeyPackageResponse:
         """
         Call JSON-RPC method `agent.publish_key_package`.
 
@@ -221,11 +236,11 @@ class PactoClient:
         """
         params = models.AgentPublishKeyPackageParams(bot_id=bot_id)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.publish_key_package", params_dict)
+        response = await self._request("agent.publish_key_package", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None) -> models.AgentSendDmResponse:
+    async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendDmResponse:
         """
         Call JSON-RPC method `agent.send_dm`.
 
@@ -240,11 +255,11 @@ class PactoClient:
         """
         params = models.AgentSendDmParams(bot_id=bot_id, content=content, recipient=recipient, reply_to=reply_to)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.send_dm", params_dict)
+        response = await self._request("agent.send_dm", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str) -> models.AgentSendGroupMessageResponse:
+    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendGroupMessageResponse:
         """
         Call JSON-RPC method `agent.send_group_message`.
 
@@ -259,11 +274,11 @@ class PactoClient:
         """
         params = models.AgentSendGroupMessageParams(bot_id=bot_id, content=content, group_id=group_id)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.send_group_message", params_dict)
+        response = await self._request("agent.send_group_message", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None) -> models.AgentSetProfileResponse:
+    async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSetProfileResponse:
         """
         Call JSON-RPC method `agent.set_profile`.
 
@@ -278,11 +293,11 @@ class PactoClient:
         """
         params = models.AgentSetProfileParams(about=about, bot_id=bot_id, name=name, picture=picture)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.set_profile", params_dict)
+        response = await self._request("agent.set_profile", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def agent_unregister_handler(self, handler_id: str) -> models.AgentUnregisterHandlerResponse:
+    async def agent_unregister_handler(self, handler_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentUnregisterHandlerResponse:
         """
         Call JSON-RPC method `agent.unregister_handler`.
 
@@ -297,11 +312,11 @@ class PactoClient:
         """
         params = models.AgentUnregisterHandlerParams(handler_id=handler_id)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("agent.unregister_handler", params_dict)
+        response = await self._request("agent.unregister_handler", params_dict, timeout=timeout)
         result = response.get('result')
         return models.AgentUnregisterHandlerResponse.model_validate(result)
 
-    async def agent_version(self) -> models.AgentVersionResponse:
+    async def agent_version(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentVersionResponse:
         """
         Call JSON-RPC method `agent.version`.
 
@@ -315,11 +330,11 @@ class PactoClient:
         jsonrpc_method: ``"agent.version"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("agent.version", params_dict)
+        response = await self._request("agent.version", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def handler_reconnect(self, handler_id: str, reconnect_token: str) -> models.HandlerReconnectResponse:
+    async def handler_reconnect(self, handler_id: str, reconnect_token: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.HandlerReconnectResponse:
         """
         Call JSON-RPC method `handler.reconnect`.
 
@@ -334,11 +349,11 @@ class PactoClient:
         """
         params = models.HandlerReconnectParams(handler_id=handler_id, reconnect_token=reconnect_token)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("handler.reconnect", params_dict)
+        response = await self._request("handler.reconnect", params_dict, timeout=timeout)
         result = response.get('result')
         return models.HandlerReconnectResponse.model_validate(result)
 
-    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str]) -> models.HandlerRegisterResponse:
+    async def handler_register(self, bot_ids: list[str], capabilities: list[str], event_types: list[str], timeout: float | None = _DEFAULT_TIMEOUT) -> models.HandlerRegisterResponse:
         """
         Call JSON-RPC method `handler.register`.
 
@@ -353,7 +368,7 @@ class PactoClient:
         """
         params = models.HandlerRegisterParams(bot_ids=bot_ids, capabilities=capabilities, event_types=event_types)
         params_dict = params.model_dump(mode='json', exclude_none=True)
-        response = await self._request("handler.register", params_dict)
+        response = await self._request("handler.register", params_dict, timeout=timeout)
         result = response.get('result')
         return models.HandlerRegisterResponse.model_validate(result)
 
@@ -378,7 +393,7 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
-    async def handler_unregister(self) -> models.HandlerUnregisterResponse:
+    async def handler_unregister(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.HandlerUnregisterResponse:
         """
         Call JSON-RPC method `handler.unregister`.
 
@@ -392,11 +407,11 @@ class PactoClient:
         jsonrpc_method: ``"handler.unregister"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("handler.unregister", params_dict)
+        response = await self._request("handler.unregister", params_dict, timeout=timeout)
         result = response.get('result')
         return models.HandlerUnregisterResponse.model_validate(result)
 
-    async def system_health(self) -> models.SystemHealthResponse:
+    async def system_health(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.SystemHealthResponse:
         """
         Call JSON-RPC method `system.health`.
 
@@ -410,11 +425,11 @@ class PactoClient:
         jsonrpc_method: ``"system.health"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("system.health", params_dict)
+        response = await self._request("system.health", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
-    async def system_version(self) -> models.SystemVersionResponse:
+    async def system_version(self, timeout: float | None = _DEFAULT_TIMEOUT) -> models.SystemVersionResponse:
         """
         Call JSON-RPC method `system.version`.
 
@@ -428,7 +443,7 @@ class PactoClient:
         jsonrpc_method: ``"system.version"``
         """
         params_dict: dict[str, Any] = {}
-        response = await self._request("system.version", params_dict)
+        response = await self._request("system.version", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 
