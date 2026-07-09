@@ -4420,6 +4420,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "pacto-bot-utils"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs2",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "mdk-core",
+ "mdk-sqlite-storage",
+ "mdk-storage-traits",
+ "nostr",
+ "nostr-sdk",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "parity-scale-codec"
 version = "3.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
