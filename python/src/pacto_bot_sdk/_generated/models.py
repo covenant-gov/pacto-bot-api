@@ -32,6 +32,80 @@ SystemHealthResponse = dict[str, Any]
 # Result type alias for `system.version`.
 SystemVersionResponse = dict[str, Any]
 
+class AdminCreateMlsGroupParams(BaseModel):
+    """
+    Model for JSON-RPC method `admin.create_mls_group`.
+
+    Create a new MLS group and invite the recipient (admin-only).
+
+    Example:
+
+        >>> AdminCreateMlsGroupParams(bot_id="...", group_name="...", recipient="...")
+
+    jsonrpc_method: ``"admin.create_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.create_mls_group"
+    # Bot identity that will own the group.
+    bot_id: str
+    # Human-readable group name.
+    group_name: str
+    # Nostr public key (npub or hex) of the initial member.
+    recipient: str
+
+
+class AdminCreateMlsGroupResponse(BaseModel):
+    """
+    Model for JSON-RPC method `admin.create_mls_group`.
+
+    Create a new MLS group and invite the recipient (admin-only).
+
+    Example:
+
+        >>> AdminCreateMlsGroupResponse(wire_id="...")
+
+    jsonrpc_method: ``"admin.create_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.create_mls_group"
+    wire_id: str
+
+
+class AdminInviteToMlsGroupParams(BaseModel):
+    """
+    Model for JSON-RPC method `admin.invite_to_mls_group`.
+
+    Invite a recipient to an existing MLS group (admin-only).
+
+    Example:
+
+        >>> AdminInviteToMlsGroupParams(bot_id="...", group_name="...", recipient="...")
+
+    jsonrpc_method: ``"admin.invite_to_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.invite_to_mls_group"
+    # Bot identity that owns the group.
+    bot_id: str
+    # Human-readable group name.
+    group_name: str
+    # Nostr public key (npub or hex) of the member to invite.
+    recipient: str
+
+
+class AdminInviteToMlsGroupResponse(BaseModel):
+    """
+    Model for JSON-RPC method `admin.invite_to_mls_group`.
+
+    Invite a recipient to an existing MLS group (admin-only).
+
+    Example:
+
+        >>> AdminInviteToMlsGroupResponse(wire_id="...")
+
+    jsonrpc_method: ``"admin.invite_to_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.invite_to_mls_group"
+    wire_id: str
+
+
 class AdminSendTestDmParams(BaseModel):
     """
     Model for JSON-RPC method `admin.send_test_dm`.
@@ -67,6 +141,43 @@ class AdminSendTestDmResponse(BaseModel):
     """
     jsonrpc_method: ClassVar[str] = "admin.send_test_dm"
     event_id: str
+
+
+class AgentCreateMlsGroupParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.create_mls_group`.
+
+    Create a new MLS group and invite the recipient.
+
+    Example:
+
+        >>> AgentCreateMlsGroupParams(bot_id="...", group_name="...", recipient="...")
+
+    jsonrpc_method: ``"agent.create_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.create_mls_group"
+    # Bot identity that will own the group.
+    bot_id: str
+    # Human-readable group name.
+    group_name: str
+    # Nostr public key (npub or hex) of the initial member.
+    recipient: str
+
+
+class AgentCreateMlsGroupResponse(BaseModel):
+    """
+    Model for JSON-RPC method `agent.create_mls_group`.
+
+    Create a new MLS group and invite the recipient.
+
+    Example:
+
+        >>> AgentCreateMlsGroupResponse(wire_id="...")
+
+    jsonrpc_method: ``"agent.create_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.create_mls_group"
+    wire_id: str
 
 
 class AgentErrorParams(BaseModel):
@@ -121,6 +232,43 @@ class AgentEventParams(BaseModel):
     timestamp: int
     # Event type.
     type: str
+
+
+class AgentInviteToMlsGroupParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.invite_to_mls_group`.
+
+    Invite a recipient to an existing MLS group.
+
+    Example:
+
+        >>> AgentInviteToMlsGroupParams(bot_id="...", group_name="...", recipient="...")
+
+    jsonrpc_method: ``"agent.invite_to_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.invite_to_mls_group"
+    # Bot identity that owns the group.
+    bot_id: str
+    # Human-readable group name.
+    group_name: str
+    # Nostr public key (npub or hex) of the member to invite.
+    recipient: str
+
+
+class AgentInviteToMlsGroupResponse(BaseModel):
+    """
+    Model for JSON-RPC method `agent.invite_to_mls_group`.
+
+    Invite a recipient to an existing MLS group.
+
+    Example:
+
+        >>> AgentInviteToMlsGroupResponse(wire_id="...")
+
+    jsonrpc_method: ``"agent.invite_to_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.invite_to_mls_group"
+    wire_id: str
 
 
 class AgentIsSquadMemberParams(BaseModel):
@@ -447,7 +595,7 @@ class HandlerRegisterParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Bot identities this handler wants to serve.
     bot_ids: list[str]
-    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, and ReceiveGroupMessages.
+    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, and InviteToMlsGroup.
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
@@ -547,4 +695,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

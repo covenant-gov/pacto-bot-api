@@ -8,7 +8,10 @@
 
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
-use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, RelayUrl, TagKind};
+use nostr::{
+    Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, RelayUrl, Tag, TagKind, Timestamp,
+    UnsignedEvent,
+};
 
 /// A peer that can create an MLS group and invite a daemon bot.
 pub struct MockMlsPeer {
@@ -33,6 +36,16 @@ impl MockMlsPeer {
     ///
     /// Returns the kind:443 event ready to publish.
     pub async fn create_key_package_event(&self, relays: Vec<String>) -> Event {
+        self.create_key_package_event_at(relays, Timestamp::now())
+            .await
+    }
+
+    /// Create a key package with a specific `created_at` timestamp.
+    pub async fn create_key_package_event_at(
+        &self,
+        relays: Vec<String>,
+        created_at: Timestamp,
+    ) -> Event {
         let relay_urls: Vec<RelayUrl> = relays
             .into_iter()
             .filter_map(|r| RelayUrl::parse(&r).ok())
@@ -41,13 +54,70 @@ impl MockMlsPeer {
             .engine
             .create_key_package_for_event(&self.keys.public_key(), relay_urls)
             .expect("create key package");
+        let unsigned = UnsignedEvent::new(
+            self.keys.public_key(),
+            created_at,
+            Kind::MlsKeyPackage,
+            tags,
+            encoded,
+        );
+        unsigned.sign(&self.keys).await.expect("sign key package")
+    }
 
-        EventBuilder::new(Kind::MlsKeyPackage, encoded)
-            .tags(tags)
-            .build(self.keys.public_key())
-            .sign(&self.keys)
+    /// Create a key package with arbitrary content and timestamp.
+    ///
+    /// The signature is valid for this peer's public key, but the content may
+    /// be invalid MLS data. This is useful for testing daemon validation paths
+    /// that inspect the event before feeding it to the MLS engine.
+    pub async fn create_key_package_event_with_content(
+        &self,
+        relays: Vec<String>,
+        content: String,
+        created_at: Timestamp,
+    ) -> Event {
+        let tags = relays_to_tags(relays);
+        let unsigned = UnsignedEvent::new(
+            self.keys.public_key(),
+            created_at,
+            Kind::MlsKeyPackage,
+            tags,
+            content,
+        );
+        unsigned.sign(&self.keys).await.expect("sign key package")
+    }
+
+    /// Create a key package that is older than the configured freshness window.
+    pub async fn create_stale_key_package_event(&self, relays: Vec<String>) -> Event {
+        let created_at = Timestamp::now() - 3600;
+        self.create_key_package_event_at(relays, created_at).await
+    }
+
+    /// Create a key package dated far in the future.
+    pub async fn create_future_key_package_event(&self, relays: Vec<String>) -> Event {
+        let created_at = Timestamp::now() + 86400;
+        self.create_key_package_event_at(relays, created_at).await
+    }
+
+    /// Create a key package whose signature or author does not match the
+    /// recipient. The daemon should treat it as absent.
+    pub async fn create_forged_key_package_event(
+        recipient: &nostr::PublicKey,
+        relays: Vec<String>,
+        content: String,
+    ) -> Event {
+        let forger = Keys::generate();
+        let tags = relays_to_tags(relays);
+        let unsigned = UnsignedEvent::new(
+            *recipient,
+            Timestamp::now(),
+            Kind::MlsKeyPackage,
+            tags,
+            content,
+        );
+        unsigned
+            .sign(&forger)
             .await
-            .expect("sign key package")
+            .expect("sign forged key package")
     }
 
     /// Create a group containing the daemon bot as a member using its key package.
@@ -149,6 +219,14 @@ fn random_bytes<const N: usize>() -> [u8; N] {
     let mut buf = [0u8; N];
     getrandom::getrandom(&mut buf).expect("getrandom");
     buf
+}
+
+fn relays_to_tags(relays: Vec<String>) -> Vec<Tag> {
+    relays
+        .into_iter()
+        .filter_map(|r| RelayUrl::parse(&r).ok())
+        .map(|url| Tag::reference(url.to_string()))
+        .collect()
 }
 
 /// Gift-wrap a welcome rumor addressed to a recipient.

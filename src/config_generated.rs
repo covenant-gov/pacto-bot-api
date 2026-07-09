@@ -43,9 +43,15 @@ pub struct BotConfigGenerated {
     pub display_name: Option<String>,
     /// id
     pub id: String,
+    /// Path to the per-bot MLS SQLite database
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_db_path: Option<String>,
     /// Time window in seconds for MLS group-message deduplication
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mls_dedup_window_secs: Option<u64>,
+    /// Freshness window in seconds for MLS KeyPackage events
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_key_package_freshness_secs: Option<u64>,
     /// npub
     pub npub: String,
     /// URL to the bot's profile picture

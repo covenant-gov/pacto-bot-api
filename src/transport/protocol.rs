@@ -302,6 +302,14 @@ pub enum Method {
     AgentPublishKeyPackage,
     #[serde(rename = "admin.send_test_dm")]
     AdminSendTestDm,
+    #[serde(rename = "admin.create_mls_group")]
+    AdminCreateMlsGroup,
+    #[serde(rename = "admin.invite_to_mls_group")]
+    AdminInviteToMlsGroup,
+    #[serde(rename = "agent.create_mls_group")]
+    AgentCreateMlsGroup,
+    #[serde(rename = "agent.invite_to_mls_group")]
+    AgentInviteToMlsGroup,
 }
 
 impl Method {
@@ -328,6 +336,10 @@ impl Method {
             Method::AgentSendGroupMessage,
             Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
+            Method::AdminCreateMlsGroup,
+            Method::AdminInviteToMlsGroup,
+            Method::AgentCreateMlsGroup,
+            Method::AgentInviteToMlsGroup,
         ]
     }
 }
@@ -357,6 +369,10 @@ impl FromStr for Method {
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
+            "admin.create_mls_group" => Ok(Self::AdminCreateMlsGroup),
+            "admin.invite_to_mls_group" => Ok(Self::AdminInviteToMlsGroup),
+            "agent.create_mls_group" => Ok(Self::AgentCreateMlsGroup),
+            "agent.invite_to_mls_group" => Ok(Self::AgentInviteToMlsGroup),
             _ => Err(DaemonError::MethodNotFound),
         }
     }
@@ -555,6 +571,32 @@ pub struct AdminSendTestDmResponse {
     pub event_id: String,
 }
 
+/// Typed payload for the `admin.create_mls_group` and `agent.create_mls_group`
+/// JSON-RPC methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateMlsGroupParams {
+    pub bot_id: String,
+    pub group_name: String,
+    pub recipient: String,
+}
+
+/// Typed payload for the `admin.invite_to_mls_group` and
+/// `agent.invite_to_mls_group` JSON-RPC methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteToMlsGroupParams {
+    pub bot_id: String,
+    pub group_name: String,
+    pub recipient: String,
+}
+
+/// Typed payload returned by the `admin.create_mls_group`,
+/// `admin.invite_to_mls_group`, `agent.create_mls_group`, and
+/// `agent.invite_to_mls_group` JSON-RPC methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MlsGroupResponse {
+    pub wire_id: String,
+}
+
 /// Typed payload for the `agent.status` JSON-RPC notification.
 ///
 /// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
@@ -632,6 +674,10 @@ mod tests {
             "agent.send_group_message",
             "agent.publish_key_package",
             "admin.send_test_dm",
+            "admin.create_mls_group",
+            "admin.invite_to_mls_group",
+            "agent.create_mls_group",
+            "agent.invite_to_mls_group",
         ];
 
         for method in methods {

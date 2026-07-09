@@ -499,6 +499,34 @@ class Bot:
         )
         return response.is_member
 
+    async def create_mls_group(
+        self,
+        bot_id: str,
+        group_name: str,
+        recipient: str,
+    ) -> str:
+        """Create a new MLS group and invite the recipient as this bot."""
+        response = await self._client.agent_create_mls_group(
+            bot_id=bot_id,
+            group_name=group_name,
+            recipient=recipient,
+        )
+        return response.wire_id
+
+    async def invite_to_mls_group(
+        self,
+        bot_id: str,
+        group_name: str,
+        recipient: str,
+    ) -> str:
+        """Invite a recipient to an existing MLS group as this bot."""
+        response = await self._client.agent_invite_to_mls_group(
+            bot_id=bot_id,
+            group_name=group_name,
+            recipient=recipient,
+        )
+        return response.wire_id
+
     # -----------------------------------------------------------------------
     # Internal handler invocation
     # -----------------------------------------------------------------------

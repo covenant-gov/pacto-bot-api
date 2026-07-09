@@ -31,13 +31,21 @@ impl BotState {
 
     /// Create a bot state with an MLS engine backing the given database path.
     ///
-    /// This is used for bots configured to send group messages. The caller is
-    /// responsible for creating the parent directory with `0o700` permissions.
+    /// The parent directory is enforced to `0o700` and the engine enforces
+    /// `0o600` on the database and WAL/SHM sidecars.
     pub fn new_with_mls(
         config: BotConfig,
         mls_db_path: impl AsRef<std::path::Path>,
     ) -> Result<Self, DaemonError> {
         let signer = SignerBackend::from_config(&config.signing, &config.npub)?;
+        let mls_db_path = mls_db_path.as_ref();
+        if let Some(parent) = mls_db_path.parent() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
         let mls = Some(MlsEngineHandle::new_persistent(mls_db_path)?);
         Ok(Self {
             config,
@@ -101,6 +109,8 @@ mod tests {
             relays: vec![],
             capabilities: vec![],
             mls_dedup_window_secs: None,
+            mls_db_path: None,
+            mls_key_package_freshness_secs: None,
             ..Default::default()
         }
     }

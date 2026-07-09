@@ -284,6 +284,10 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "agent.publish_key_package"
                 | "admin.send_test_dm"
                 | "agent.is_squad_member"
+                | "admin.create_mls_group"
+                | "admin.invite_to_mls_group"
+                | "agent.create_mls_group"
+                | "agent.invite_to_mls_group"
         );
         if expects_result {
             assert!(

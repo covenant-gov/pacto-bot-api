@@ -104,6 +104,12 @@ pub struct BotConfig {
     /// Time window in seconds for MLS group-message deduplication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mls_dedup_window_secs: Option<u64>,
+    /// Path to the per-bot MLS SQLite database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_db_path: Option<PathBuf>,
+    /// Freshness window in seconds for MLS KeyPackage events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_key_package_freshness_secs: Option<u64>,
 }
 
 /// Signing backend configuration for a bot identity.
@@ -153,8 +159,8 @@ impl DaemonConfig {
         config.daemon.data_dir = expand_path(&config.daemon.data_dir);
         config.daemon.socket_path = expand_path(&config.daemon.socket_path);
 
-        // Validate bot_id uniqueness and signing backend rules.
-        validate_bots(&config.bots)?;
+        // Validate bot_id uniqueness, signing backend rules, and MLS config.
+        validate_bots(&mut config.bots, Path::new(&config.daemon.data_dir))?;
 
         // Validate daemon timing values used by tokio::time::interval.
         validate_daemon_config(&config.daemon)?;
@@ -255,7 +261,17 @@ const VALID_CAPABILITIES: &[&str] = &[
     "ManageProfile",
     "SendGroupMessages",
     "ReceiveGroupMessages",
+    "CreateMlsGroup",
+    "InviteToMlsGroup",
     "Admin",
+];
+
+/// Capabilities that require an MLS engine to be configured.
+const MLS_CAPABILITIES: &[&str] = &[
+    "SendGroupMessages",
+    "ReceiveGroupMessages",
+    "CreateMlsGroup",
+    "InviteToMlsGroup",
 ];
 
 /// Redact query-parameter values from a `bunker://` URI.
@@ -335,7 +351,7 @@ pub fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
+fn validate_bots(bots: &mut [BotConfig], data_dir: &Path) -> Result<(), DaemonError> {
     let mut seen = HashSet::new();
     for bot in bots {
         validate_bot_id(&bot.id)?;
@@ -352,6 +368,22 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
                     VALID_CAPABILITIES.join(", ")
                 )));
             }
+        }
+
+        let has_mls_capability = bot
+            .capabilities
+            .iter()
+            .any(|c| MLS_CAPABILITIES.contains(&c.as_str()));
+        if has_mls_capability && bot.mls_db_path.is_none() {
+            return Err(DaemonError::Config(format!(
+                "bot {}: MLS capability requires mls_db_path",
+                bot.id
+            )));
+        }
+
+        if bot.mls_db_path.is_some() {
+            let canonical = validate_mls_db_path(bot, data_dir)?;
+            bot.mls_db_path = Some(canonical);
         }
 
         match &bot.signing {
@@ -392,6 +424,123 @@ fn validate_bots(bots: &[BotConfig]) -> Result<(), DaemonError> {
         }
     }
     Ok(())
+}
+
+/// Validate and canonicalize a bot's configured `mls_db_path`.
+///
+/// The path is resolved against the per-bot data directory if relative. It
+/// must remain inside that directory after canonicalization, must not
+/// contain symlinks, and must not be an absolute path under `/tmp` or
+/// `/dev/shm`. The parent directory is created with `0o700` permissions.
+pub fn validate_mls_db_path(
+    bot: &BotConfig,
+    data_dir: impl AsRef<Path>,
+) -> Result<PathBuf, DaemonError> {
+    let data_dir = data_dir.as_ref();
+    let path = bot
+        .mls_db_path
+        .as_ref()
+        .ok_or_else(|| DaemonError::Config(format!("bot {}: mls_db_path is missing", bot.id)))?;
+
+    // Ensure the bot's data directory exists and enforce 0o700. The bot data
+    // directory is the sandbox for the MLS database.
+    let bot_data_dir = data_dir.join(&bot.id);
+    std::fs::create_dir_all(&bot_data_dir).map_err(DaemonError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bot_data_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(DaemonError::Io)?;
+    }
+
+    // Resolve the configured path relative to the bot data directory if needed.
+    // Keep this path non-canonical so that symlinks are detected before they
+    // are resolved away.
+    let was_absolute = path.is_absolute();
+    let resolved_path = if was_absolute {
+        path.to_path_buf()
+    } else {
+        bot_data_dir.join(path)
+    };
+
+    // Reject absolute paths that explicitly point under /tmp or /dev/shm.
+    if was_absolute {
+        let tmp = Path::new("/tmp");
+        let shm = Path::new("/dev/shm");
+        if resolved_path.starts_with(tmp) || resolved_path.starts_with(shm) {
+            return Err(DaemonError::Config(format!(
+                "bot {}: mls_db_path must not be under /tmp or /dev/shm",
+                bot.id
+            )));
+        }
+    }
+
+    // Reject any symlinks in the path components. This check uses the
+    // unresolved path so that symlinks inside the bot data directory are
+    // detected before canonicalization resolves them away.
+    let mut current = resolved_path.as_path();
+    loop {
+        if let Ok(meta) = std::fs::symlink_metadata(current)
+            && meta.file_type().is_symlink()
+        {
+            return Err(DaemonError::Config(format!(
+                "bot {}: mls_db_path must not contain symlinks",
+                bot.id
+            )));
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+
+    // Create the parent directory and enforce 0o700.
+    let parent = resolved_path.parent().ok_or_else(|| {
+        DaemonError::Config(format!(
+            "bot {}: mls_db_path has no parent directory",
+            bot.id
+        ))
+    })?;
+    std::fs::create_dir_all(parent).map_err(DaemonError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+            .map_err(DaemonError::Io)?;
+    }
+
+    // Canonicalize the parent and the bot data directory, then verify the
+    // parent remains inside the sandbox.
+    let canonical_parent = parent.canonicalize().map_err(DaemonError::Io)?;
+    let canonical_bot_data_dir = bot_data_dir.canonicalize().map_err(DaemonError::Io)?;
+    if !canonical_parent.starts_with(&canonical_bot_data_dir) {
+        return Err(DaemonError::Config(format!(
+            "bot {}: mls_db_path {} escapes data directory {}",
+            bot.id,
+            resolved_path.display(),
+            canonical_bot_data_dir.display()
+        )));
+    }
+
+    // If the database file already exists, canonicalize it and verify too.
+    let canonical_path = if resolved_path.exists() {
+        let canon = resolved_path.canonicalize().map_err(DaemonError::Io)?;
+        if !canon.starts_with(&canonical_bot_data_dir) {
+            return Err(DaemonError::Config(format!(
+                "bot {}: mls_db_path {} escapes data directory {}",
+                bot.id,
+                resolved_path.display(),
+                canonical_bot_data_dir.display()
+            )));
+        }
+        canon
+    } else {
+        canonical_parent.join(resolved_path.file_name().ok_or_else(|| {
+            DaemonError::Config(format!("bot {}: mls_db_path is invalid", bot.id))
+        })?)
+    };
+
+    Ok(canonical_path)
 }
 
 /// Expand `${ENV_VAR}` references in a string. Supports `${ENV_VAR}` and
@@ -909,6 +1058,232 @@ signing = { backend = "nsec", nsec = "nsec1a" }
         let err = DaemonConfig::load(&path).unwrap_err();
         assert!(err.to_string().contains("handler_stale_timeout_secs"));
         assert!(err.to_string().contains("greater than 0"));
+    }
+
+    #[test]
+    fn mls_capability_requires_mls_db_path() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+capabilities = ["SendGroupMessages"]
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MLS capability requires mls_db_path"), "{msg}");
+    }
+
+    #[test]
+    fn create_mls_group_capability_requires_mls_db_path() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+capabilities = ["CreateMlsGroup"]
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("MLS capability requires mls_db_path"), "{msg}");
+    }
+
+    fn restricted_tempdir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(dir.path(), perms).unwrap();
+        }
+        let file_path = dir.path().join("pacto-bot-api.toml");
+        (dir, file_path)
+    }
+
+    #[test]
+    fn mls_db_path_is_validated_and_canonicalized() {
+        let (dir, file_path) = restricted_tempdir();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            &file_path,
+            format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+capabilities = ["SendGroupMessages"]
+mls_db_path = "vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&file_path, perms).unwrap();
+        }
+
+        let config = DaemonConfig::load(&file_path).unwrap();
+        let bot = &config.bots[0];
+        let resolved = bot.mls_db_path.as_ref().unwrap();
+        assert!(
+            resolved.is_absolute(),
+            "mls_db_path should be canonicalized: {}",
+            resolved.display()
+        );
+        assert!(
+            resolved.to_string_lossy().contains("mls-bot"),
+            "mls_db_path should be inside bot data dir: {}",
+            resolved.display()
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let parent = resolved.parent().unwrap();
+            let meta = std::fs::metadata(parent).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mls_db_path_rejects_absolute_tmp() {
+        let (dir, file_path) = restricted_tempdir();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            &file_path,
+            format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+mls_db_path = "/tmp/vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&file_path, perms).unwrap();
+        }
+
+        let err = DaemonConfig::load(&file_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must not be under /tmp or /dev/shm"),
+            "expected /tmp rejection: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mls_db_path_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, file_path) = restricted_tempdir();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        let link = data_dir.join("mls-bot");
+        symlink(&real_dir, &link).unwrap();
+
+        std::fs::write(
+            &file_path,
+            format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+mls_db_path = "vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&file_path, perms).unwrap();
+        }
+
+        let err = DaemonConfig::load(&file_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must not contain symlinks"),
+            "expected symlink rejection: {msg}"
+        );
+    }
+
+    #[test]
+    fn mls_db_path_rejects_escape_from_data_dir() {
+        let (dir, file_path) = restricted_tempdir();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            &file_path,
+            format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+mls_db_path = "../vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&file_path, perms).unwrap();
+        }
+
+        let err = DaemonConfig::load(&file_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("escapes data directory"),
+            "expected escape rejection: {msg}"
+        );
     }
 
     #[test]

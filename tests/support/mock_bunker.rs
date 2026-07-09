@@ -155,6 +155,16 @@ impl MockBunker {
         }
     }
 
+    /// Wait until the signer has subscribed to the relay and is ready to
+    /// answer NIP-46 requests.
+    pub async fn wait_ready(
+        &self,
+        relay: &crate::support::mock_relay::MockRelay,
+        timeout: Duration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        relay.wait_for_subscription(timeout).await
+    }
+
     /// Produce a bunker response event for `get_public_key`.
     ///
     /// Kept for backwards compatibility with tests that manually drive the

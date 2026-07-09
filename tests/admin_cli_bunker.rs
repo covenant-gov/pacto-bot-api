@@ -367,18 +367,6 @@ async fn local_key_send_test_dm_publishes_gift_wrap() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-impl MockBunker {
-    /// Wait until the signer has subscribed to the relay and is ready to
-    /// answer NIP-46 requests.
-    pub async fn wait_ready(
-        &self,
-        relay: &MockRelay,
-        timeout: Duration,
-    ) -> Result<(), Box<dyn Error>> {
-        relay.wait_for_subscription(timeout).await
-    }
-}
-
 /// Spawn a daemon and return a guard that kills it on drop.
 struct DaemonGuard(std::process::Child);
 

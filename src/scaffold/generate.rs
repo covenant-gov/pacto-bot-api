@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 /// What kind of scaffold invocation is running.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ScaffoldMode {
     /// Create a brand-new bot identity and scaffold a project around it.
     NewProject { snippet: String },
