@@ -19,6 +19,7 @@ pub mod events;
 pub mod guide;
 pub mod handlers;
 pub mod mls;
+pub mod mls_path;
 pub mod nostr;
 pub mod service_compatibility_generated;
 pub mod signer;

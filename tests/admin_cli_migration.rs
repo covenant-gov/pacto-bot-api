@@ -5,9 +5,113 @@ mod support;
 use assert_cmd::Command;
 use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::events::EventType;
+use rusqlite::Connection;
 use serde_json::json;
 use std::error::Error;
 use std::fs;
+
+fn assert_mls_table_schema(
+    conn: &Connection,
+    table: &str,
+    expected_columns: &[&str],
+    expected_pk: &[&str],
+    unique_column: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns: Vec<(String, i32, bool)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>("name")?,
+                row.get::<_, i32>("pk")?,
+                row.get::<_, bool>("notnull")?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let names: std::collections::HashSet<&str> = columns.iter().map(|c| c.0.as_str()).collect();
+    let expected_names: std::collections::HashSet<&str> =
+        expected_columns.iter().copied().collect();
+    assert_eq!(names, expected_names, "{table} column set mismatch");
+
+    let pk: std::collections::HashSet<&str> = columns
+        .iter()
+        .filter(|c| c.1 > 0)
+        .map(|c| c.0.as_str())
+        .collect();
+    let expected_pk_set: std::collections::HashSet<&str> = expected_pk.iter().copied().collect();
+    assert_eq!(pk, expected_pk_set, "{table} primary key mismatch");
+
+    for col in &columns {
+        assert!(col.2, "{table}.{} should be NOT NULL", col.0);
+    }
+
+    let mut unique_indexes = Vec::new();
+    let mut idx_stmt = conn.prepare(&format!("PRAGMA index_list({table})"))?;
+    let indexes: Vec<(String, i32)> = idx_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>("name")?, row.get::<_, i32>("unique")?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (name, unique) in indexes {
+        if unique != 1 {
+            continue;
+        }
+        let mut info_stmt = conn.prepare(&format!("PRAGMA index_info({name})"))?;
+        let cols: Vec<String> = info_stmt
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<Vec<_>, _>>()?;
+        unique_indexes.push(cols);
+    }
+
+    let pk_index: Vec<String> = expected_pk.iter().map(|s| (*s).to_string()).collect();
+    assert!(
+        unique_indexes.contains(&pk_index),
+        "{table} primary key index missing"
+    );
+
+    if let Some(unique_col) = unique_column {
+        let unique_col_index: Vec<String> = vec![unique_col.to_string()];
+        assert!(
+            unique_indexes.contains(&unique_col_index),
+            "{table}.{unique_col} unique index missing"
+        );
+    }
+
+    Ok(())
+}
+
+fn assert_mls_tables_in_schema(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    let conn = Connection::open(path)?;
+    assert_mls_table_schema(
+        &conn,
+        "mls_groups",
+        &[
+            "bot_id",
+            "group_name",
+            "wire_id",
+            "creator_npub",
+            "relay",
+            "invited_bots",
+        ],
+        &["bot_id", "group_name"],
+        Some("wire_id"),
+    )?;
+    assert_mls_table_schema(
+        &conn,
+        "mls_group_members",
+        &["bot_id", "group_name", "member_npub"],
+        &["bot_id", "group_name", "member_npub"],
+        None,
+    )?;
+
+    for table in ["mls_groups", "mls_group_members"] {
+        let mut stmt = conn.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+        let count: usize = stmt.query_map([], |_| Ok(()))?.count();
+        assert_eq!(count, 0, "{table} should declare no foreign keys");
+    }
+
+    Ok(())
+}
 
 #[test]
 fn export_import_roundtrip() -> Result<(), Box<dyn Error>> {
@@ -113,6 +217,21 @@ fn export_import_roundtrips_mls_groups() -> Result<(), Box<dyn Error>> {
     assert_eq!(groups[0].group_name, "my-squad");
     assert_eq!(groups[0].wire_id, "aabbccdd");
     assert_eq!(groups[0].invited_bots, vec!["npub1member"]);
+    assert_mls_tables_in_schema(&dir.path().join("agent.db"))?;
+    Ok(())
+}
+
+#[test]
+fn migration_creates_mls_tables() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let _config = common::make_config(&dir, vec![bot])?;
+
+    let db_path = dir.path().join("agent.db");
+    let _db = Database::open(&db_path)?;
+    drop(_db);
+
+    assert_mls_tables_in_schema(&db_path)?;
     Ok(())
 }
 

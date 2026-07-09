@@ -69,10 +69,10 @@ async fn setup_dispatch_with_client(
         bots: bot_configs,
     };
     let dir = common::tempdir()?;
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, nostr_client).await?,
-    ));
     let db = Db::open(dir.path().join("test.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
     let diagnostics = Diagnostics::new();
     let mut dispatch = match rate_limiter {
         Some(limiter) => Dispatch::with_rate_limiter(cm.clone(), db, diagnostics, limiter),

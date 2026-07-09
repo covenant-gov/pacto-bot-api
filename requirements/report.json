@@ -31,11 +31,9 @@
       "summary": "The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ...",
       "tests": [
         "tests/transport_http.rs",
-        "tests/integration_test.rs",
-        "tests/mls_group.rs"
+        "tests/integration_test.rs"
       ],
       "parsed_tests": [
-        "tests/mls_group.rs",
         "tests/transport_http.rs"
       ],
       "sources": [
@@ -91,12 +89,10 @@
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
         "tests/integration_test.rs",
-        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
-        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "sources": [
@@ -424,12 +420,10 @@
       "id": "R22",
       "summary": "The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:\"shutting_down\"}`, closes relay and bunker connections, releases the lock file, ...",
       "tests": [
-        "tests/daemon_shutdown.rs",
-        "tests/mls_group.rs"
+        "tests/daemon_shutdown.rs"
       ],
       "parsed_tests": [
-        "tests/daemon_shutdown.rs",
-        "tests/mls_group.rs"
+        "tests/daemon_shutdown.rs"
       ],
       "sources": [
         "src/main.rs",
@@ -524,11 +518,9 @@
       "id": "R28",
       "summary": "**Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron...",
       "tests": [
-        "tests/transport_unix.rs",
-        "tests/mls_group.rs"
+        "tests/transport_unix.rs"
       ],
       "parsed_tests": [
-        "tests/mls_group.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [
@@ -541,12 +533,10 @@
       "id": "R29",
       "summary": "**State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti...",
       "tests": [
-        "tests/admin_cli_migration.rs",
-        "tests/mls_group.rs"
+        "tests/admin_cli_migration.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_migration.rs",
-        "tests/mls_group.rs"
+        "tests/admin_cli_migration.rs"
       ],
       "sources": [
         "src/admin.rs"
@@ -558,12 +548,10 @@
       "id": "R30",
       "summary": "**Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing...",
       "tests": [
-        "tests/dispatch_integration.rs",
-        "tests/mls_group.rs"
+        "tests/dispatch_integration.rs"
       ],
       "parsed_tests": [
-        "tests/dispatch_integration.rs",
-        "tests/mls_group.rs"
+        "tests/dispatch_integration.rs"
       ],
       "sources": [
         "src/dispatch.rs",

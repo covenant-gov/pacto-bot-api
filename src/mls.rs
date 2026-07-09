@@ -65,9 +65,12 @@ pub enum MlsError {
 
 impl From<mdk_core::Error> for MlsError {
     fn from(err: mdk_core::Error) -> Self {
-        // Log the raw MDK error only at DEBUG level; never expose it to callers
-        // or INFO+ logs.
-        tracing::debug!(error = %err, "MLS engine raw error");
+        // Log only a sanitized error category at DEBUG; never expose raw MDK
+        // strings or key material in logs.
+        tracing::debug!(
+            category = mdk_error_category(&err),
+            "MLS engine error categorized"
+        );
         match err {
             mdk_core::Error::GroupNotFound => MlsError::GroupNotFound,
             mdk_core::Error::Crypto(_) => MlsError::CryptoError,
@@ -77,6 +80,31 @@ impl From<mdk_core::Error> for MlsError {
                 MlsError::Engine("MLS engine failure".into())
             }
         }
+    }
+}
+
+/// Map a raw `mdk_core::Error` to a stable, non-leaky category string for
+/// logging. The category must never include key material, group IDs, or raw
+/// error messages from the engine.
+fn mdk_error_category(err: &mdk_core::Error) -> &'static str {
+    match err {
+        mdk_core::Error::GroupNotFound => "group_not_found",
+        mdk_core::Error::Crypto(_) => "crypto",
+        mdk_core::Error::KeyPackage(_) => "key_package",
+        mdk_core::Error::Group(_) => "group",
+        mdk_core::Error::Message(_) => "message",
+        mdk_core::Error::Welcome(_) => "welcome",
+        mdk_core::Error::ProcessMessageWrongEpoch
+        | mdk_core::Error::ProcessMessageWrongGroupId
+        | mdk_core::Error::ProcessMessageUseAfterEviction
+        | mdk_core::Error::ProcessMessageOther(_) => "process_message",
+        _ => "other",
+    }
+}
+
+impl From<crate::mls_path::MlsPathError> for MlsError {
+    fn from(err: crate::mls_path::MlsPathError) -> Self {
+        MlsError::InsecurePath(err.to_string())
     }
 }
 
@@ -156,6 +184,9 @@ enum MlsCommand {
     HasGroupWithWireId {
         group_id: String,
         tx: oneshot::Sender<Result<bool, MlsError>>,
+    },
+    ListGroups {
+        tx: oneshot::Sender<Result<Vec<MlsGroupListEntry>, MlsError>>,
     },
 }
 
@@ -460,6 +491,34 @@ impl MlsEngineHandle {
                             });
                         let _ = tx.send(result);
                     }
+                    MlsCommand::ListGroups { tx } => {
+                        let result: Result<Vec<MlsGroupListEntry>, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let mut entries = Vec::with_capacity(groups.len());
+                                    for group in groups {
+                                        let members = engine
+                                            .get_members(&group.mls_group_id)?
+                                            .into_iter()
+                                            .map(|p| p.to_owned())
+                                            .collect();
+                                        entries.push(MlsGroupListEntry {
+                                            wire_id: hex::encode(group.nostr_group_id.as_slice()),
+                                            name: group.name.clone(),
+                                            members,
+                                            mls_group_id: group.mls_group_id.as_slice().to_vec(),
+                                        });
+                                    }
+                                    Ok(entries)
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
                     MlsCommand::IsGroupMember {
                         wire_id,
                         member,
@@ -629,6 +688,20 @@ impl MlsEngineHandle {
         rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
 
+    /// List all groups currently known to the engine.
+    ///
+    /// Each entry carries the Squad wire id (`hex(nostr_group_id)`), the group
+    /// name, and the engine-reported member public keys. This is used on daemon
+    /// startup to reconcile `agent.db` with the engine's persisted state.
+    pub async fn list_groups(&self) -> Result<Vec<MlsGroupListEntry>, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::ListGroups { tx })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
     /// Create a new MLS group with the recipient as the initial member.
     ///
     /// Returns the Squad wire id (`hex(nostr_group_id)`) and the unsigned welcome
@@ -688,6 +761,22 @@ pub struct GroupInfo {
     pub name: String,
 }
 
+/// A group entry returned by [`MlsEngineHandle::list_groups`].
+///
+/// This includes the Squad wire id, the human-readable group name, and the
+/// current member public keys as known by the MLS engine. It is used during
+/// daemon startup to reconcile any groups that exist in engine storage but
+/// are missing from `agent.db`.
+#[derive(Debug, Clone)]
+pub struct MlsGroupListEntry {
+    pub wire_id: String,
+    pub name: String,
+    /// MLS group members as reported by the engine.
+    pub members: Vec<PublicKey>,
+    /// Raw MLS group id; primarily useful for further engine queries.
+    pub mls_group_id: Vec<u8>,
+}
+
 /// A decrypted MLS application message.
 #[derive(Debug, Clone)]
 pub struct DecryptedMessage {
@@ -731,135 +820,13 @@ pub(crate) fn set_db_permissions<P: AsRef<Path>>(_db_path: P) -> Result<(), MlsE
 
 /// Create and secure the parent directory of the MLS database.
 ///
-/// On Unix this creates the directory with mode `0o700` (bypassing the process
-/// umask), rejects symlinks and mountpoints, and rejects paths that resolve
-/// under `/tmp` or `/dev/shm`. On other platforms it is equivalent to
-/// `create_dir_all`.
+/// This delegates to the shared MLS path helper so config validation and
+/// runtime engine startup use the same hardening logic. On Unix this creates
+/// the directory with mode `0o700`, rejects symlinks and mountpoints in the
+/// parent chain, and rejects paths that resolve under `/tmp` or `/dev/shm`.
 fn prepare_mls_db_dir(db_path: &Path) -> Result<(), MlsError> {
-    #[cfg(unix)]
-    {
-        secure_ensure_parent_dir(db_path)
-    }
-    #[cfg(not(unix))]
-    {
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-fn secure_ensure_parent_dir(db_path: &Path) -> Result<(), MlsError> {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-
-    let Some(parent) = db_path.parent() else {
-        return Err(MlsError::InsecurePath(
-            "MLS database path has no parent directory".into(),
-        ));
-    };
-
-    // Reject any symlinks in the path before creating directories, so an
-    // attacker cannot redirect a newly created directory into a sensitive
-    // location.
-    if path_contains_symlink(parent) {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent path contains a symlink: {}",
-            parent.display()
-        )));
-    }
-
-    // Create the parent directory (and any missing ancestors) with explicit
-    // owner-only permissions. `DirBuilder::create` with `recursive(true)` is
-    // equivalent to `create_dir_all` and returns `Ok` if the path already
-    // exists, so we unconditionally harden the final directory afterwards.
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true).mode(0o700);
-    builder.create(parent).map_err(MlsError::Io)?;
-
-    // Harden the directory to owner-only permissions and verify it is safe.
-    validate_mls_parent_structure(parent)?;
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-    validate_mls_parent_permissions(parent)
-}
-
-#[cfg(unix)]
-fn validate_mls_parent_structure(parent: &Path) -> Result<(), MlsError> {
-    let meta = std::fs::symlink_metadata(parent).map_err(MlsError::Io)?;
-    if meta.file_type().is_symlink() {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent is a symlink: {}",
-            parent.display()
-        )));
-    }
-    if !meta.is_dir() {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent is not a directory: {}",
-            parent.display()
-        )));
-    }
-
-    // Reject shared temp directories and mountpoints.
-    let canonical = parent.canonicalize().map_err(MlsError::Io)?;
-    let tmp = Path::new("/tmp");
-    let shm = Path::new("/dev/shm");
-    if canonical.starts_with(tmp) || canonical.starts_with(shm) {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent resolves under /tmp or /dev/shm: {}",
-            canonical.display()
-        )));
-    }
-    if is_mountpoint(&canonical)? {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent is a mountpoint: {}",
-            canonical.display()
-        )));
-    }
-
+    crate::mls_path::secure_ensure_mls_parent_dir(db_path)?;
     Ok(())
-}
-
-#[cfg(unix)]
-fn validate_mls_parent_permissions(parent: &Path) -> Result<(), MlsError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let meta = std::fs::symlink_metadata(parent).map_err(MlsError::Io)?;
-    if meta.permissions().mode() & 0o077 != 0 {
-        return Err(MlsError::InsecurePath(format!(
-            "MLS database parent is not owner-only: {}",
-            parent.display()
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn path_contains_symlink(path: &Path) -> bool {
-    let mut current = path;
-    loop {
-        if let Ok(meta) = std::fs::symlink_metadata(current)
-            && meta.file_type().is_symlink()
-        {
-            return true;
-        }
-        match current.parent() {
-            Some(parent) if parent != current => current = parent,
-            _ => break,
-        }
-    }
-    false
-}
-
-#[cfg(unix)]
-fn is_mountpoint(path: &Path) -> Result<bool, MlsError> {
-    use std::os::unix::fs::MetadataExt;
-
-    let Some(parent) = path.parent() else {
-        return Ok(false);
-    };
-    let path_dev = std::fs::metadata(path).map_err(MlsError::Io)?.dev();
-    let parent_dev = std::fs::metadata(parent).map_err(MlsError::Io)?.dev();
-    Ok(path_dev != parent_dev)
 }
 
 #[cfg(test)]

@@ -49,7 +49,7 @@ use tokio::net::UnixStream;
 use rpassword::read_password;
 use std::env;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write as IoWrite};
+use std::io::{self, Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
@@ -2705,26 +2705,55 @@ impl Drop for AdminSession {
             return;
         };
         let _handler_id = self.handler_id.take();
+
+        // Reunite the async halves back into a std UnixStream so cleanup can
+        // run synchronously and outlive the Tokio runtime.
+        let reader = reader.into_inner();
+        let stream = match writer.reunite(reader) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let Ok(mut std_stream) = stream.into_std() else {
+            return;
+        };
+
+        // Switch to blocking mode so the synchronous write/read timeouts below
+        // actually bound the cleanup time.
+        let _ = std_stream.set_nonblocking(false);
+        let _ = std_stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = std_stream.set_read_timeout(Some(Duration::from_secs(2)));
+
         let unregister = JsonRpcMessage::request(
             3.into(),
             "handler.unregister",
             Some(Value::Object(Default::default())),
         );
-        if let Ok(_handle) = tokio::runtime::Handle::try_current() {
-            std::mem::drop(tokio::task::spawn_blocking(move || {
-                let _handle = tokio::runtime::Handle::current();
-                _handle.block_on(async move {
-                    let mut writer = writer;
-                    let mut reader = reader;
-                    let _ = write_request(&mut writer, &unregister).await;
-                    let mut buf = Vec::new();
-                    let _ = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        reader.read_until(b'\n', &mut buf),
-                    )
-                    .await;
-                });
-            }));
+        let line = match serialize_message(&unregister) {
+            Ok(l) => format!("{}\n", l),
+            Err(_) => return,
+        };
+        if std_stream.write_all(line.as_bytes()).is_err() {
+            return;
+        }
+        if std_stream.flush().is_err() {
+            return;
+        }
+
+        // Read until newline or EOF/timeout; the response itself is irrelevant.
+        let mut buf = Vec::new();
+        let mut temp = [0u8; 1024];
+        loop {
+            match std_stream.read(&mut temp) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&temp[..n]);
+                    if buf.contains(&b'\n') {
+                        break;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => break,
+            }
         }
     }
 }
@@ -2809,15 +2838,6 @@ async fn admin_session_call(
     }
 }
 
-#[cfg(unix)]
-async fn write_request(
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
-    request: &JsonRpcMessage,
-) -> Result<(), DaemonError> {
-    let line = format!("{}\n", serialize_message(request)?);
-    writer.write_all(line.as_bytes()).await?;
-    Ok(())
-}
 #[cfg(unix)]
 async fn cmd_handlers(
     config_path: &Path,
