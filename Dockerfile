@@ -1,10 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Multi-stage build for the Pacto bot API daemon, admin CLI, and utility binaries.
+# Multi-stage build for the Pacto bot API daemon and admin CLI.
 #
 # The image is intended for Docker Compose deployments. The daemon is the
-# default command; the admin CLI and the create-mls-group utility are
-# available under /usr/local/bin.
+# default command; the admin CLI is available at /usr/local/bin/pacto-bot-admin.
 #
 # Example usage:
 #   docker build -t pacto-bot-api .
@@ -19,7 +18,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY build.rs build.rs
 COPY xtask xtask
 COPY crates/governance-bot crates/governance-bot
-COPY crates/pacto-bot-utils crates/pacto-bot-utils
 COPY schemas schemas
 COPY python/pyproject.toml python/pyproject.toml
 COPY src src
@@ -27,7 +25,7 @@ COPY src src
 ARG GIT_COMMIT_SHORT=unknown
 ENV GIT_COMMIT_SHORT=${GIT_COMMIT_SHORT}
 
-RUN cargo build --release --bins -p pacto-bot-api -p pacto-bot-utils
+RUN cargo build --release --bins
 
 FROM debian:bookworm-slim AS runtime
 
@@ -44,7 +42,6 @@ RUN mkdir -p /etc/pacto /var/lib/pacto-bot-api \
 
 COPY --from=builder /usr/src/pacto-bot-api/target/release/pacto-bot-api /usr/local/bin/
 COPY --from=builder /usr/src/pacto-bot-api/target/release/pacto-bot-admin /usr/local/bin/
-COPY --from=builder /usr/src/pacto-bot-api/target/release/create-mls-group /usr/local/bin/
 
 USER pacto
 WORKDIR /var/lib/pacto-bot-api
