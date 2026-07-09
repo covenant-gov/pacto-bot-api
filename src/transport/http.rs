@@ -600,6 +600,8 @@ fn is_mutating_method(method: Option<Method>) -> bool {
             | Some(Method::AgentUnregisterHandler)
             | Some(Method::AgentSendGroupMessage)
             | Some(Method::AgentPublishKeyPackage)
+            | Some(Method::AgentCreateMlsGroup)
+            | Some(Method::AgentInviteToMlsGroup)
     )
 }
 
