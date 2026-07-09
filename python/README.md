@@ -128,18 +128,72 @@ users know the bot is alive. Disable this with `reply_on_error=False` or change
 the message with `error_message="..."`. The error text never includes raw
 exception details.
 
+### Handler response contract
+
+Handlers return a response dict, `None`, or one of the helpers `bot.ignore` and
+`bot.reply`. Valid actions in a response dict are `ack`, `reply`, `defer`, and
+`ignore`. When `auto_acknowledge=True` (the default), returning `None` is the
+same as returning `bot.ignore(event)` — the SDK sends a terminal
+`handler_response(action="ignore")` for you.
+
+```python
+from pacto_bot_sdk import Bot
+
+bot = Bot(bot_id="example-bot")
+
+
+@bot.command("/hello")
+async def hello(event, bot):
+    return bot.reply(event, "Hello!")
+
+
+@bot.hears("status")
+async def status(event, bot):
+    return bot.reply(event, "I am running.")
+
+
+@bot.event("dm_received")
+async def on_dm(event, bot):
+    if bot.is_degraded:
+        return bot.ignore(event)
+    return bot.reply(event, "Got it.")
+
+
+@bot.dm
+async def on_dm_shorthand(event, bot):
+    # Returning None becomes ignore when auto_acknowledge is True.
+    if event.content.startswith("/ignore"):
+        return None
+    return bot.reply(event, "Replied via @bot.dm")
+
+
+@bot.default
+async def fallback(event, bot):
+    return bot.ignore(event)
+```
+
+`bot.reply(event, content)` validates that `content` is a `str` with a UTF-8
+length of at most 8192 bytes and raises `ValueError` otherwise. It does not
+sanitize content — scrub user input before calling it.
+
 ### Decorators
 
 - `@bot.command("/hello")` — register a handler for `/hello`. The leading `/` is optional.
+- `@bot.hears("token")` — register a handler for messages whose first token matches *token*.
+- `@bot.event("type")` — register a handler for `agent.event` notifications of *type*.
+- `@bot.dm` — shorthand for `@bot.event("dm_received")`.
 - `@bot.default` — fallback handler for unrecognized commands.
 - `@bot.status` — callback for `agent.status` notifications.
+- `@bot.rate_limited` — callback for `agent.rate_limited` notifications.
 
-Handlers receive `(event, bot)` and may be sync or async. Return a response dict or `None`.
+Handlers receive `(event, bot)` and may be sync or async. Return a response dict, `None`, or a helper result.
 
 Use `parse_command(event.content)` to split a message into `command`, `args`, and `flags`.
 
 ### Helper methods on `Bot`
 
+- `bot.ignore(event)` — return a terminal `handler_response(action="ignore")` dict.
+- `bot.reply(event, content)` — return a terminal `handler_response(action="reply")` dict.
 - `await bot.send_dm(recipient, content, reply_to=None)` — send a DM as this bot.
 - `await bot.set_profile(name=None, about=None, picture=None)` — update the bot profile.
 - `bot.client` — access the low-level `PactoClient` for advanced use.

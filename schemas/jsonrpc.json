@@ -52,6 +52,12 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Event types the handler is now subscribed to."
+            },
+            "own_pubkeys": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "default": {},
+              "description": "Map from daemon-local bot_id to the bot's Nostr public key (npub)."
             }
           },
           "required": ["handler_id", "reconnect_token", "registered_events"]
@@ -93,6 +99,12 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Event types the handler is now subscribed to."
+            },
+            "own_pubkeys": {
+              "type": "object",
+              "additionalProperties": { "type": "string" },
+              "default": {},
+              "description": "Map from daemon-local bot_id to the bot's Nostr public key (npub)."
             }
           },
           "required": ["handler_id", "registered_events"]

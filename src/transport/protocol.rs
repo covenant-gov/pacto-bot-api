@@ -74,7 +74,7 @@ pub fn validate_params(method: &str, params: &serde_json::Value) -> Result<(), D
 use crate::errors::{DaemonError, JsonRpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -383,6 +383,8 @@ pub struct HandlerRegisterResponse {
     pub handler_id: String,
     pub reconnect_token: String,
     pub registered_events: Vec<String>,
+    #[serde(default)]
+    pub own_pubkeys: BTreeMap<String, String>,
 }
 
 /// Typed payload for the `handler.reconnect` JSON-RPC method.
@@ -397,6 +399,8 @@ pub struct HandlerReconnectParams {
 pub struct HandlerReconnectResponse {
     pub handler_id: String,
     pub registered_events: Vec<String>,
+    #[serde(default)]
+    pub own_pubkeys: BTreeMap<String, String>,
 }
 
 /// Typed payload returned by the `agent.metrics` JSON-RPC method.
@@ -760,5 +764,57 @@ mod tests {
     fn validate_params_accepts_null_for_empty_schema() {
         assert!(validate_params("agent.version", &Value::Null).is_ok());
         assert!(validate_params("agent.metrics", &Value::Null).is_ok());
+    }
+
+    #[test]
+    fn handler_register_response_round_trips_own_pubkeys() {
+        let response = HandlerRegisterResponse {
+            handler_id: "h1".into(),
+            reconnect_token: "token".into(),
+            registered_events: vec!["dm_received".into()],
+            own_pubkeys: BTreeMap::from([("echo-bot".into(), "npub1test".into())]),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        let own_pubkeys = json.get("own_pubkeys").unwrap().as_object().unwrap();
+        assert_eq!(
+            own_pubkeys.get("echo-bot").unwrap().as_str().unwrap(),
+            "npub1test"
+        );
+
+        let parsed: HandlerRegisterResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.own_pubkeys.get("echo-bot").unwrap(), "npub1test");
+    }
+
+    #[test]
+    fn handler_register_response_deserializes_without_own_pubkeys() {
+        let json =
+            r#"{"handler_id":"h1","reconnect_token":"token","registered_events":["dm_received"]}"#;
+        let parsed: HandlerRegisterResponse = serde_json::from_str(json).unwrap();
+        assert!(parsed.own_pubkeys.is_empty());
+    }
+
+    #[test]
+    fn handler_reconnect_response_round_trips_own_pubkeys() {
+        let response = HandlerReconnectResponse {
+            handler_id: "h1".into(),
+            registered_events: vec!["dm_received".into()],
+            own_pubkeys: BTreeMap::from([("echo-bot".into(), "npub1test".into())]),
+        };
+        let json = serde_json::to_value(&response).unwrap();
+        let own_pubkeys = json.get("own_pubkeys").unwrap().as_object().unwrap();
+        assert_eq!(
+            own_pubkeys.get("echo-bot").unwrap().as_str().unwrap(),
+            "npub1test"
+        );
+
+        let parsed: HandlerReconnectResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.own_pubkeys.get("echo-bot").unwrap(), "npub1test");
+    }
+
+    #[test]
+    fn handler_reconnect_response_deserializes_without_own_pubkeys() {
+        let json = r#"{"handler_id":"h1","registered_events":["dm_received"]}"#;
+        let parsed: HandlerReconnectResponse = serde_json::from_str(json).unwrap();
+        assert!(parsed.own_pubkeys.is_empty());
     }
 }

@@ -68,6 +68,7 @@ class Bot:
         http_bind: str | None = None,
         reply_on_error: bool = True,
         error_message: str = "Sorry, I couldn't process that.",
+        auto_acknowledge: bool = True,
         retry_initial_backoff: float = 1.0,
         retry_max_backoff: float = 30.0,
         retry_jitter_ratio: float = 0.2,
@@ -81,6 +82,7 @@ class Bot:
         self.capabilities = list(capabilities or ["ReadMessages", "SendMessages"])
         self.reply_on_error = reply_on_error
         self.error_message = error_message
+        self.auto_acknowledge = auto_acknowledge
 
         # Logger is created first so every later step can emit diagnostics.
         self._logger = Logger(bot_id, log_level)
@@ -107,9 +109,18 @@ class Bot:
         self._client = PactoClient(self._transport)
 
         self._commands: dict[str, CommandHandler] = {}
+        self._event_handlers: dict[str, CommandHandler] = {}
+        self._hears: dict[str, CommandHandler] = {}
         self._default_handler: CommandHandler | None = None
         self._status_handler: StatusHandler | None = None
         self._rate_limited_handler: RateLimitedHandler | None = None
+
+        self._own_pubkeys: dict[str, str] | None = None
+        self._decorator_state_lock = asyncio.Lock()
+        self._throttle_state: dict[str, float] = {}
+        self._lock_state: dict[str, asyncio.Lock] = {}
+        self._lock_waiters: dict[str, int] = {}
+        self._seen_unknown_notifications: set[str] = set()
 
         self._shutdown = asyncio.Event()
         self._reader_task: asyncio.Task[None] | None = None
@@ -256,6 +267,150 @@ class Bot:
         self._rate_limited_handler = handler
         return handler
 
+    def event(self, type: str) -> Callable[[CommandHandler], CommandHandler]:
+        """Register an async callback for ``agent.event`` notifications of *type*."""
+
+        def decorator(handler: CommandHandler) -> CommandHandler:
+            self._event_handlers[type] = handler
+            return handler
+
+        return decorator
+
+    def dm(self, handler: CommandHandler) -> CommandHandler:
+        """Shorthand for ``@bot.event(\"dm_received\")``."""
+        self._event_handlers["dm_received"] = handler
+        return handler
+
+    def hears(self, token: str) -> Callable[[CommandHandler], CommandHandler]:
+        """Register an async callback for messages whose first token matches *token*."""
+
+        def decorator(handler: CommandHandler) -> CommandHandler:
+            self._hears[token] = handler
+            return handler
+
+        return decorator
+
+    def throttle(
+        self,
+        key: Callable[[AgentEventParams], str],
+        window_seconds: float,
+        *,
+        max_entries: int = 4096,
+    ) -> Callable[[CommandHandler], CommandHandler]:
+        """Skip repeated handler calls within *window_seconds* for the same key.
+
+        The key function is called with the incoming event to compute a
+        throttle bucket. The throttle window is tracked in-memory per ``Bot``
+        instance. When a call is throttled, the wrapper returns ``None`` and
+        the auto-acknowledge machinery (if enabled) emits
+        ``handler_response(action=\"ignore\")``.
+
+        Place throttle *under* routing decorators (``@command``, ``@event``,
+        ``@dm``, ``@hears``, ``@default``) so the routing decorator registers
+        the wrapped handler.
+        """
+
+        def decorator(handler: CommandHandler) -> CommandHandler:
+            async def wrapper(event: AgentEventParams, bot: "Bot") -> Any:
+                try:
+                    bucket = key(event)
+                except Exception as exc:
+                    self._logger.error(f"throttle key function failed: {exc}")
+                    return await self._await_handler(handler, event)
+
+                now = asyncio.get_running_loop().time()
+                async with self._decorator_state_lock:
+                    last = self._throttle_state.get(bucket, 0.0)
+                    if now - last < window_seconds:
+                        self._logger.debug(f"throttle skip {bucket}")
+                        return None
+                    self._throttle_state[bucket] = now
+                    # Bound memory growth: prune oldest entries when over limit.
+                    if len(self._throttle_state) > max_entries:
+                        oldest = min(
+                            self._throttle_state.items(),
+                            key=lambda item: item[1],
+                        )[0]
+                        self._throttle_state.pop(oldest, None)
+                return await self._await_handler(handler, event)
+
+            return wrapper
+
+        return decorator
+
+    def lock(
+        self,
+        name: str,
+        *,
+        on_conflict: str = "queue",
+        max_waiters: int | None = None,
+    ) -> Callable[[CommandHandler], CommandHandler]:
+        """Serialize or skip overlapping handler calls named *name*.
+
+        * ``on_conflict=\"queue\"`` (default) queues the call until the lock is
+          released.
+        * ``on_conflict=\"skip\"`` returns ``None`` immediately when the lock is
+          already held.
+
+        If *max_waiters* is set, at most that many tasks are allowed to wait in
+        the queue behind the one currently holding the lock; additional calls
+        are skipped.
+
+        ``asyncio.Lock`` is not reentrant: a handler that calls itself through
+        the same lock will deadlock. Keep critical sections short and do not
+        invoke the same decorated handler recursively.
+
+        Place lock *under* routing decorators (``@command``, ``@event``,
+        ``@dm``, ``@hears``, ``@default``) so the routing decorator registers
+        the wrapped handler.
+        """
+        if on_conflict not in {"queue", "skip"}:
+            raise ValueError("lock on_conflict must be 'queue' or 'skip'")
+
+        def decorator(handler: CommandHandler) -> CommandHandler:
+            async def wrapper(event: AgentEventParams, bot: "Bot") -> Any:
+                async with self._decorator_state_lock:
+                    lock = self._lock_state.get(name)
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        self._lock_state[name] = lock
+
+                if on_conflict == "skip":
+                    if lock.locked():
+                        self._logger.debug(f"lock skip {name}")
+                        return None
+                    await lock.acquire()
+                    try:
+                        return await self._await_handler(handler, event)
+                    finally:
+                        lock.release()
+
+                # on_conflict == "queue"
+                is_waiter = False
+                if max_waiters is not None:
+                    # Limit the number of tasks waiting behind the lock holder.
+                    async with self._decorator_state_lock:
+                        if lock.locked():
+                            active = self._lock_waiters.get(name, 0)
+                            if active >= max_waiters:
+                                self._logger.debug(f"lock max waiters {name}")
+                                return None
+                            self._lock_waiters[name] = active + 1
+                            is_waiter = True
+                try:
+                    async with lock:
+                        return await self._await_handler(handler, event)
+                finally:
+                    if is_waiter:
+                        async with self._decorator_state_lock:
+                            self._lock_waiters[name] = max(
+                                self._lock_waiters.get(name, 1) - 1, 0
+                            )
+
+            return wrapper
+
+        return decorator
+
     # -----------------------------------------------------------------------
     # Helpers exposed to handlers
     # -----------------------------------------------------------------------
@@ -299,6 +454,113 @@ class Bot:
             about=about,
             picture=picture,
         )
+
+    @property
+    def own_pubkey(self) -> str | None:
+        """The bot's Nostr public key (npub) as reported by the daemon.
+
+        Populated after a successful ``handler.register`` or ``handler.reconnect``.
+        """
+        if self._own_pubkeys is None:
+            return None
+        return self._own_pubkeys.get(self.bot_id)
+
+    def ignore(self, event: AgentEventParams) -> dict[str, Any]:
+        """Return a terminal ``handler_response(action=\"ignore\")`` dict."""
+        return {"event_id": event.event_id, "action": "ignore"}
+
+    def reply(self, event: AgentEventParams, content: str) -> dict[str, Any]:
+        """Return a terminal ``handler_response(action=\"reply\")`` dict.
+
+        ``content`` must be a ``str`` with a UTF-8 encoded length of at most
+        8192 bytes. Callers are responsible for sanitizing any user-derived
+        content before passing it here.
+        """
+        if not isinstance(content, str):
+            raise ValueError("reply content must be a string")
+        if len(content.encode("utf-8")) > 8192:
+            raise ValueError("reply content exceeds 8192 bytes")
+        return {"event_id": event.event_id, "action": "reply", "content": content}
+
+    async def send_group_message(self, group_id: str, content: str) -> str:
+        """Send an encrypted MLS group message as this bot."""
+        return await self._client.agent_send_group_message(
+            bot_id=self.bot_id,
+            group_id=group_id,
+            content=content,
+        )
+
+    async def is_squad_member(self, group_id: str, member_pubkey: str) -> bool:
+        """Check whether *member_pubkey* is a member of the Squad *group_id*."""
+        response = await self._client.agent_is_squad_member(
+            bot_id=self.bot_id,
+            group_id=group_id,
+            member_pubkey=member_pubkey,
+        )
+        return response.is_member
+
+    # -----------------------------------------------------------------------
+    # Internal handler invocation
+    # -----------------------------------------------------------------------
+
+    async def _await_handler(self, handler: CommandHandler, event: AgentEventParams) -> Any:
+        """Call a sync or async handler and return its result."""
+        result = handler(event, self)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def _invoke_handler(
+        self, event: AgentEventParams, handler: CommandHandler, label: str
+    ) -> None:
+        """Invoke a decorated handler and emit a terminal ``handler.response``.
+
+        When ``auto_acknowledge`` is enabled, ``None`` returns become
+        ``action=\"ignore\"`` responses. Exceptions are logged and answered with
+        a friendly reply or ignore based on ``reply_on_error``. Invalid dict
+        returns are logged and treated as ignore.
+        """
+        try:
+            result = await self._await_handler(handler, event)
+        except Exception as exc:
+            self._logger.debug(traceback.format_exc())
+            self._logger.error(f"handler error for {label}: {exc}")
+            if self.reply_on_error:
+                await self._send_handler_response(self.reply(event, self.error_message))
+            else:
+                await self._send_handler_response(self.ignore(event))
+            return
+
+        if result is None:
+            if self.auto_acknowledge:
+                await self._send_handler_response(self.ignore(event))
+            return
+
+        if (
+            not isinstance(result, dict)
+            or "event_id" not in result
+            or "action" not in result
+        ):
+            self._logger.warn(f"handler returned invalid response: {result!r}")
+            await self._send_handler_response(self.ignore(event))
+            return
+
+        await self._send_handler_response(result)
+
+    async def _send_handler_response(self, result: dict[str, Any]) -> None:
+        """Send a terminal ``handler.response`` frame and log it."""
+        self._logger.debug("outgoing handler.response: " + json.dumps(result))
+        self._logger.info(
+            f"handler response {result['event_id']}: action={result['action']}"
+        )
+        content = result.get("content")
+        kwargs: dict[str, Any] = {
+            "action": result["action"],
+            "event_id": result["event_id"],
+        }
+        if content is not None:
+            kwargs["content"] = content
+        await self._client.handler_response(**kwargs)
 
     # -----------------------------------------------------------------------
     # Retry/circuit helpers
@@ -458,6 +720,7 @@ class Bot:
             raise
 
         self._handler_id = result.handler_id
+        self._own_pubkeys = result.own_pubkeys
         self._logger.info(
             f"registered handler_id={self._handler_id} events={result.registered_events}"
         )
@@ -570,6 +833,13 @@ class Bot:
                     await self._handle_status(notification)
                 elif isinstance(notification, AgentRateLimitedParams):
                     await self._handle_rate_limited(notification)
+                else:
+                    note_type = type(notification).__name__
+                    if note_type not in self._seen_unknown_notifications:
+                        self._seen_unknown_notifications.add(note_type)
+                        self._logger.warn(
+                            f"unknown notification type: {note_type}; ignoring"
+                        )
         except asyncio.CancelledError:
             pass
 
@@ -578,24 +848,39 @@ class Bot:
             "incoming agent.event: "
             + json.dumps(event.model_dump(mode="json", exclude_none=True))
         )
-        parsed = parse_command(event.content)
-        command: str | None = None
 
-        if parsed is None:
-            if self._default_handler is None:
-                self._logger.info(f"ignoring malformed event {event.event_id}")
-                await self._client.handler_response(
-                    action="ignore", event_id=event.event_id
-                )
-                return
-            self._logger.info(
-                f"routing non-command event {event.event_id} to default handler"
-            )
-            handler = self._default_handler
+        handler: CommandHandler | None = None
+        label: str | None = None
+
+        if event.type in self._event_handlers:
+            handler = self._event_handlers[event.type]
+            label = f"event:{event.type}"
         else:
-            command = parsed["command"]
-            handler = self._commands.get(command) or self._default_handler
-            self._logger.info(f"dispatching command {command} for event {event.event_id}")
+            first_token = ""
+            stripped = event.content.strip()
+            if stripped:
+                first_token = stripped.split(maxsplit=1)[0]
+            if first_token in self._hears:
+                handler = self._hears[first_token]
+                label = f"hears:{first_token}"
+            else:
+                parsed = parse_command(event.content)
+                if parsed is None:
+                    if self._default_handler is None:
+                        self._logger.info(f"ignoring malformed event {event.event_id}")
+                        await self._client.handler_response(
+                            action="ignore", event_id=event.event_id
+                        )
+                        return
+                    self._logger.info(
+                        f"routing non-command event {event.event_id} to default handler"
+                    )
+                    handler = self._default_handler
+                    label = "default"
+                else:
+                    command = parsed["command"]
+                    handler = self._commands.get(command) or self._default_handler
+                    label = f"command:{command}"
 
         if handler is None:
             await self._client.handler_response(
@@ -603,45 +888,7 @@ class Bot:
             )
             return
 
-        try:
-            result = handler(event, self)
-            if inspect.isawaitable(result):
-                result = await result
-        except Exception as exc:
-            label = command if command else "default"
-            self._logger.debug(traceback.format_exc())
-            self._logger.error(f"handler error for {label}: {exc}")
-            if self.reply_on_error:
-                await self._client.handler_response(
-                    action="reply",
-                    event_id=event.event_id,
-                    content=self.error_message,
-                )
-            else:
-                await self._client.handler_response(
-                    action="ignore", event_id=event.event_id
-                )
-            return
-
-        if result is None:
-            return
-
-        if not isinstance(result, dict) or "event_id" not in result or "action" not in result:
-            self._logger.warn(f"handler returned invalid response: {result!r}")
-            await self._client.handler_response(
-                action="ignore", event_id=event.event_id
-            )
-            return
-
-        self._logger.debug("outgoing handler.response: " + json.dumps(result))
-        self._logger.info(
-            f"handler response {event.event_id}: action={result['action']}"
-        )
-        await self._client.handler_response(
-            action=result["action"],
-            event_id=result["event_id"],
-            content=result.get("content"),
-        )
+        await self._invoke_handler(event, handler, label)
 
     async def _handle_status(self, status: AgentStatusParams) -> None:
         if self._status_handler is not None:

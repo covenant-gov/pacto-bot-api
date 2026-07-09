@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -878,6 +878,7 @@ impl Dispatch {
             .get_handler(&handler_id)
             .ok_or_else(|| DaemonError::HandlerNotRegistered)?
             .clone();
+        let own_pubkeys = collect_own_pubkeys(&cm, &handler.bot_ids);
         drop(cm);
         self.db.save_handler(&handler).await?;
 
@@ -890,6 +891,7 @@ impl Dispatch {
             handler_id,
             reconnect_token: reconnect_token.expose_secret().to_string(),
             registered_events,
+            own_pubkeys,
         })?))
     }
 
@@ -936,12 +938,14 @@ impl Dispatch {
             .get_handler(&handler_id)
             .ok_or_else(|| DaemonError::HandlerNotRegistered)?
             .clone();
+        let own_pubkeys = collect_own_pubkeys(&cm, &handler.bot_ids);
         drop(cm);
         self.db.save_handler(&handler).await?;
 
         Ok(Some(serde_json::to_value(HandlerReconnectResponse {
             handler_id,
             registered_events,
+            own_pubkeys,
         })?))
     }
 
@@ -1662,6 +1666,16 @@ fn message_params(msg: &JsonRpcMessage) -> Option<&Value> {
     }
 }
 
+fn collect_own_pubkeys(cm: &ClientManager, bot_ids: &[String]) -> BTreeMap<String, String> {
+    bot_ids
+        .iter()
+        .filter_map(|bot_id| {
+            cm.get_bot_by_id(bot_id)
+                .map(|bot| (bot_id.clone(), bot.npub().to_string()))
+        })
+        .collect()
+}
+
 fn event_type_name(event_type: &EventType) -> String {
     event_type.as_wire_name().to_string()
 }
@@ -2004,6 +2018,11 @@ mod tests {
         assert!(result.get("handler_id").is_some());
         let events = result.get("registered_events").unwrap().as_array().unwrap();
         assert_eq!(events, &["dm_received"]);
+        let own_pubkeys = result.get("own_pubkeys").unwrap().as_object().unwrap();
+        assert_eq!(
+            own_pubkeys.get("echo-bot").unwrap().as_str().unwrap(),
+            keys.public_key().to_bech32().unwrap()
+        );
     }
 
     #[tokio::test]

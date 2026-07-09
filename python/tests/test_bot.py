@@ -991,3 +991,668 @@ async def test_cli_transport_overrides_constructor_string():
         args.transport, None, None, None, data_dir=bot._data_dir
     )
     assert isinstance(transport, UnixTransport)
+
+
+# ---------------------------------------------------------------------------
+# Event-type routing (U1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_event_type_routes_before_command():
+    """@bot.event(type) is checked before slash-command parsing."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+
+    @bot.event("dm_received")
+    async def on_dm(event, b):
+        calls.append("event")
+        return b.ignore(event)
+
+    @bot.command("/dm_received")
+    async def cmd(event, b):
+        calls.append("command")
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-event",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/dm_received",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    assert calls == ["event"]
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-event"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dm_decorator_routes_dm_received():
+    """@bot.dm is shorthand for @bot.event(\"dm_received\")."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[AgentEventParams] = []
+
+    @bot.dm
+    async def on_dm(event, b):
+        calls.append(event)
+        return b.reply(event, "DM received")
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-dm",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="hello",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    assert len(calls) == 1
+    bot._client.handler_response.assert_awaited_once_with(
+        action="reply", event_id="e-dm", content="DM received"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Hears routing (U2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_hears_exact_first_token_match():
+    """@bot.hears(token) matches the trimmed first token of the content."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+
+    @bot.hears("hello")
+    async def on_hello(event, b):
+        calls.append("hello")
+        return b.ignore(event)
+
+    @bot.command("/hello")
+    async def cmd_hello(event, b):
+        calls.append("command")
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-hears",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="hello world",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    assert calls == ["hello"]
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-hears"
+    )
+
+
+@pytest.mark.asyncio
+async def test_hears_falls_through_to_command_and_default():
+    """Unmatched hears tokens fall through to commands and then the default handler."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+
+    @bot.hears("hello")
+    async def on_hello(event, b):
+        calls.append("hello")
+        return b.ignore(event)
+
+    @bot.command("/help")
+    async def cmd_help(event, b):
+        calls.append("command")
+        return b.ignore(event)
+
+    @bot.default
+    async def fallback(event, b):
+        calls.append("default")
+        return b.ignore(event)
+
+    # Falls through to command.
+    await bot._handle_event(AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-cmd",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/help",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    ))
+    assert calls == ["command"]
+    calls.clear()
+
+    # Falls through to default.
+    await bot._handle_event(AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-default",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="random text",
+        rumor_id="r-2",
+        author="npub1author",
+        timestamp=1234567890,
+    ))
+    assert calls == ["default"]
+
+
+# ---------------------------------------------------------------------------
+# Auto-acknowledge (U3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auto_acknowledge_true_sends_ignore_for_none():
+    """When auto_acknowledge is True, a handler returning None emits ignore."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+
+    @bot.command("/noop")
+    async def noop(_event, _b):
+        return None
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-noop",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/noop",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-noop"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_acknowledge_false_preserves_silence_for_none():
+    """When auto_acknowledge is False, a handler returning None sends nothing."""
+    bot = Bot("test-bot", transport=MockTransport(), auto_acknowledge=False)
+    bot._client = AsyncMock()
+
+    @bot.command("/noop")
+    async def noop(_event, _b):
+        return None
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-noop",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/noop",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    bot._client.handler_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ignore_and_reply_helpers():
+    """bot.ignore and bot.reply return canonical response dicts."""
+    bot = Bot("test-bot", transport=MockTransport())
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-helpers",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="x",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    assert bot.ignore(event) == {"event_id": "e-helpers", "action": "ignore"}
+    assert bot.reply(event, "hi") == {
+        "event_id": "e-helpers",
+        "action": "reply",
+        "content": "hi",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invalid_dict_return_logs_and_ignores():
+    """Handlers returning malformed dicts are logged and answered with ignore."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+
+    @bot.command("/bad")
+    async def bad(_event, _b):
+        return {"not_event_id": "x"}
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-bad",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/bad",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-bad"
+    )
+
+
+@pytest.mark.asyncio
+async def test_exception_path_reply_on_error():
+    """Exceptions send a friendly reply by default."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+
+    @bot.command("/boom")
+    async def boom(_event, _b):
+        raise RuntimeError("intentional")
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-boom",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/boom",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    bot._client.handler_response.assert_awaited_once_with(
+        action="reply", event_id="e-boom", content="Sorry, I couldn't process that."
+    )
+
+
+@pytest.mark.asyncio
+async def test_exception_path_reply_on_error_disabled():
+    """Exceptions send ignore when reply_on_error is disabled."""
+    bot = Bot("test-bot", transport=MockTransport(), reply_on_error=False)
+    bot._client = AsyncMock()
+
+    @bot.command("/boom")
+    async def boom(_event, _b):
+        raise RuntimeError("intentional")
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-boom",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/boom",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-boom"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bot helpers (U5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_own_pubkey_read_from_registration_response():
+    """bot.own_pubkey reads the daemon's own_pubkeys map for this bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    assert bot.own_pubkey is None
+    bot._own_pubkeys = {"test-bot": "npub1test", "other": "npub1other"}
+    assert bot.own_pubkey == "npub1test"
+
+
+@pytest.mark.asyncio
+async def test_send_group_message_prefills_bot_id():
+    """bot.send_group_message calls agent_send_group_message with bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_send_group_message.return_value = "ok"
+
+    result = await bot.send_group_message("0xabc", "hello squad")
+    assert result == "ok"
+    bot._client.agent_send_group_message.assert_awaited_once_with(
+        bot_id="test-bot", group_id="0xabc", content="hello squad"
+    )
+
+
+@pytest.mark.asyncio
+async def test_is_squad_member_prefills_bot_id():
+    """bot.is_squad_member calls agent_is_squad_member with bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_is_squad_member.return_value = AsyncMock(is_member=True)
+
+    result = await bot.is_squad_member("0xabc", "npub1member")
+    assert result is True
+    bot._client.agent_is_squad_member.assert_awaited_once_with(
+        bot_id="test-bot", group_id="0xabc", member_pubkey="npub1member"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Throttle and lock (U7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_throttle_skips_repeated_calls_within_window():
+    """Throttle ignores calls within window_seconds of the first call."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+
+    @bot.command("/ping")
+    @bot.throttle(key=lambda e: e.chat_id, window_seconds=0.5)
+    async def ping(event, b):
+        calls.append("ping")
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/ping",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+
+    await bot._handle_event(event)
+    await bot._handle_event(event)
+
+    assert len(calls) == 1
+    assert bot._client.handler_response.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_lock_skip_on_conflict():
+    """Lock on_conflict=skip drops overlapping calls."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    @bot.command("/slow")
+    @bot.lock(name="slow", on_conflict="skip")
+    async def slow(event, b):
+        calls.append("slow")
+        await gate.wait()
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/slow",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+
+    first = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)  # let first task acquire the lock
+    second = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)  # let second task skip
+    gate.set()
+    await asyncio.gather(first, second)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_lock_queue_queues_until_release():
+    """Lock on_conflict=queue serializes calls."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    @bot.command("/slow")
+    @bot.lock(name="slow")
+    async def slow(event, b):
+        calls.append("slow")
+        await gate.wait()
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/slow",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+
+    first = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(first, second)
+
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_lock_max_waiters_skips_excess():
+    """Lock with max_waiters skips calls beyond the configured queue depth."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    @bot.command("/slow")
+    @bot.lock(name="slow", max_waiters=1)
+    async def slow(event, b):
+        calls.append("slow")
+        await gate.wait()
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/slow",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+
+    first = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    third = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(first, second, third, return_exceptions=True)
+
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_throttle_and_lock_stack():
+    """Throttle and lock compose together inside a command decorator."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    calls: list[str] = []
+    gate = asyncio.Event()
+
+    @bot.command("/ping")
+    @bot.lock(name="ping", on_conflict="skip")
+    @bot.throttle(key=lambda e: e.chat_id, window_seconds=0.5)
+    async def ping(event, b):
+        calls.append("ping")
+        await gate.wait()
+        return b.ignore(event)
+
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/ping",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+
+    first = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(bot._handle_event(event))
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(first, second)
+
+    # Throttle causes the second call to be skipped before the lock is checked,
+    # so only one handler invocation runs.
+    assert len(calls) == 1
+    assert bot._client.handler_response.await_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Unknown notification types (U8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unknown_notification_warns_once_per_type(transport: MockTransport, capsys) -> None:
+    """Unknown notification types are logged at warning level once per type."""
+    bot = Bot("test-bot", transport=transport)
+
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    class UnknownNotification:
+        pass
+
+    # Two unknown notifications of the same type should only produce one warning.
+    await bot._client._notify_queue.put(UnknownNotification())
+    await bot._client._notify_queue.put(UnknownNotification())
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    stderr = capsys.readouterr().err
+    warnings = [line for line in stderr.splitlines() if "unknown notification type" in line]
+    assert len(warnings) == 1
+    assert "UnknownNotification" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_unknown_notification_warns_once_per_distinct_type(transport: MockTransport, capsys) -> None:
+    """Each distinct unknown notification type is warned once."""
+    bot = Bot("test-bot", transport=transport)
+
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+
+    await asyncio.sleep(0.05)
+
+    class UnknownTypeA:
+        pass
+
+    class UnknownTypeB:
+        pass
+
+    await bot._client._notify_queue.put(UnknownTypeA())
+    await bot._client._notify_queue.put(UnknownTypeB())
+    await bot._client._notify_queue.put(UnknownTypeA())
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    stderr = capsys.readouterr().err
+    warnings = [line for line in stderr.splitlines() if "unknown notification type" in line]
+    assert len(warnings) == 2
+    assert any("UnknownTypeA" in line for line in warnings)
+    assert any("UnknownTypeB" in line for line in warnings)
+
+
+@pytest.mark.asyncio
+async def test_reply_content_validates_string() -> None:
+    """bot.reply rejects non-string content."""
+    bot = Bot("test-bot", transport=MockTransport())
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/hello",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    with pytest.raises(ValueError, match="reply content must be a string"):
+        bot.reply(event, 123)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_reply_content_validates_max_bytes() -> None:
+    """bot.reply rejects content exceeding 8192 bytes."""
+    bot = Bot("test-bot", transport=MockTransport())
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/hello",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    with pytest.raises(ValueError, match="reply content exceeds 8192 bytes"):
+        bot.reply(event, "x" * 8193)
