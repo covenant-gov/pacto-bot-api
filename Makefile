@@ -58,7 +58,7 @@ test-cargo: ## Run the full test suite with cargo test (alias for `test`)
 	cargo test --all-targets --all-features
 
 build: ## Build all workspace targets
-	cargo build --all-targets -p pacto-bot-api -p pacto-bot-utils
+	cargo build --all-targets --workspace
 
 coverage: ## Generate test coverage report (requires cargo-llvm-cov)
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \
