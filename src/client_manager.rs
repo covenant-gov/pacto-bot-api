@@ -51,27 +51,12 @@ impl ClientManager {
                 return Err(DaemonError::Config(format!("duplicate bot_id: {bot_id}")));
             }
 
-            // Bots configured to send group messages need an MLS engine. The
-            // engine database lives under a per-bot directory inside the daemon
-            // data directory.
-            let bot_state = if bot_config
-                .capabilities
-                .iter()
-                .any(|c| c == "SendGroupMessages")
-            {
-                let bot_data_dir = data_dir.as_ref().join(&bot_id);
-                tokio::fs::create_dir_all(&bot_data_dir).await?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    tokio::fs::set_permissions(
-                        &bot_data_dir,
-                        std::fs::Permissions::from_mode(0o700),
-                    )
-                    .await?;
-                }
-                let mls_db_path = bot_data_dir.join("vector-mls.db");
-                BotState::new_with_mls(bot_config, mls_db_path)?
+            // Bots with an explicit mls_db_path get an MLS engine; otherwise the
+            // bot has no MLS engine regardless of capabilities.
+            let bot_state = if bot_config.mls_db_path.is_some() {
+                let canonical_path =
+                    crate::config::validate_mls_db_path(&bot_config, data_dir.as_ref())?;
+                BotState::new_with_mls(bot_config, canonical_path)?
             } else {
                 BotState::new(bot_config)?
             };
@@ -231,6 +216,8 @@ mod tests {
             relays: vec![],
             capabilities: vec!["ReadMessages".into()],
             mls_dedup_window_secs: None,
+            mls_db_path: None,
+            mls_key_package_freshness_secs: None,
             ..Default::default()
         }
     }
@@ -288,6 +275,7 @@ mod tests {
     fn mls_bot_gets_persistent_engine_and_non_mls_bot_does_not() {
         let keys = nostr::Keys::generate();
         let mut mls_bot = bot_config("mls-bot", &keys);
+        mls_bot.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         mls_bot.capabilities.push("SendGroupMessages".into());
         let dm_only_bot = bot_config("dm-bot", &nostr::Keys::generate());
 
@@ -318,8 +306,10 @@ mod tests {
         let keys_a = nostr::Keys::generate();
         let keys_b = nostr::Keys::generate();
         let mut bot_a = bot_config("mls-a", &keys_a);
+        bot_a.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         bot_a.capabilities.push("SendGroupMessages".into());
         let mut bot_b = bot_config("mls-b", &keys_b);
+        bot_b.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         bot_b.capabilities.push("SendGroupMessages".into());
 
         let _temp = tempfile::tempdir().unwrap();
@@ -360,6 +350,7 @@ mod tests {
     fn mls_bot_db_parent_is_0700() {
         let keys = nostr::Keys::generate();
         let mut bot = bot_config("mls-perm", &keys);
+        bot.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         bot.capabilities.push("SendGroupMessages".into());
 
         let _temp = tempfile::tempdir().unwrap();
@@ -417,8 +408,7 @@ mod tests {
     #[test]
     fn unsafe_bot_id_is_rejected() {
         let keys = nostr::Keys::generate();
-        let mut bad_bot = bot_config("..", &keys);
-        bad_bot.capabilities.push("SendGroupMessages".into());
+        let bad_bot = bot_config("..", &keys);
         let config = DaemonConfig {
             daemon: GlobalDaemonConfig::default(),
             bots: vec![bad_bot],

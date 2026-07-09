@@ -28,6 +28,8 @@
           "display_name": { "type": "string", "description": "Human-readable display name for the bot profile" },
           "about": { "type": "string", "description": "Description text for the bot profile" },
           "picture": { "type": "string", "description": "URL to the bot's profile picture" },
+          "mls_db_path": { "type": "string", "description": "Path to the per-bot MLS SQLite database" },
+          "mls_key_package_freshness_secs": { "type": "integer", "minimum": 0, "description": "Freshness window in seconds for MLS KeyPackage events" },
           "mls_dedup_window_secs": { "type": "integer", "minimum": 0, "description": "Time window in seconds for MLS group-message deduplication" }
         },
         "required": ["id", "npub", "signing"]

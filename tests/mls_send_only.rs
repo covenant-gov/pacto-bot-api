@@ -3,6 +3,7 @@ mod support;
 
 use support::mock_mls_peer::{MockMlsPeer, group_wire_id};
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use nostr::ToBech32;
@@ -27,6 +28,8 @@ fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
         relays: vec![],
         capabilities: vec!["SendGroupMessages".into()],
         mls_dedup_window_secs: None,
+        mls_db_path: Some(PathBuf::from("vector-mls.db")),
+        mls_key_package_freshness_secs: None,
         ..Default::default()
     }
 }

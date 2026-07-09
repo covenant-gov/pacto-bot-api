@@ -1,7 +1,7 @@
 use crate::errors::DaemonError;
 use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use secrecy::{ExposeSecret, SecretString};
 use std::fs::OpenOptions;
 #[cfg(unix)]
@@ -93,7 +93,16 @@ impl Database {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_event_trace_bot_created
-                ON event_trace (bot_id, created_at DESC);",
+                ON event_trace (bot_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS mls_groups (
+                bot_id TEXT NOT NULL,
+                group_name TEXT NOT NULL,
+                wire_id TEXT NOT NULL UNIQUE,
+                creator_npub TEXT NOT NULL,
+                relay TEXT NOT NULL,
+                invited_bots TEXT NOT NULL,
+                PRIMARY KEY (bot_id, group_name)
+            );",
         )?;
         Ok(())
     }
@@ -286,6 +295,138 @@ impl Database {
         }
         Ok(out)
     }
+
+    /// Load a single MLS group row by composite key.
+    ///
+    /// Returns `None` when no matching group exists.
+    pub fn load_mls_group(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+    ) -> Result<Option<MlsGroupRow>, DaemonError> {
+        let row: Option<(String, String, String, String)> = self
+            .conn
+            .query_row(
+                "SELECT wire_id, creator_npub, relay, invited_bots
+                 FROM mls_groups
+                 WHERE bot_id = ?1 AND group_name = ?2",
+                (bot_id, group_name),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        match row {
+            Some((wire_id, creator_npub, relay, invited_bots_json)) => {
+                let invited_bots = serde_json::from_str(&invited_bots_json)?;
+                Ok(Some(MlsGroupRow {
+                    bot_id: bot_id.to_string(),
+                    group_name: group_name.to_string(),
+                    wire_id,
+                    creator_npub,
+                    relay,
+                    invited_bots,
+                }))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Insert a new MLS group row.
+    ///
+    /// Fails on duplicate `(bot_id, group_name)` or duplicate `wire_id`.
+    pub fn insert_mls_group(&self, row: &MlsGroupRow) -> Result<(), DaemonError> {
+        let invited_bots = serde_json::to_string(&row.invited_bots)?;
+        self.conn.execute(
+            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (
+                &row.bot_id,
+                &row.group_name,
+                &row.wire_id,
+                &row.creator_npub,
+                &row.relay,
+                invited_bots,
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Append a recipient to the `invited_bots` JSON array only if not already present.
+    ///
+    /// Returns `Ok(true)` when the row existed and the recipient was added or
+    /// already present, and `Ok(false)` when the row did not exist.
+    pub fn update_mls_group_invite(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        recipient_npub: &str,
+    ) -> Result<bool, DaemonError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+
+        let invited_json: Option<String> = tx
+            .query_row(
+                "SELECT invited_bots FROM mls_groups
+                 WHERE bot_id = ?1 AND group_name = ?2",
+                (bot_id, group_name),
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let Some(invited_json) = invited_json else {
+            tx.rollback()?;
+            return Ok(false);
+        };
+
+        let mut invited: Vec<String> = serde_json::from_str(&invited_json)?;
+        if !invited.iter().any(|s| s == recipient_npub) {
+            invited.push(recipient_npub.to_string());
+            let updated_json = serde_json::to_string(&invited)?;
+            tx.execute(
+                "UPDATE mls_groups
+                 SET invited_bots = ?1
+                 WHERE bot_id = ?2 AND group_name = ?3",
+                (updated_json, bot_id, group_name),
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Return true when `recipient_npub` is present in the stored `invited_bots` array.
+    pub fn is_bot_invited(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        recipient_npub: &str,
+    ) -> Result<bool, DaemonError> {
+        let invited_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT invited_bots FROM mls_groups
+                 WHERE bot_id = ?1 AND group_name = ?2",
+                (bot_id, group_name),
+                |row| row.get(0),
+            )
+            .optional()?;
+        match invited_json {
+            Some(json) => {
+                let invited: Vec<String> = serde_json::from_str(&json)?;
+                Ok(invited.iter().any(|s| s == recipient_npub))
+            }
+            None => Ok(false),
+        }
+    }
+}
+
+/// A single row from the MLS groups table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MlsGroupRow {
+    pub bot_id: String,
+    pub group_name: String,
+    pub wire_id: String,
+    pub creator_npub: String,
+    pub relay: String,
+    pub invited_bots: Vec<String>,
 }
 
 /// A single row from the event trace table.
@@ -429,6 +570,51 @@ impl Db {
     ) -> Result<Vec<EventTraceRow>, DaemonError> {
         let bot_id = bot_id.to_string();
         self.run(move |db| db.load_event_trace(&bot_id, since, limit))
+            .await
+    }
+
+    /// Load a single MLS group row by composite key.
+    pub async fn load_mls_group(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+    ) -> Result<Option<MlsGroupRow>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let group_name = group_name.to_string();
+        self.run(move |db| db.load_mls_group(&bot_id, &group_name))
+            .await
+    }
+
+    /// Insert a new MLS group row.
+    pub async fn insert_mls_group(&self, row: MlsGroupRow) -> Result<(), DaemonError> {
+        self.run(move |db| db.insert_mls_group(&row)).await
+    }
+
+    /// Append a recipient to the `invited_bots` JSON array only if not already present.
+    pub async fn update_mls_group_invite(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        recipient_npub: &str,
+    ) -> Result<bool, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let group_name = group_name.to_string();
+        let recipient_npub = recipient_npub.to_string();
+        self.run(move |db| db.update_mls_group_invite(&bot_id, &group_name, &recipient_npub))
+            .await
+    }
+
+    /// Return true when `recipient_npub` is present in the stored `invited_bots` array.
+    pub async fn is_bot_invited(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        recipient_npub: &str,
+    ) -> Result<bool, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let group_name = group_name.to_string();
+        let recipient_npub = recipient_npub.to_string();
+        self.run(move |db| db.is_bot_invited(&bot_id, &group_name, &recipient_npub))
             .await
     }
 }
@@ -791,6 +977,128 @@ mod tests {
 
         let ack_row = rows.iter().find(|r| r.action == "ack").unwrap();
         assert_eq!(ack_row.reply_event_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn mls_group_insert_and_load_round_trip() -> Result<(), DaemonError> {
+        let db = in_memory_db()?;
+        let row = MlsGroupRow {
+            bot_id: "bot-1".to_string(),
+            group_name: "my-group".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec!["npub-a".to_string(), "npub-b".to_string()],
+        };
+
+        db.insert_mls_group(&row)?;
+        let loaded = db
+            .load_mls_group("bot-1", "my-group")?
+            .expect("group should exist");
+        assert_eq!(loaded, row);
+        Ok(())
+    }
+
+    #[test]
+    fn mls_group_insert_fails_on_duplicate_composite_key() {
+        let db = in_memory_db().unwrap();
+        let row = MlsGroupRow {
+            bot_id: "bot-1".to_string(),
+            group_name: "my-group".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec![],
+        };
+        db.insert_mls_group(&row).unwrap();
+
+        let mut dup = row.clone();
+        dup.wire_id = "wire-id-2".to_string();
+        assert!(
+            db.insert_mls_group(&dup).is_err(),
+            "duplicate PK should fail"
+        );
+    }
+
+    #[test]
+    fn mls_group_insert_fails_on_duplicate_wire_id() {
+        let db = in_memory_db().unwrap();
+        let row = MlsGroupRow {
+            bot_id: "bot-1".to_string(),
+            group_name: "group-a".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec![],
+        };
+        db.insert_mls_group(&row).unwrap();
+
+        let mut dup = row.clone();
+        dup.group_name = "group-b".to_string();
+        assert!(
+            db.insert_mls_group(&dup).is_err(),
+            "duplicate wire_id should fail"
+        );
+    }
+
+    #[test]
+    fn mls_group_update_invite_appends_and_is_idempotent() -> Result<(), DaemonError> {
+        let db = in_memory_db()?;
+        let row = MlsGroupRow {
+            bot_id: "bot-1".to_string(),
+            group_name: "my-group".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec!["npub-a".to_string()],
+        };
+        db.insert_mls_group(&row)?;
+
+        assert!(db.update_mls_group_invite("bot-1", "my-group", "npub-b")?);
+        assert!(db.update_mls_group_invite("bot-1", "my-group", "npub-b")?);
+
+        let loaded = db.load_mls_group("bot-1", "my-group")?.unwrap();
+        assert_eq!(loaded.invited_bots, vec!["npub-a", "npub-b"]);
+
+        assert!(db.is_bot_invited("bot-1", "my-group", "npub-b")?);
+        assert!(!db.is_bot_invited("bot-1", "my-group", "npub-c")?);
+        Ok(())
+    }
+
+    #[test]
+    fn mls_group_update_invite_missing_group_returns_false_and_is_noop() -> Result<(), DaemonError>
+    {
+        let db = in_memory_db()?;
+        let result = db.update_mls_group_invite("bot-1", "no-such-group", "npub-x")?;
+        assert!(!result);
+        assert!(db.load_mls_group("bot-1", "no-such-group")?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn db_mls_group_async_methods_round_trip() -> Result<(), DaemonError> {
+        let dir = tempfile::tempdir()?;
+        let db = Db::open(&dir.path().join("agent.db")).await?;
+
+        let row = MlsGroupRow {
+            bot_id: "bot-1".to_string(),
+            group_name: "my-group".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec![],
+        };
+        db.insert_mls_group(row.clone()).await?;
+
+        let loaded = db.load_mls_group("bot-1", "my-group").await?.unwrap();
+        assert_eq!(loaded.wire_id, "wire-id-1");
+
+        assert!(
+            db.update_mls_group_invite("bot-1", "my-group", "npub-a")
+                .await?
+        );
+        assert!(db.is_bot_invited("bot-1", "my-group", "npub-a").await?);
         Ok(())
     }
 }

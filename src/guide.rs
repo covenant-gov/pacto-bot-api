@@ -166,6 +166,14 @@ pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
 
     render_command(
         out,
+        "mls_group",
+        "Create or manage MLS groups for group messaging.",
+        "pacto-bot-admin mls_group create --bot echo-bot --group my-squad --recipient npub1...\npacto-bot-admin mls_group invite --bot echo-bot --group my-squad --recipient npub1...",
+        "`create` bootstraps a new MLS group and invites the recipient. `invite` adds a recipient to an existing group. Both require the bot to have an MLS engine configured (`mls_db_path`) and the `Admin` capability.",
+    );
+
+    render_command(
+        out,
         "trace-events",
         "Read recent event trace rows from the daemon database.",
         "pacto-bot-admin trace-events echo-bot\npacto-bot-admin trace-events echo-bot --since 30 --limit 50",
@@ -291,6 +299,7 @@ mod tests {
             "doctor",
             "logs",
             "send-test-dm",
+            "mls_group",
             "trace-events",
             "status",
         ] {

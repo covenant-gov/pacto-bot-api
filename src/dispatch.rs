@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use nostr::EventId;
+use nostr::{EventId, PublicKey, RelayUrl, ToBech32};
 use serde_json::Value;
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 use tokio::time::{Instant, timeout};
@@ -11,17 +11,19 @@ use tracing::{debug, info, warn};
 
 use crate::client_manager::ClientManager;
 use crate::config::BotConfig;
-use crate::db::Db;
+use crate::db::{Db, MlsGroupRow};
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::handlers::HandlerRef;
+use crate::signer::Signer;
 use crate::transport::protocol::{
     AdminSendTestDmResponse, AgentIsSquadMemberResponse, AgentListHandlersEntry,
     AgentListHandlersResponse, AgentUnregisterHandlerResponse, AgentVersionResponse,
-    HandlerReconnectParams, HandlerReconnectResponse, HandlerRegisterResponse,
-    HandlerUnregisterResponse, JsonRpcMessage, Method, MetricsResponse, parse_method,
+    CreateMlsGroupParams, HandlerReconnectParams, HandlerReconnectResponse,
+    HandlerRegisterResponse, HandlerUnregisterResponse, InviteToMlsGroupParams, JsonRpcMessage,
+    Method, MetricsResponse, MlsGroupResponse, parse_method,
 };
 
 use secrecy::{ExposeSecret, SecretString};
@@ -374,6 +376,7 @@ pub struct Dispatch {
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
     handlers_registered: AtomicU64,
     last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
+    mls_group_locks: Arc<TokioMutex<HashMap<String, Arc<TokioMutex<()>>>>>,
     dispatch_timeout: Duration,
     handler_stale_timeout: Duration,
 }
@@ -394,6 +397,7 @@ impl Dispatch {
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
+            mls_group_locks: Arc::new(TokioMutex::new(HashMap::new())),
             dispatch_timeout: DISPATCH_TIMEOUT,
             handler_stale_timeout: HANDLER_STALE_TIMEOUT,
         }
@@ -415,6 +419,7 @@ impl Dispatch {
             pending: Arc::new(TokioMutex::new(HashMap::new())),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
+            mls_group_locks: Arc::new(TokioMutex::new(HashMap::new())),
             dispatch_timeout: DISPATCH_TIMEOUT,
             handler_stale_timeout: HANDLER_STALE_TIMEOUT,
         }
@@ -803,6 +808,20 @@ impl Dispatch {
                 self.handle_publish_key_package(handler_id, params).await
             }
             Method::AdminSendTestDm => self.handle_admin_send_test_dm(handler_id, params).await,
+            Method::AdminCreateMlsGroup => {
+                self.handle_admin_create_mls_group(handler_id, params).await
+            }
+            Method::AdminInviteToMlsGroup => {
+                self.handle_admin_invite_to_mls_group(handler_id, params)
+                    .await
+            }
+            Method::AgentCreateMlsGroup => {
+                self.handle_agent_create_mls_group(handler_id, params).await
+            }
+            Method::AgentInviteToMlsGroup => {
+                self.handle_agent_invite_to_mls_group(handler_id, params)
+                    .await
+            }
             Method::AgentIsSquadMember => self.handle_is_squad_member(handler_id, params).await,
             Method::AgentEvent | Method::AgentStatus | Method::AgentRateLimited => {
                 Err(DaemonError::MethodNotFound)
@@ -1303,6 +1322,294 @@ impl Dispatch {
             .await
     }
 
+    /// Validate a group name at the dispatch boundary.
+    ///
+    /// Trims surrounding ASCII whitespace and rejects empty names, names longer
+    /// than 128 characters, and names containing control characters or
+    /// filesystem path separators.
+    fn validate_group_name(name: &str) -> Result<String, DaemonError> {
+        let trimmed = name.trim_ascii();
+        if trimmed.is_empty() {
+            return Err(DaemonError::InvalidJsonRpcRequest(
+                "group_name must not be empty".into(),
+            ));
+        }
+        if trimmed.len() > 128 {
+            return Err(DaemonError::InvalidJsonRpcRequest(
+                "group_name must not exceed 128 characters".into(),
+            ));
+        }
+        if trimmed
+            .chars()
+            .any(|c| c.is_ascii_control() || c == '/' || c == '\\')
+        {
+            return Err(DaemonError::InvalidJsonRpcRequest(
+                "group_name must not contain control characters or path separators".into(),
+            ));
+        }
+        Ok(trimmed.to_string())
+    }
+
+    /// Parse a recipient string (hex pubkey or npub) into a [`PublicKey`].
+    fn parse_recipient(recipient: &str) -> Result<PublicKey, DaemonError> {
+        PublicKey::parse(recipient)
+            .map_err(|e| DaemonError::InvalidJsonRpcRequest(format!("invalid recipient: {e}")))
+    }
+
+    /// Acquire the per-`(bot_id, group_name)` async lock.
+    ///
+    /// The outer map lock is held only long enough to clone the `Arc` for the
+    /// requested key; the inner lock serializes operations for that key.
+    async fn acquire_mls_group_lock(&self, bot_id: &str, group_name: &str) -> Arc<TokioMutex<()>> {
+        let key = format!("{bot_id}\0{group_name}");
+        let mut locks = self.mls_group_locks.lock().await;
+        locks.entry(key).or_default().clone()
+    }
+
+    async fn handle_admin_create_mls_group(
+        &self,
+        caller_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
+        let params = params
+            .ok_or_else(|| DaemonError::Config("admin.create_mls_group missing params".into()))?;
+        let params: CreateMlsGroupParams = serde_json::from_value(params.clone())?;
+        self.create_or_invite_mls_group(
+            params.bot_id,
+            params.group_name,
+            params.recipient,
+            true,
+            None,
+        )
+        .await
+    }
+
+    async fn handle_admin_invite_to_mls_group(
+        &self,
+        caller_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
+        let params = params.ok_or_else(|| {
+            DaemonError::Config("admin.invite_to_mls_group missing params".into())
+        })?;
+        let params: InviteToMlsGroupParams = serde_json::from_value(params.clone())?;
+        self.create_or_invite_mls_group(
+            params.bot_id,
+            params.group_name,
+            params.recipient,
+            false,
+            None,
+        )
+        .await
+    }
+
+    async fn handle_agent_create_mls_group(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.create_mls_group missing params".into()))?;
+        let params: CreateMlsGroupParams = serde_json::from_value(params.clone())?;
+        self.create_or_invite_mls_group(
+            params.bot_id,
+            params.group_name,
+            params.recipient,
+            true,
+            handler_id,
+        )
+        .await
+    }
+
+    async fn handle_agent_invite_to_mls_group(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params.ok_or_else(|| {
+            DaemonError::Config("agent.invite_to_mls_group missing params".into())
+        })?;
+        let params: InviteToMlsGroupParams = serde_json::from_value(params.clone())?;
+        self.create_or_invite_mls_group(
+            params.bot_id,
+            params.group_name,
+            params.recipient,
+            false,
+            handler_id,
+        )
+        .await
+    }
+
+    async fn create_or_invite_mls_group(
+        &self,
+        bot_id: String,
+        group_name: String,
+        recipient: String,
+        is_create: bool,
+        handler_id: Option<&str>,
+    ) -> Result<Option<Value>, DaemonError> {
+        // Agent methods require capability and rate limiting.
+        if let Some(hid) = handler_id {
+            let capability = if is_create {
+                "CreateMlsGroup"
+            } else {
+                "InviteToMlsGroup"
+            };
+            let authorized = {
+                let cm = self.client_manager.read().await;
+                cm.is_authorized(hid, &bot_id, capability)?
+            };
+            if !authorized {
+                return Err(DaemonError::UnauthorizedBot);
+            }
+
+            let now = Instant::now();
+            if !self.rate_limiter.check(hid, &bot_id, now).await {
+                self.diagnostics.record_rate_limited().await;
+                return Err(DaemonError::RateLimited);
+            }
+        }
+
+        // Look up the bot and clone the state we need, then drop the lock.
+        let (mls, signer, nostr_client, creator_pubkey, freshness, relays, creator_npub) = {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(&bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.clone()))?;
+            let mls = bot.mls.clone().ok_or(DaemonError::MlsEngineNotConfigured)?;
+            let signer = bot.signer.clone();
+            let nostr_client = cm.nostr_client.clone();
+            let creator_pubkey = bot.signer.public_key();
+            let freshness = bot.config.mls_key_package_freshness_secs.unwrap_or(300);
+            let relays = bot.config.relays.clone();
+            let creator_npub = bot.npub().to_string();
+            (
+                mls,
+                signer,
+                nostr_client,
+                creator_pubkey,
+                freshness,
+                relays,
+                creator_npub,
+            )
+        };
+
+        let group_name = Self::validate_group_name(&group_name)?;
+
+        // Acquire per-(bot_id, group_name) lock.
+        let lock = self.acquire_mls_group_lock(&bot_id, &group_name).await;
+        let _guard = lock.lock().await;
+
+        let wire_id = if is_create {
+            // Create: fail if the group already exists.
+            if self
+                .db
+                .load_mls_group(&bot_id, &group_name)
+                .await?
+                .is_some()
+            {
+                return Err(DaemonError::MlsGroupAlreadyExists);
+            }
+            None
+        } else {
+            // Invite: fail if the group does not exist, or return existing
+            // wire_id if the recipient is already invited.
+            let group = self
+                .db
+                .load_mls_group(&bot_id, &group_name)
+                .await?
+                .ok_or(DaemonError::MlsGroupNotFound)?;
+            if self
+                .db
+                .is_bot_invited(&bot_id, &group_name, &recipient)
+                .await?
+            {
+                return Ok(Some(serde_json::to_value(MlsGroupResponse {
+                    wire_id: group.wire_id,
+                })?));
+            }
+            Some(group.wire_id)
+        };
+
+        // Parse recipient once after the DB check.
+        let recipient_pk = Self::parse_recipient(&recipient)?;
+        let recipient_npub = recipient_pk
+            .to_bech32()
+            .map_err(|e| DaemonError::Nostr(format!("invalid recipient npub: {e}")))?;
+
+        // Fetch fresh KeyPackage.
+        let (key_package, _age) = nostr_client
+            .fetch_key_package(
+                &recipient_pk,
+                Duration::from_secs(10),
+                Duration::from_secs(freshness),
+            )
+            .await?;
+
+        // Perform MLS mutation and publish side effects.
+        let wire_id = if is_create {
+            let relay_urls = relays
+                .iter()
+                .filter_map(|r| RelayUrl::parse(r).ok())
+                .collect();
+            let (wire_id, welcome_rumor) = mls
+                .create_group(
+                    creator_pubkey,
+                    recipient_pk,
+                    key_package,
+                    group_name.clone(),
+                    relay_urls,
+                )
+                .await?;
+            nostr_client
+                .send_welcome(&signer, &recipient_pk, welcome_rumor)
+                .await?;
+            wire_id
+        } else {
+            let wire_id = wire_id.ok_or_else(|| {
+                DaemonError::Config("internal error: invite wire_id missing".into())
+            })?;
+            let (welcome_rumor, evolution_event) =
+                mls.add_member(&wire_id, recipient_pk, key_package).await?;
+            nostr_client
+                .send_welcome(&signer, &recipient_pk, welcome_rumor)
+                .await?;
+            nostr_client.send_evolution_event(&evolution_event).await?;
+            wire_id
+        };
+
+        // Persist group metadata.
+        if is_create {
+            let row = MlsGroupRow {
+                bot_id: bot_id.clone(),
+                group_name: group_name.clone(),
+                wire_id: wire_id.clone(),
+                creator_npub,
+                relay: relays.first().cloned().unwrap_or_default(),
+                invited_bots: vec![recipient_npub],
+            };
+            self.db.insert_mls_group(row).await?;
+        } else {
+            self.db
+                .update_mls_group_invite(&bot_id, &group_name, &recipient_npub)
+                .await?;
+        }
+
+        info!(
+            bot_id = %bot_id,
+            group_name = %group_name,
+            recipient = %recipient,
+            is_create = is_create,
+            "mls group operation completed"
+        );
+
+        Ok(Some(serde_json::to_value(MlsGroupResponse { wire_id })?))
+    }
+
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
         let response = AgentVersionResponse {
             version: crate::version::VERSION.to_string(),
@@ -1519,7 +1826,7 @@ impl Dispatch {
             .await
             .map_err(DaemonError::from)
             .or_else(|e| match e {
-                DaemonError::Mls(crate::mls::MlsError::GroupNotFound) => {
+                DaemonError::MlsGroupNotFound => {
                     // Return false instead of propagating GroupNotFound to prevent
                     // leaking group existence information
                     Ok(false)
@@ -1696,11 +2003,12 @@ mod tests {
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;
     use crate::handlers::{ConnectionHandle, HandlerRegistry};
+    use crate::mls::MlsEngineHandle;
     use crate::nostr::{NostrClient, NostrSubscribe};
     use crate::test_support::mock_relay::MockRelay;
     use crate::transport::protocol::JsonRpcMessage;
-    use nostr::Kind;
-    use nostr::ToBech32;
+    use nostr::{Kind, RelayUrl, ToBech32};
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn test_keys() -> nostr::Keys {
@@ -1718,6 +2026,58 @@ mod tests {
             capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    fn bot_config_with_mls(
+        id: &str,
+        keys: &nostr::Keys,
+        capabilities: &[&str],
+        mls_db_path: &str,
+    ) -> BotConfig {
+        BotConfig {
+            mls_db_path: Some(PathBuf::from(mls_db_path)),
+            ..bot_config(id, keys, capabilities)
+        }
+    }
+
+    async fn register_handler(
+        dispatch: &Dispatch,
+        bot_ids: &[&str],
+        capabilities: &[&str],
+    ) -> String {
+        let req = JsonRpcMessage::request(
+            1.into(),
+            "handler.register",
+            Some(serde_json::json!({
+                "bot_ids": bot_ids,
+                "event_types": [],
+                "capabilities": capabilities,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result: HandlerRegisterResponse = serde_json::from_value(result.unwrap()).unwrap();
+        result.handler_id
+    }
+
+    async fn build_key_package_event(recipient_keys: &nostr::Keys) -> nostr::Event {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("recipient-mls.db")).unwrap();
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = engine
+            .publish_key_package(&recipient_keys.public_key(), relays)
+            .await
+            .unwrap();
+        nostr::EventBuilder::new(nostr::Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(recipient_keys)
+            .unwrap()
     }
 
     async fn dispatch_with_bots(
@@ -2866,5 +3226,702 @@ mod tests {
         let event = events.into_iter().find(|e| e.id == event_id).unwrap();
         assert_eq!(event.kind, Kind::Metadata);
         assert_eq!(event_id.to_hex(), event_id_hex);
+    }
+
+    fn gift_wrap_count(events: &[nostr::Event]) -> usize {
+        events.iter().filter(|e| e.kind == Kind::GiftWrap).count()
+    }
+
+    fn evolution_event_count(events: &[nostr::Event]) -> usize {
+        events
+            .iter()
+            .filter(|e| e.kind == Kind::MlsGroupMessage)
+            .count()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admin_create_mls_group_returns_wire_id_and_publishes_welcome() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package = build_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(result.wire_id.len(), 64);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("welcome gift-wrap should be published");
+        assert_eq!(gift_wrap_count(&events), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admin_invite_to_mls_group_returns_wire_id_and_publishes_welcome_and_evolution() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let member1_keys = nostr::Keys::generate();
+        let member2_keys = nostr::Keys::generate();
+        let member1_npub = member1_keys.public_key().to_bech32().unwrap();
+        let member2_npub = member2_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        // Create the group with the first member.
+        let key_package1 = build_key_package_event(&member1_keys).await;
+        relay.inject_event(key_package1).await;
+
+        let create_req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member1_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(create_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let create_result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        let wire_id = create_result.wire_id;
+
+        let _ = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("create welcome gift-wrap should be published");
+
+        // Invite the second member.
+        let key_package2 = build_key_package_event(&member2_keys).await;
+        relay.inject_event(key_package2).await;
+
+        let invite_req = JsonRpcMessage::request(
+            3.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member2_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(invite_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let invite_result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(invite_result.wire_id, wire_id);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::MlsGroupMessage, Duration::from_secs(5))
+            .await
+            .expect("evolution event should be published");
+        assert_eq!(gift_wrap_count(&events), 2);
+        assert_eq!(evolution_event_count(&events), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn idempotent_invite_returns_existing_wire_id_without_duplicate_welcome() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let member1_keys = nostr::Keys::generate();
+        let member2_keys = nostr::Keys::generate();
+        let member1_npub = member1_keys.public_key().to_bech32().unwrap();
+        let member2_npub = member2_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package1 = build_key_package_event(&member1_keys).await;
+        relay.inject_event(key_package1).await;
+
+        let create_req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member1_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(create_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let create_result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        let wire_id = create_result.wire_id;
+
+        let _ = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("create welcome gift-wrap should be published");
+
+        let key_package2 = build_key_package_event(&member2_keys).await;
+        relay.inject_event(key_package2).await;
+
+        let invite_req = JsonRpcMessage::request(
+            3.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member2_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(invite_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let invite_result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(invite_result.wire_id, wire_id);
+
+        let _ = relay
+            .wait_for_event(|e| e.kind == Kind::MlsGroupMessage, Duration::from_secs(5))
+            .await
+            .expect("evolution event should be published");
+
+        // Repeat the invite; it should be idempotent and publish no new welcome.
+        let invite_req = JsonRpcMessage::request(
+            4.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member2_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(invite_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response");
+        };
+        let second_result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(second_result.wire_id, wire_id);
+
+        let events = relay.events().await;
+        assert_eq!(gift_wrap_count(&events), 2);
+        assert_eq!(evolution_event_count(&events), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_existing_mls_group_returns_mls_group_already_exists() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package = build_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(resp, JsonRpcMessage::Response { .. }));
+
+        let _ = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("welcome gift-wrap should be published");
+
+        let req = JsonRpcMessage::request(
+            3.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32014);
+        assert!(error.message.to_lowercase().contains("already exists"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invite_nonexistent_mls_group_returns_mls_group_not_found() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "missing-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32015);
+        assert!(error.message.to_lowercase().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn create_mls_group_without_engine_returns_mls_engine_not_configured() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config("admin-bot", &keys, &["Admin"])],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["admin-bot"], &["Admin"]).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "admin-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32013);
+        assert!(error.message.to_lowercase().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn agent_create_mls_group_without_capability_returns_unauthorized() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["ReadMessages"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["ReadMessages"]).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "agent.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32006);
+    }
+
+    async fn build_stale_key_package_event(recipient_keys: &nostr::Keys) -> nostr::Event {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("recipient-mls.db")).unwrap();
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = engine
+            .publish_key_package(&recipient_keys.public_key(), relays)
+            .await
+            .unwrap();
+        let timestamp = nostr::Timestamp::now() - 3600;
+        let rumor = nostr::UnsignedEvent::new(
+            recipient_keys.public_key(),
+            timestamp,
+            nostr::Kind::MlsKeyPackage,
+            tags,
+            content,
+        );
+        rumor.sign_with_keys(recipient_keys).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stale_key_package_returns_stale_key_package() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package = build_stale_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32016);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_create_mls_group_serializes_and_publishes_one_welcome() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package = build_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        let req1 = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let req2 = JsonRpcMessage::request(
+            3.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+
+        let (resp1, resp2) = tokio::join!(
+            dispatch.handle_message(req1, Some(&handler_id), None),
+            dispatch.handle_message(req2, Some(&handler_id), None),
+        );
+
+        let resp1 = resp1.unwrap().unwrap();
+        let resp2 = resp2.unwrap().unwrap();
+
+        let (success, error) = match (&resp1, &resp2) {
+            (JsonRpcMessage::Response { .. }, JsonRpcMessage::Error { error, .. }) => {
+                (resp1, error.clone())
+            }
+            (JsonRpcMessage::Error { error, .. }, JsonRpcMessage::Response { .. }) => {
+                (resp2, error.clone())
+            }
+            _ => panic!("expected one success and one error: {resp1:?}, {resp2:?}"),
+        };
+        assert_eq!(error.code, -32014);
+
+        let JsonRpcMessage::Response { result, .. } = success else {
+            unreachable!();
+        };
+        let result: MlsGroupResponse = serde_json::from_value(result.clone().unwrap()).unwrap();
+        assert_eq!(result.wire_id.len(), 64);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("exactly one welcome gift-wrap should be published");
+        assert_eq!(gift_wrap_count(&events), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_invite_mls_group_serializes_and_publishes_one_welcome() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let member1_keys = nostr::Keys::generate();
+        let member2_keys = nostr::Keys::generate();
+        let member1_npub = member1_keys.public_key().to_bech32().unwrap();
+        let member2_npub = member2_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        // Create group with first member.
+        let key_package1 = build_key_package_event(&member1_keys).await;
+        relay.inject_event(key_package1).await;
+
+        let create_req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member1_npub,
+            })),
+        );
+        dispatch
+            .handle_message(create_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let _ = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("create welcome gift-wrap should be published");
+
+        // Invite the second member concurrently.
+        let key_package2 = build_key_package_event(&member2_keys).await;
+        relay.inject_event(key_package2).await;
+
+        let req1 = JsonRpcMessage::request(
+            3.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member2_npub,
+            })),
+        );
+        let req2 = JsonRpcMessage::request(
+            4.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": member2_npub,
+            })),
+        );
+
+        let (resp1, resp2) = tokio::join!(
+            dispatch.handle_message(req1, Some(&handler_id), None),
+            dispatch.handle_message(req2, Some(&handler_id), None),
+        );
+
+        let resp1 = resp1.unwrap().unwrap();
+        let resp2 = resp2.unwrap().unwrap();
+
+        let (success1, success2) = match (&resp1, &resp2) {
+            (JsonRpcMessage::Response { .. }, JsonRpcMessage::Response { .. }) => (resp1, resp2),
+            _ => panic!("expected both responses to succeed: {resp1:?}, {resp2:?}"),
+        };
+
+        let JsonRpcMessage::Response { result, .. } = success1 else {
+            unreachable!();
+        };
+        let result1: MlsGroupResponse = serde_json::from_value(result.clone().unwrap()).unwrap();
+        let JsonRpcMessage::Response { result, .. } = success2 else {
+            unreachable!();
+        };
+        let result2: MlsGroupResponse = serde_json::from_value(result.clone().unwrap()).unwrap();
+        assert_eq!(result1.wire_id, result2.wire_id);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::MlsGroupMessage, Duration::from_secs(5))
+            .await
+            .expect("evolution event should be published");
+        assert_eq!(gift_wrap_count(&events), 2);
+        assert_eq!(evolution_event_count(&events), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_group_name_returns_invalid_request() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        for invalid_name in ["", "   ", "a/b", "a\\b", "a\nb", "a".repeat(129).as_str()] {
+            let req = JsonRpcMessage::request(
+                2.into(),
+                "admin.create_mls_group",
+                Some(serde_json::json!({
+                    "bot_id": "mls-bot",
+                    "group_name": invalid_name,
+                    "recipient": recipient_npub,
+                })),
+            );
+            let resp = dispatch
+                .handle_message(req, Some(&handler_id), None)
+                .await
+                .unwrap()
+                .unwrap();
+            let JsonRpcMessage::Error { error, .. } = resp else {
+                panic!("expected error response for group name {invalid_name:?}");
+            };
+            assert_eq!(error.code, -32600);
+        }
     }
 }

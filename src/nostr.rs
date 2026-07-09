@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use nostr::event::tag::{Tag, TagKind};
 use nostr::nips::nip44::Version;
@@ -243,8 +244,35 @@ impl NostrClient {
         let rumor = Self::build_dm_rumor(&signer.public_key(), &recipient, content, reply_to)?;
         let rumor_event = sign_unsigned_event(signer, rumor).await?;
 
+        let event_id = self
+            .send_gift_wrap(signer, &recipient, &rumor_event)
+            .await
+            .map_err(|e| {
+                error!(
+                    bot_npub = %bot_npub,
+                    recipient = %recipient_npub,
+                    error = %e,
+                    "failed to publish DM"
+                );
+                e
+            })?;
+
+        Ok(event_id)
+    }
+
+    /// Build a NIP-59 gift wrap around a signed rumor and publish it to every
+    /// configured relay.
+    ///
+    /// Only the published event id is returned; the rumor, seal ciphertext, and
+    /// gift-wrap ciphertext are never logged.
+    async fn send_gift_wrap(
+        &self,
+        signer: &dyn Signer,
+        recipient: &PublicKey,
+        rumor: &Event,
+    ) -> Result<EventId, DaemonError> {
         let seal_content = signer
-            .nip44_encrypt(&recipient, &rumor_event.as_json())
+            .nip44_encrypt(recipient, &rumor.as_json())
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to encrypt seal: {e}")))?;
         let seal = UnsignedEvent::new(
@@ -259,7 +287,7 @@ impl NostrClient {
         let ephemeral = Keys::generate();
         let gift_content = nip44::encrypt(
             ephemeral.secret_key(),
-            &recipient,
+            recipient,
             seal_event.as_json(),
             Version::default(),
         )
@@ -268,22 +296,136 @@ impl NostrClient {
             ephemeral.public_key(),
             nostr::Timestamp::tweaked(nip59::RANGE_RANDOM_TIMESTAMP_TWEAK),
             Kind::GiftWrap,
-            [Tag::public_key(recipient)],
+            [Tag::public_key(*recipient)],
             gift_content,
         );
         let gift_event = gift
             .sign_with_keys(&ephemeral)
             .map_err(|e| DaemonError::Nostr(format!("failed to sign gift wrap: {e}")))?;
 
-        let output = self.client.send_event(&gift_event).await.map_err(|e| {
-            error!(
-                bot_npub = %bot_npub,
-                recipient = %recipient_npub,
-                error = %e,
-                "failed to publish DM"
-            );
-            DaemonError::Nostr(format!("failed to publish event: {e}"))
-        })?;
+        let output = self
+            .client
+            .send_event(&gift_event)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("failed to publish event: {e}")))?;
+
+        Ok(*output.id())
+    }
+
+    /// Fetch a fresh kind:443 KeyPackage authored by `recipient` from the relay
+    /// pool.
+    ///
+    /// The returned event is verified, of the correct kind, authored by the
+    /// requested pubkey, and within the freshness window. The age of the
+    /// selected KeyPackage is returned alongside the event. Only the event id,
+    /// author, and age are logged; the KeyPackage ciphertext is never logged.
+    pub async fn fetch_key_package(
+        &self,
+        recipient: &PublicKey,
+        timeout: Duration,
+        freshness: Duration,
+    ) -> Result<(Event, Duration), DaemonError> {
+        let filter = Filter::new()
+            .kind(Kind::MlsKeyPackage)
+            .author(*recipient)
+            .limit(1);
+
+        let events = self
+            .client
+            .fetch_events(filter, timeout)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("key package fetch failed: {e}")))?;
+
+        if events.is_empty() {
+            return Err(DaemonError::Nostr("key package fetch timed out".into()));
+        }
+
+        let now = Timestamp::now().as_u64();
+        let freshness_secs = freshness.as_secs();
+        let mut selected: Option<Event> = None;
+        let mut selected_ts: u64 = 0;
+
+        for event in events.iter() {
+            if event.verify().is_err() {
+                continue;
+            }
+            if event.kind != Kind::MlsKeyPackage || event.pubkey != *recipient {
+                continue;
+            }
+            let event_ts = event.created_at.as_u64();
+            if event_ts > now + 60 {
+                continue;
+            }
+            if event_ts + freshness_secs < now {
+                continue;
+            }
+            if event_ts > selected_ts {
+                selected_ts = event_ts;
+                selected = Some(event.clone());
+            }
+        }
+
+        let event = selected.ok_or(DaemonError::StaleKeyPackage)?;
+        let age = Duration::from_secs(now - selected_ts);
+        info!(
+            event_id = %event.id.to_hex(),
+            author = %event.pubkey.to_hex(),
+            age_secs = age.as_secs(),
+            "fetched key package"
+        );
+        Ok((event, age))
+    }
+
+    /// Sign and publish a NIP-59 welcome gift wrap for an MLS welcome rumor.
+    ///
+    /// The `welcome_rumor` is an unsigned kind:444 event produced by the MLS
+    /// engine. It is signed with the bot signer, sealed, gift-wrapped, and
+    /// published to every configured relay. Only the recipient, bot, and
+    /// published event id are logged at INFO or above; the rumor, seal
+    /// ciphertext, and gift-wrap ciphertext are never logged.
+    pub async fn send_welcome(
+        &self,
+        signer: &dyn Signer,
+        recipient: &PublicKey,
+        welcome_rumor: UnsignedEvent,
+    ) -> Result<EventId, DaemonError> {
+        let bot_npub = signer
+            .public_key()
+            .to_bech32()
+            .unwrap_or_else(|_| signer.public_key().to_hex());
+
+        let welcome_event = sign_unsigned_event(signer, welcome_rumor).await?;
+
+        let event_id = self
+            .send_gift_wrap(signer, recipient, &welcome_event)
+            .await?;
+
+        info!(
+            bot_npub = %bot_npub,
+            recipient = %recipient.to_hex(),
+            event_id = %event_id.to_hex(),
+            "published welcome gift wrap"
+        );
+
+        Ok(event_id)
+    }
+
+    /// Publish a pre-signed kind:445 MLS group evolution event to every
+    /// configured relay.
+    ///
+    /// The event is sent as-is without re-signing. Only the event id and author
+    /// are logged; the event content is never logged.
+    pub async fn send_evolution_event(&self, event: &Event) -> Result<EventId, DaemonError> {
+        let output =
+            self.client.send_event(event).await.map_err(|e| {
+                DaemonError::Nostr(format!("failed to publish evolution event: {e}"))
+            })?;
+
+        info!(
+            event_id = %event.id.to_hex(),
+            author = %event.pubkey.to_hex(),
+            "published evolution event"
+        );
 
         Ok(*output.id())
     }
@@ -897,6 +1039,68 @@ mod tests {
         );
     }
 
+    fn test_signer_with_nsec() -> (LocalKey, String, String) {
+        let keys = nostr::Keys::generate();
+        let nsec = keys.secret_key().to_bech32().unwrap();
+        let npub = keys.public_key().to_bech32().unwrap();
+        (LocalKey::parse(&nsec).unwrap(), npub, nsec)
+    }
+
+    fn build_key_package(keys: &nostr::Keys, content: &str, created_at: Timestamp) -> Event {
+        let unsigned = UnsignedEvent::new(
+            keys.public_key(),
+            created_at,
+            Kind::MlsKeyPackage,
+            Vec::new(),
+            content.to_string(),
+        );
+        unsigned.sign_with_keys(keys).unwrap()
+    }
+
+    fn build_key_package_bad_sig(
+        keys: &nostr::Keys,
+        content: &str,
+        created_at: Timestamp,
+    ) -> Event {
+        let unsigned = UnsignedEvent::new(
+            keys.public_key(),
+            created_at,
+            Kind::MlsKeyPackage,
+            Vec::new(),
+            content.to_string(),
+        );
+        let valid_event = unsigned.sign_with_keys(keys).unwrap();
+        let bad_sig = Signature::from_str(
+            "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .unwrap();
+        Event::new(
+            valid_event.id,
+            valid_event.pubkey,
+            valid_event.created_at,
+            valid_event.kind,
+            valid_event.tags.to_vec(),
+            valid_event.content,
+            bad_sig,
+        )
+    }
+
+    fn build_key_package_wrong_author(
+        _recipient: &PublicKey,
+        content: &str,
+        created_at: Timestamp,
+    ) -> Event {
+        let other_keys = nostr::Keys::generate();
+        let unsigned = UnsignedEvent::new(
+            other_keys.public_key(),
+            created_at,
+            Kind::MlsKeyPackage,
+            Vec::new(),
+            content.to_string(),
+        );
+        unsigned.sign_with_keys(&other_keys).unwrap()
+    }
+
     #[tokio::test]
     async fn new_with_empty_relays_works() {
         let client = NostrClient::new(vec![]).await.unwrap();
@@ -1182,5 +1386,269 @@ mod tests {
         );
 
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn fetch_key_package_selects_fresh_package() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+        let secret_marker = "SENSITIVE_KP_CIPHERTEXT_abc123";
+
+        let event = build_key_package(&recipient_keys, secret_marker, Timestamp::now());
+        relay.inject_event(event).await;
+
+        let (fetched, age) = client
+            .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(60))
+            .await
+            .expect("fresh key package should be fetched");
+
+        assert_eq!(fetched.kind, Kind::MlsKeyPackage);
+        assert_eq!(fetched.pubkey, recipient);
+        assert!(fetched.content.contains(secret_marker));
+        assert!(age <= Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn fetch_key_package_rejects_stale_package() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+        let secret_marker = "STALE_KP_CIPHERTEXT_abc123";
+
+        let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 301);
+        let event = build_key_package(&recipient_keys, secret_marker, stale_ts);
+        relay.inject_event(event).await;
+
+        let err = client
+            .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DaemonError::StaleKeyPackage),
+            "expected StaleKeyPackage, got {err:?}"
+        );
+        assert!(!err.to_string().contains(secret_marker));
+    }
+
+    #[tokio::test]
+    async fn fetch_key_package_rejects_future_package() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+
+        let future_ts = Timestamp::from_secs(Timestamp::now().as_u64() + 61);
+        let event = build_key_package(&recipient_keys, "FUTURE_KP_CIPHERTEXT", future_ts);
+        relay.inject_event(event).await;
+
+        let err = client
+            .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DaemonError::StaleKeyPackage),
+            "expected StaleKeyPackage for future-dated package, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_key_package_treats_forge_as_absent() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+        let secret_marker = "FORGED_KP_CIPHERTEXT_abc123";
+
+        let wrong_author =
+            build_key_package_wrong_author(&recipient, secret_marker, Timestamp::now());
+        relay.inject_event(wrong_author).await;
+
+        let bad_sig = build_key_package_bad_sig(&recipient_keys, secret_marker, Timestamp::now());
+        relay.inject_event(bad_sig).await;
+
+        let err = client
+            .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DaemonError::Nostr(_) | DaemonError::StaleKeyPackage),
+            "expected timeout or StaleKeyPackage when only forged packages are present, got {err:?}"
+        );
+        assert!(!err.to_string().contains(secret_marker));
+    }
+
+    #[tokio::test]
+    async fn fetch_key_package_returns_timeout_when_none_arrives() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient = nostr::Keys::generate().public_key();
+
+        let err = client
+            .fetch_key_package(
+                &recipient,
+                Duration::from_millis(200),
+                Duration::from_secs(300),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, DaemonError::Nostr(_)),
+            "expected Nostr error, got {err:?}"
+        );
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn send_welcome_publishes_gift_wrap_to_all_relays() {
+        let relay1 = MockRelay::start().await.expect("mock relay should start");
+        let relay2 = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay1.url(), relay2.url()])
+            .await
+            .unwrap();
+
+        let (sender, _) = test_signer();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+        let secret_marker = "WELCOME_SECRET_RUMOR_xyz789";
+
+        let welcome_rumor = UnsignedEvent::new(
+            sender.public_key(),
+            Timestamp::now(),
+            Kind::MlsWelcome,
+            Vec::new(),
+            secret_marker.to_string(),
+        );
+
+        let event_id = client
+            .send_welcome(&sender, &recipient, welcome_rumor)
+            .await
+            .expect("welcome should be published");
+        assert_valid_event_id(&event_id);
+
+        let events1 = relay1
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("relay1 should receive gift wrap");
+        let events2 = relay2
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("relay2 should receive gift wrap");
+
+        let gw1 = events1
+            .iter()
+            .find(|e| e.kind == Kind::GiftWrap)
+            .expect("relay1 should store the gift wrap");
+        let gw2 = events2
+            .iter()
+            .find(|e| e.kind == Kind::GiftWrap)
+            .expect("relay2 should store the gift wrap");
+
+        assert_eq!(
+            gw1.id, gw2.id,
+            "same gift wrap should be published to both relays"
+        );
+        assert_eq!(gw1.kind.as_u16(), 1059);
+        assert!(gw1.tags.public_keys().any(|p| *p == recipient));
+        assert!(!gw1.content.contains(secret_marker));
+    }
+
+    #[tokio::test]
+    async fn send_evolution_event_publishes_signed_event() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let (signer, _npub) = test_signer();
+        let unsigned = UnsignedEvent::new(
+            signer.public_key(),
+            Timestamp::now(),
+            Kind::MlsGroupMessage,
+            Vec::new(),
+            "evolution content".to_string(),
+        );
+        let event = sign_unsigned_event(&signer, unsigned)
+            .await
+            .expect("should sign evolution event");
+
+        let event_id = client
+            .send_evolution_event(&event)
+            .await
+            .expect("evolution event should be published");
+        assert_valid_event_id(&event_id);
+        assert_eq!(event_id, event.id);
+
+        let events = relay.events().await;
+        let published = events
+            .iter()
+            .find(|e| e.id == event_id)
+            .expect("relay should store the evolution event");
+        assert_eq!(published.kind, Kind::MlsGroupMessage);
+        assert_eq!(published.pubkey, signer.public_key());
+    }
+
+    #[tokio::test]
+    async fn fetch_and_welcome_errors_do_not_leak_secrets() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let (sender, _, nsec) = test_signer_with_nsec();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+
+        let kp_secret = "KP_SECRET_CIPHERTEXT_abc123";
+        let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 301);
+        let kp_event = build_key_package(&recipient_keys, kp_secret, stale_ts);
+        relay.inject_event(kp_event).await;
+
+        let err = client
+            .fetch_key_package(&recipient, Duration::from_secs(2), Duration::from_secs(300))
+            .await
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            !err_msg.contains(kp_secret),
+            "fetch error must not contain key package ciphertext"
+        );
+        assert!(
+            !err_msg.contains(&nsec),
+            "fetch error must not contain signer nsec"
+        );
+
+        let client_no_relay = NostrClient::new(vec![]).await.unwrap();
+        let welcome_secret = "WELCOME_SECRET_RUMOR_xyz789";
+        let welcome_rumor = UnsignedEvent::new(
+            sender.public_key(),
+            Timestamp::now(),
+            Kind::MlsWelcome,
+            Vec::new(),
+            welcome_secret.to_string(),
+        );
+
+        let err = client_no_relay
+            .send_welcome(&sender, &recipient, welcome_rumor)
+            .await
+            .unwrap_err();
+
+        let err_msg = err.to_string();
+        assert!(
+            !err_msg.contains(welcome_secret),
+            "welcome error must not contain rumor content"
+        );
+        assert!(
+            !err_msg.contains(&nsec),
+            "welcome error must not contain signer nsec"
+        );
     }
 }

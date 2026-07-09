@@ -126,6 +126,44 @@ class PactoClient:
                 break
             yield notification
 
+    async def admin_create_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminCreateMlsGroupResponse:
+        """
+        Call JSON-RPC method `admin.create_mls_group`.
+
+        Create a new MLS group and invite the recipient (admin-only).
+
+        Example:
+
+            >>> result = await client.admin_create_mls_group(...)
+            >>> isinstance(result, AdminCreateMlsGroupResponse)
+
+        jsonrpc_method: ``"admin.create_mls_group"``
+        """
+        params = models.AdminCreateMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("admin.create_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AdminCreateMlsGroupResponse.model_validate(result)
+
+    async def admin_invite_to_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminInviteToMlsGroupResponse:
+        """
+        Call JSON-RPC method `admin.invite_to_mls_group`.
+
+        Invite a recipient to an existing MLS group (admin-only).
+
+        Example:
+
+            >>> result = await client.admin_invite_to_mls_group(...)
+            >>> isinstance(result, AdminInviteToMlsGroupResponse)
+
+        jsonrpc_method: ``"admin.invite_to_mls_group"``
+        """
+        params = models.AdminInviteToMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("admin.invite_to_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AdminInviteToMlsGroupResponse.model_validate(result)
+
     async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminSendTestDmResponse:
         """
         Call JSON-RPC method `admin.send_test_dm`.
@@ -144,6 +182,25 @@ class PactoClient:
         response = await self._request("admin.send_test_dm", params_dict, timeout=timeout)
         result = response.get('result')
         return models.AdminSendTestDmResponse.model_validate(result)
+
+    async def agent_create_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentCreateMlsGroupResponse:
+        """
+        Call JSON-RPC method `agent.create_mls_group`.
+
+        Create a new MLS group and invite the recipient.
+
+        Example:
+
+            >>> result = await client.agent_create_mls_group(...)
+            >>> isinstance(result, AgentCreateMlsGroupResponse)
+
+        jsonrpc_method: ``"agent.create_mls_group"``
+        """
+        params = models.AgentCreateMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.create_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AgentCreateMlsGroupResponse.model_validate(result)
 
     async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:
         """
@@ -165,6 +222,25 @@ class PactoClient:
             "params": params_dict,
         }
         await self.transport.write_frame(frame)
+
+    async def agent_invite_to_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentInviteToMlsGroupResponse:
+        """
+        Call JSON-RPC method `agent.invite_to_mls_group`.
+
+        Invite a recipient to an existing MLS group.
+
+        Example:
+
+            >>> result = await client.agent_invite_to_mls_group(...)
+            >>> isinstance(result, AgentInviteToMlsGroupResponse)
+
+        jsonrpc_method: ``"agent.invite_to_mls_group"``
+        """
+        params = models.AgentInviteToMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.invite_to_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AgentInviteToMlsGroupResponse.model_validate(result)
 
     async def agent_is_squad_member(self, bot_id: str, group_id: str, member_pubkey: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentIsSquadMemberResponse:
         """

@@ -12,9 +12,11 @@
       "tests": [
         "tests/transport_unix.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/transport_http.rs"
       ],
       "parsed_tests": [
+        "tests/mls_group.rs",
         "tests/transport_http.rs",
         "tests/transport_unix.rs"
       ],
@@ -29,9 +31,11 @@
       "summary": "The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ...",
       "tests": [
         "tests/transport_http.rs",
-        "tests/integration_test.rs"
+        "tests/integration_test.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
+        "tests/mls_group.rs",
         "tests/transport_http.rs"
       ],
       "sources": [
@@ -67,10 +71,12 @@
       "tests": [
         "tests/integration_test.rs",
         "tests/dispatch_integration.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "sources": [
@@ -85,10 +91,12 @@
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "sources": [
@@ -104,11 +112,13 @@
       "tests": [
         "tests/admin_cli_bunker.rs",
         "tests/secret_redaction.rs",
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
         "tests/admin_cli_bunker.rs",
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/signer.rs",
@@ -124,11 +134,13 @@
       "tests": [
         "tests/admin_cli_migration.rs",
         "tests/daemon_startup.rs",
-        "tests/cli_args.rs"
+        "tests/cli_args.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
         "tests/cli_args.rs",
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/config.rs"
@@ -140,10 +152,12 @@
       "id": "R8",
       "summary": "A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` \u2194 `npub` mapping, and duplicate `bot_id` values within a single config are a validati...",
       "tests": [
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/daemon_startup.rs"
+        "tests/daemon_startup.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/client_manager.rs",
@@ -156,10 +170,12 @@
       "id": "R9",
       "summary": "Bot identities are created and deleted only through the `pacto-bot-admin` CLI; the daemon runtime never creates or deletes identities.",
       "tests": [
-        "tests/admin_cli_creation.rs"
+        "tests/admin_cli_creation.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_creation.rs"
+        "tests/admin_cli_creation.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/admin.rs"
@@ -171,10 +187,12 @@
       "id": "R10",
       "summary": "Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co...",
       "tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/admin.rs",
@@ -205,10 +223,12 @@
       "tests": [
         "tests/nostr_client.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs",
         "tests/nostr_client.rs"
       ],
@@ -225,11 +245,13 @@
       "tests": [
         "tests/nostr_client.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/mls_inbound.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/mls_inbound.rs",
         "tests/multi_bot.rs",
         "tests/nostr_client.rs"
@@ -246,10 +268,12 @@
       "id": "R14",
       "summary": "Handlers send DM replies via `agent.send_dm` notifications to the daemon. The daemon encrypts, wraps, and publishes the gift wrap. The daemon verifies that the calling handler is authorized for the...",
       "tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/dispatch.rs",
@@ -264,11 +288,13 @@
       "tests": [
         "tests/dispatch_integration.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/dispatch_integration.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "sources": [
@@ -282,10 +308,12 @@
       "id": "R16",
       "summary": "The daemon dispatches events to registered handlers based on event type and bot identity. A handler receives only events for bot identities it registered for. The daemon enforces per-call capabilit...",
       "tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/dispatch.rs",
@@ -300,11 +328,13 @@
       "tests": [
         "tests/dispatch_integration.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
         "tests/dispatch_integration.rs",
         "tests/integration_test.rs",
+        "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "sources": [
@@ -317,10 +347,12 @@
       "id": "R18",
       "summary": "Handlers respond to `agent.event` notifications with one of: `ack`, `reply`, `defer`, or `ignore` (see API spec). The daemon enforces a per-handler rate limit of 10 mutating operations per second (...",
       "tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/dispatch.rs"
@@ -334,10 +366,12 @@
       "tests": [
         "tests/daemon_shutdown.rs",
         "tests/admin_cli_migration.rs",
+        "tests/mls_group.rs",
         "tests/mls_send_only.rs"
       ],
       "parsed_tests": [
         "tests/daemon_shutdown.rs",
+        "tests/mls_group.rs",
         "tests/mls_send_only.rs"
       ],
       "sources": [
@@ -352,10 +386,12 @@
       "tests": [
         "tests/daemon_startup.rs",
         "tests/daemon_shutdown.rs",
+        "tests/mls_group.rs",
         "tests/mls_send_only.rs"
       ],
       "parsed_tests": [
         "tests/daemon_startup.rs",
+        "tests/mls_group.rs",
         "tests/mls_send_only.rs"
       ],
       "sources": [
@@ -388,10 +424,12 @@
       "id": "R22",
       "summary": "The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:\"shutting_down\"}`, closes relay and bunker connections, releases the lock file, ...",
       "tests": [
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/main.rs",
@@ -486,9 +524,11 @@
       "id": "R28",
       "summary": "**Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron...",
       "tests": [
-        "tests/transport_unix.rs"
+        "tests/transport_unix.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
+        "tests/mls_group.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [
@@ -501,10 +541,12 @@
       "id": "R29",
       "summary": "**State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti...",
       "tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/admin_cli_migration.rs"
+        "tests/admin_cli_migration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/admin.rs"
@@ -516,10 +558,12 @@
       "id": "R30",
       "summary": "**Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing...",
       "tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
-        "tests/dispatch_integration.rs"
+        "tests/dispatch_integration.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/dispatch.rs",

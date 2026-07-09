@@ -27,7 +27,8 @@ use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
     AdminSendTestDmResponse, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, parse_message, serialize_message,
+    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, MlsGroupResponse, parse_message,
+    serialize_message,
 };
 use percent_encoding::percent_decode_str;
 use rusqlite::Connection;
@@ -156,6 +157,11 @@ const SEND_TEST_DM_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello"
 "#;
 
+const MLS_GROUP_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin mls_group create --bot echo-bot --group my-squad --recipient npub1...
+  pacto-bot-admin mls_group invite --bot echo-bot --group my-squad --recipient npub1...
+"#;
+
 const TRACE_EVENTS_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin trace-events echo-bot
   pacto-bot-admin trace-events echo-bot --since 30 --limit 50
@@ -257,7 +263,8 @@ enum Command {
         relays: Vec<String>,
 
         /// Capabilities granted to handlers for the new bot.
-        /// Valid values: ReadMessages, SendMessages, ManageProfile, SendGroupMessages.
+        /// Valid values: ReadMessages, SendMessages, ManageProfile, SendGroupMessages,
+        /// ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup.
         /// Defaults to ReadMessages,SendMessages when omitted.
         #[arg(long, value_name = "CAPABILITY")]
         capabilities: Vec<String>,
@@ -407,6 +414,9 @@ enum Command {
         #[arg(value_name = "CONTENT")]
         content: String,
     },
+    /// Create or manage MLS groups (admin-only).
+    #[command(name = "mls_group", subcommand, after_help = MLS_GROUP_AFTER_HELP)]
+    MlsGroup(MlsGroupCommand),
     /// Read recent event trace rows from the daemon database.
     #[command(after_help = TRACE_EVENTS_AFTER_HELP)]
     TraceEvents {
@@ -538,6 +548,39 @@ enum HandlersCommand {
     Unregister {
         #[arg(value_name = "HANDLER_ID")]
         handler_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+#[command(after_help = MLS_GROUP_AFTER_HELP)]
+enum MlsGroupCommand {
+    /// Create a new MLS group and invite the recipient.
+    Create {
+        /// Bot identity that owns the group.
+        #[arg(short, long, value_name = "BOT_ID")]
+        bot: String,
+
+        /// Name of the MLS group.
+        #[arg(short, long, value_name = "GROUP_NAME")]
+        group: String,
+
+        /// Recipient public key (npub or hex).
+        #[arg(short, long, value_name = "NPUB_OR_HEX")]
+        recipient: String,
+    },
+    /// Invite a recipient to an existing MLS group.
+    Invite {
+        /// Bot identity that owns the group.
+        #[arg(short, long, value_name = "BOT_ID")]
+        bot: String,
+
+        /// Name of the MLS group.
+        #[arg(short, long, value_name = "GROUP_NAME")]
+        group: String,
+
+        /// Recipient public key (npub or hex).
+        #[arg(short, long, value_name = "NPUB_OR_HEX")]
+        recipient: String,
     },
 }
 
@@ -676,6 +719,16 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             recipient,
             content,
         } => cmd_send_test_dm(&cli.config, cli.data_dir, &bot_id, &recipient, &content).await,
+        Command::MlsGroup(MlsGroupCommand::Create {
+            bot,
+            group,
+            recipient,
+        }) => cmd_mls_group_create(&cli.config, cli.data_dir, &bot, &group, &recipient).await,
+        Command::MlsGroup(MlsGroupCommand::Invite {
+            bot,
+            group,
+            recipient,
+        }) => cmd_mls_group_invite(&cli.config, cli.data_dir, &bot, &group, &recipient).await,
         Command::TraceEvents {
             bot_id,
             since,
@@ -1200,9 +1253,15 @@ fn validate_relay_url(url: &str) -> Result<(), DaemonError> {
 
 fn validate_capability(cap: &str) -> Result<(), DaemonError> {
     match cap {
-        "ReadMessages" | "SendMessages" | "ManageProfile" | "SendGroupMessages" => Ok(()),
+        "ReadMessages"
+        | "SendMessages"
+        | "ManageProfile"
+        | "SendGroupMessages"
+        | "ReceiveGroupMessages"
+        | "CreateMlsGroup"
+        | "InviteToMlsGroup" => Ok(()),
         _ => Err(DaemonError::Config(format!(
-            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, or SendGroupMessages"
+            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, or InviteToMlsGroup"
         ))),
     }
 }
@@ -2064,6 +2123,91 @@ async fn cmd_send_test_dm(
         println!("{}", response.event_id);
         Ok(())
     }
+}
+
+async fn cmd_mls_group_create(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    group: &str,
+    recipient: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, group, recipient);
+        return Err(DaemonError::Config(
+            "mls_group is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = load_admin_config(config_path)?;
+        let _bot = find_bot(&config.bots, bot_id)?;
+        let _data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = PathBuf::from(config.socket_path());
+        let recipient = validate_mls_recipient(recipient)?;
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "group_name": group,
+                "recipient": recipient,
+            })),
+        );
+        let value = with_admin_session(&socket_path, bot_id, request).await?;
+        let response: MlsGroupResponse = serde_json::from_value(value)?;
+        println!("{}", response.wire_id);
+        Ok(())
+    }
+}
+
+async fn cmd_mls_group_invite(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    group: &str,
+    recipient: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, group, recipient);
+        return Err(DaemonError::Config(
+            "mls_group is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = load_admin_config(config_path)?;
+        let _bot = find_bot(&config.bots, bot_id)?;
+        let _data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = PathBuf::from(config.socket_path());
+        let recipient = validate_mls_recipient(recipient)?;
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "admin.invite_to_mls_group",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "group_name": group,
+                "recipient": recipient,
+            })),
+        );
+        let value = with_admin_session(&socket_path, bot_id, request).await?;
+        let response: MlsGroupResponse = serde_json::from_value(value)?;
+        println!("{}", response.wire_id);
+        Ok(())
+    }
+}
+
+fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
+    let pk = PublicKey::parse(recipient)
+        .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))?;
+    pk.to_bech32()
+        .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))
 }
 
 async fn cmd_trace_events(
@@ -3703,6 +3847,8 @@ mod tests {
             about: None,
             picture: None,
             mls_dedup_window_secs: None,
+            mls_db_path: None,
+            mls_key_package_freshness_secs: None,
         }
     }
 
@@ -4105,6 +4251,37 @@ mod tests {
 
         // Non-bunker schemes fall through.
         assert_eq!(extract_bunker_port("ws://127.0.0.1:4848"), None);
+    }
+
+    #[test]
+    fn validate_mls_recipient_accepts_npub() -> Result<(), DaemonError> {
+        let keys = Keys::generate();
+        let npub = keys
+            .public_key()
+            .to_bech32()
+            .map_err(|e| DaemonError::Nostr(format!("bech32: {e}")))?;
+        let normalized = validate_mls_recipient(&npub)?;
+        assert_eq!(normalized, npub);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_mls_recipient_accepts_hex() -> Result<(), DaemonError> {
+        let keys = Keys::generate();
+        let npub = keys
+            .public_key()
+            .to_bech32()
+            .map_err(|e| DaemonError::Nostr(format!("bech32: {e}")))?;
+        let hex = keys.public_key().to_hex();
+        let normalized = validate_mls_recipient(&hex)?;
+        assert_eq!(normalized, npub);
+        Ok(())
+    }
+
+    #[test]
+    fn validate_mls_recipient_rejects_invalid() {
+        let err = validate_mls_recipient("not-a-valid-key").unwrap_err();
+        assert!(matches!(err, DaemonError::Config(_)));
     }
 
     #[test]

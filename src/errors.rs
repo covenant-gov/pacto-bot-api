@@ -66,8 +66,17 @@ pub enum DaemonError {
     #[error("invalid json-rpc request: {0}")]
     InvalidJsonRpcRequest(String),
 
+    #[error("MLS engine not configured for this bot")]
+    MlsEngineNotConfigured,
+
+    #[error("MLS group already exists")]
+    MlsGroupAlreadyExists,
+
+    #[error("MLS group not found")]
+    MlsGroupNotFound,
+
     #[error("MLS engine error: {0}")]
-    Mls(#[from] crate::mls::MlsError),
+    Mls(crate::mls::MlsError),
 
     #[error("unknown bot: {0}")]
     UnknownBot(String),
@@ -80,6 +89,12 @@ pub enum DaemonError {
 
     #[error("invalid event type: {0}")]
     InvalidEventType(String),
+
+    #[error("stale key package")]
+    StaleKeyPackage,
+
+    #[error("invalid key package")]
+    InvalidKeyPackage,
 
     #[error("rate limited")]
     RateLimited,
@@ -120,6 +135,11 @@ impl DaemonError {
             DaemonError::Bunker(_) => -32003,
             DaemonError::Nostr(_) => -32004,
             DaemonError::RateLimited => -32005,
+            DaemonError::StaleKeyPackage => -32016,
+            DaemonError::InvalidKeyPackage => -32017,
+            DaemonError::MlsEngineNotConfigured => -32013,
+            DaemonError::MlsGroupAlreadyExists => -32014,
+            DaemonError::MlsGroupNotFound => -32015,
             DaemonError::UnauthorizedBot => -32006,
             DaemonError::HandlerAlreadyConnected => -32007,
             DaemonError::InvalidReconnectToken => -32008,
@@ -133,6 +153,16 @@ impl DaemonError {
             DaemonError::TokenGeneration(_) => -32603,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
             DaemonError::Sqlite(_) | DaemonError::Mls(_) => -32603,
+        }
+    }
+}
+
+impl From<crate::mls::MlsError> for DaemonError {
+    fn from(err: crate::mls::MlsError) -> Self {
+        match err {
+            crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
+            crate::mls::MlsError::InvalidKeyPackage => DaemonError::InvalidKeyPackage,
+            other => DaemonError::Mls(other),
         }
     }
 }
@@ -170,6 +200,18 @@ mod tests {
         assert_eq!(DaemonError::Nostr("x".into()).to_json_rpc_code(), -32004);
         assert_eq!(DaemonError::RateLimited.to_json_rpc_code(), -32005);
         assert_eq!(DaemonError::UnauthorizedBot.to_json_rpc_code(), -32006);
+        assert_eq!(
+            DaemonError::MlsEngineNotConfigured.to_json_rpc_code(),
+            -32013
+        );
+        assert_eq!(
+            DaemonError::MlsGroupAlreadyExists.to_json_rpc_code(),
+            -32014
+        );
+        assert_eq!(DaemonError::MlsGroupNotFound.to_json_rpc_code(), -32015);
+        assert_eq!(DaemonError::StaleKeyPackage.to_json_rpc_code(), -32016);
+        assert_eq!(DaemonError::InvalidKeyPackage.to_json_rpc_code(), -32017);
+
         assert_eq!(
             DaemonError::HandlerAlreadyConnected.to_json_rpc_code(),
             -32007

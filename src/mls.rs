@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use mdk_storage_traits::GroupId;
-use nostr::{Event, PublicKey, RelayUrl};
+use nostr::{Event, Kind, PublicKey, RelayUrl, UnsignedEvent};
 use tokio::sync::{mpsc, oneshot};
 
 /// Errors that can occur when interacting with the MLS engine.
@@ -49,6 +49,11 @@ pub enum MlsError {
     #[error("MLS crypto error")]
     CryptoError,
 
+    /// The provided KeyPackage event is not a valid kind:443 with non-empty
+    /// content from the expected author.
+    #[error("invalid MLS key package")]
+    InvalidKeyPackage,
+
     /// Channel communication error with the MLS worker thread.
     #[error("MLS worker communication error")]
     WorkerDisconnected,
@@ -57,7 +62,9 @@ pub enum MlsError {
 impl From<mdk_core::Error> for MlsError {
     fn from(err: mdk_core::Error) -> Self {
         let msg = err.to_string();
-        // Map specific MDK errors to our typed variants
+        // Log the raw MDK string only at DEBUG level; never expose it to callers
+        // or INFO+ logs.
+        tracing::debug!(error = %msg, "MLS engine raw error");
         if msg.contains("group not found") || msg.contains("unknown group") {
             MlsError::GroupNotFound
         } else if msg.contains("not initialized") || msg.contains("no group") {
@@ -67,9 +74,38 @@ impl From<mdk_core::Error> for MlsError {
         } else if msg.contains("crypto") || msg.contains("signature") {
             MlsError::CryptoError
         } else {
-            MlsError::Engine(msg)
+            // Any unclassified MDK error is rewritten to a fixed, generic message
+            // so that raw MDK strings never reach callers.
+            MlsError::Engine("MLS engine failure".into())
         }
     }
+}
+
+/// Validate a KeyPackage event before passing it to the MDK engine.
+///
+/// The event must be kind:443, have non-empty content, and be authored by the
+/// expected recipient.
+fn validate_key_package(key_package: &Event, recipient: &PublicKey) -> Result<(), MlsError> {
+    if key_package.kind != Kind::MlsKeyPackage {
+        return Err(MlsError::InvalidKeyPackage);
+    }
+    if key_package.content.is_empty() {
+        return Err(MlsError::InvalidKeyPackage);
+    }
+    if key_package.pubkey != *recipient {
+        return Err(MlsError::InvalidKeyPackage);
+    }
+    Ok(())
+}
+
+/// Fill a fixed-size byte buffer with random bytes from `getrandom`.
+fn random_bytes<const N: usize>() -> Result<[u8; N], MlsError> {
+    let mut buf = [0u8; N];
+    getrandom::getrandom(&mut buf).map_err(|e| {
+        tracing::debug!(error = %e, "failed to generate random bytes");
+        MlsError::Engine("failed to generate random bytes".into())
+    })?;
+    Ok(buf)
 }
 
 /// Internal commands sent to the MLS worker thread.
@@ -89,8 +125,22 @@ enum MlsCommand {
     },
     CreateGroupMessage {
         group_id: Vec<u8>,
-        rumor: nostr::UnsignedEvent,
+        rumor: UnsignedEvent,
         tx: oneshot::Sender<Result<Event, MlsError>>,
+    },
+    CreateGroup {
+        creator: PublicKey,
+        recipient: PublicKey,
+        key_package: Event,
+        group_name: String,
+        relays: Vec<RelayUrl>,
+        tx: oneshot::Sender<Result<(String, UnsignedEvent), MlsError>>,
+    },
+    AddMember {
+        wire_id: String,
+        recipient: PublicKey,
+        key_package: Event,
+        tx: oneshot::Sender<Result<(UnsignedEvent, Event), MlsError>>,
     },
     IsGroupMember {
         wire_id: String,
@@ -213,6 +263,70 @@ impl MlsEngineHandle {
                                 name: group.name.clone(),
                             })
                         })();
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::CreateGroup {
+                        creator,
+                        recipient,
+                        key_package,
+                        group_name,
+                        relays,
+                        tx,
+                    } => {
+                        let result: Result<(String, UnsignedEvent), MlsError> = (|| {
+                            validate_key_package(&key_package, &recipient)?;
+
+                            let image_hash = random_bytes::<32>()?;
+                            let image_key = random_bytes::<32>()?;
+                            let image_nonce = random_bytes::<12>()?;
+
+                            let config = NostrGroupConfigData::new(
+                                group_name,
+                                String::new(),
+                                Some(image_hash),
+                                Some(image_key),
+                                Some(image_nonce),
+                                relays,
+                                vec![creator],
+                            );
+
+                            let result =
+                                engine.create_group(&creator, vec![key_package], config)?;
+                            let wire_id = hex::encode(result.group.nostr_group_id.as_slice());
+                            let welcome_rumor =
+                                result.welcome_rumors.into_iter().next().ok_or_else(|| {
+                                    MlsError::Engine("missing welcome rumor".into())
+                                })?;
+                            Ok((wire_id, welcome_rumor))
+                        })(
+                        );
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::AddMember {
+                        wire_id,
+                        recipient,
+                        key_package,
+                        tx,
+                    } => {
+                        let result: Result<(UnsignedEvent, Event), MlsError> = (|| {
+                            let groups = engine.get_groups()?;
+                            let group = groups
+                                .iter()
+                                .find(|g| hex::encode(g.nostr_group_id.as_slice()) == wire_id)
+                                .ok_or(MlsError::GroupNotFound)?;
+
+                            validate_key_package(&key_package, &recipient)?;
+
+                            let update = engine.add_members(&group.mls_group_id, &[key_package])?;
+                            engine.merge_pending_commit(&group.mls_group_id)?;
+
+                            let welcome_rumor = update
+                                .welcome_rumors
+                                .and_then(|v| v.into_iter().next())
+                                .ok_or_else(|| MlsError::Engine("missing welcome rumor".into()))?;
+                            Ok((welcome_rumor, update.evolution_event))
+                        })(
+                        );
                         let _ = tx.send(result);
                     }
                     MlsCommand::CreateGroupMessage {
@@ -428,6 +542,56 @@ impl MlsEngineHandle {
             .map_err(|_| MlsError::WorkerDisconnected)?;
         rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
+
+    /// Create a new MLS group with the recipient as the initial member.
+    ///
+    /// Returns the Squad wire id (`hex(nostr_group_id)`) and the unsigned welcome
+    /// rumor for the new member.
+    pub async fn create_group(
+        &self,
+        creator: PublicKey,
+        recipient: PublicKey,
+        key_package: Event,
+        group_name: String,
+        relays: Vec<RelayUrl>,
+    ) -> Result<(String, UnsignedEvent), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::CreateGroup {
+                creator,
+                recipient,
+                key_package,
+                group_name,
+                relays,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Add a member to an existing MLS group identified by its wire id.
+    ///
+    /// Returns the unsigned welcome rumor for the new member and the signed group
+    /// evolution event (kind:445) to publish to existing members.
+    pub async fn add_member(
+        &self,
+        wire_id: &str,
+        recipient: PublicKey,
+        key_package: Event,
+    ) -> Result<(UnsignedEvent, Event), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::AddMember {
+                wire_id: wire_id.to_string(),
+                recipient,
+                key_package,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
 }
 
 /// Group information returned after accepting a Welcome.
@@ -482,6 +646,19 @@ pub(crate) fn set_db_permissions<P: AsRef<Path>>(_db_path: P) -> Result<(), MlsE
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::{EventBuilder, Keys, Kind};
+
+    async fn build_key_package(engine: &MlsEngineHandle, keys: &Keys) -> Event {
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = engine
+            .publish_key_package(&keys.public_key(), relays)
+            .await
+            .expect("publish_key_package");
+        EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(keys)
+            .expect("sign key package")
+    }
 
     #[test]
     fn new_persistent_creates_0600_db_and_sidecars() {
@@ -526,5 +703,170 @@ mod tests {
         let handle = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
             .expect("new_persistent");
         let _clone = handle.clone();
+    }
+
+    #[tokio::test]
+    async fn create_group_returns_wire_id_and_welcome_rumor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let creator_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let key_package = build_key_package(&engine, &recipient_keys).await;
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (wire_id, welcome_rumor) = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                key_package,
+                "test-group".to_string(),
+                relays,
+            )
+            .await
+            .expect("create_group failed");
+
+        assert_eq!(wire_id.len(), 64);
+        assert!(!welcome_rumor.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_member_returns_welcome_rumor_and_evolution_event() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let creator_keys = Keys::generate();
+        let member1_keys = Keys::generate();
+        let member2_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let key_package1 = build_key_package(&engine, &member1_keys).await;
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (wire_id, _) = engine
+            .create_group(
+                creator_keys.public_key(),
+                member1_keys.public_key(),
+                key_package1,
+                "test-group".to_string(),
+                relays.clone(),
+            )
+            .await
+            .expect("create_group failed");
+
+        let key_package2 = build_key_package(&engine, &member2_keys).await;
+        let (welcome_rumor, evolution_event) = engine
+            .add_member(&wire_id, member2_keys.public_key(), key_package2)
+            .await
+            .expect("add_member failed");
+
+        assert!(!welcome_rumor.content.is_empty());
+        assert!(!evolution_event.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn add_member_unknown_wire_id_returns_group_not_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let key_package = build_key_package(&engine, &keys).await;
+        let wire_id = "a".repeat(64);
+        let result = engine
+            .add_member(&wire_id, keys.public_key(), key_package)
+            .await;
+
+        assert!(matches!(result, Err(MlsError::GroupNotFound)));
+    }
+
+    #[tokio::test]
+    async fn create_group_invalid_key_package_returns_invalid_key_package() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let creator_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let wrong_kind = EventBuilder::new(Kind::TextNote, "not a key package")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+        let result = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                wrong_kind,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await;
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+
+        let empty_content = EventBuilder::new(Kind::MlsKeyPackage, "")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+        let result = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                empty_content,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await;
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+
+        let other_keys = Keys::generate();
+        let (content, tags) = engine
+            .publish_key_package(&other_keys.public_key(), vec![])
+            .await
+            .expect("publish_key_package");
+        let wrong_author = EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(&other_keys)
+            .expect("sign");
+        let result = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                wrong_author,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await;
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+    }
+
+    #[tokio::test]
+    async fn create_group_bad_key_package_content_maps_to_safe_engine_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let creator_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let bad_key_package = EventBuilder::new(Kind::MlsKeyPackage, "invalid-key-package-content")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+        let result = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                bad_key_package,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await;
+
+        match result {
+            Err(MlsError::Engine(msg)) => {
+                assert!(!msg.contains("invalid-key-package-content"));
+                assert_eq!(msg, "MLS engine failure");
+            }
+            Err(MlsError::CryptoError) => {
+                // MDK may classify malformed key packages as crypto errors; this
+                // is acceptable as long as it is not the raw MDK string.
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+            Ok(_) => panic!("expected error for invalid key package content"),
+        }
     }
 }

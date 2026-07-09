@@ -28,7 +28,7 @@
               "capabilities": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, and ReceiveGroupMessages."
+                "description": "Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, and InviteToMlsGroup."
               }
             },
             "required": ["bot_ids", "event_types", "capabilities"]
@@ -630,6 +630,154 @@
             "event_id": { "type": "string" }
           },
           "required": ["event_id"]
+        }
+      }
+    },
+    {
+      "name": "admin.create_mls_group",
+      "summary": "Create a new MLS group and invite the recipient (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will own the group."
+              },
+              "group_name": {
+                "type": "string",
+                "description": "Human-readable group name."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the initial member."
+              }
+            },
+            "required": ["bot_id", "group_name", "recipient"]
+          }
+        }
+      ],
+      "result": {
+        "name": "group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "wire_id": { "type": "string" }
+          },
+          "required": ["wire_id"]
+        }
+      }
+    },
+    {
+      "name": "admin.invite_to_mls_group",
+      "summary": "Invite a recipient to an existing MLS group (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that owns the group."
+              },
+              "group_name": {
+                "type": "string",
+                "description": "Human-readable group name."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the member to invite."
+              }
+            },
+            "required": ["bot_id", "group_name", "recipient"]
+          }
+        }
+      ],
+      "result": {
+        "name": "group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "wire_id": { "type": "string" }
+          },
+          "required": ["wire_id"]
+        }
+      }
+    },
+    {
+      "name": "agent.create_mls_group",
+      "summary": "Create a new MLS group and invite the recipient.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that will own the group."
+              },
+              "group_name": {
+                "type": "string",
+                "description": "Human-readable group name."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the initial member."
+              }
+            },
+            "required": ["bot_id", "group_name", "recipient"]
+          }
+        }
+      ],
+      "result": {
+        "name": "group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "wire_id": { "type": "string" }
+          },
+          "required": ["wire_id"]
+        }
+      }
+    },
+    {
+      "name": "agent.invite_to_mls_group",
+      "summary": "Invite a recipient to an existing MLS group.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that owns the group."
+              },
+              "group_name": {
+                "type": "string",
+                "description": "Human-readable group name."
+              },
+              "recipient": {
+                "type": "string",
+                "description": "Nostr public key (npub or hex) of the member to invite."
+              }
+            },
+            "required": ["bot_id", "group_name", "recipient"]
+          }
+        }
+      ],
+      "result": {
+        "name": "group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "wire_id": { "type": "string" }
+          },
+          "required": ["wire_id"]
         }
       }
     }

@@ -36,6 +36,8 @@ fn bot_config(id: &str, keys: &Keys, capabilities: &[&str]) -> BotConfig {
         relays: vec![],
         capabilities: capabilities.iter().map(|s| s.to_string()).collect(),
         mls_dedup_window_secs: None,
+        mls_db_path: Some(std::path::PathBuf::from("vector-mls.db")),
+        mls_key_package_freshness_secs: None,
         ..Default::default()
     }
 }
