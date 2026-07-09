@@ -9,7 +9,7 @@ description = "Example on-chain governance reader for Pacto snapshot bot."
 rust-version = "1.96"
 
 [dependencies]
-alloy = { version = "1.6", features = ["full"] }
+alloy = { version = "2.1", features = ["full"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
