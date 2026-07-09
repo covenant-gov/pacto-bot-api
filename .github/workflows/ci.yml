@@ -240,7 +240,7 @@ jobs:
       - name: Build debug binaries
         env:
           GIT_COMMIT_SHORT: ${{ steps.vars.outputs.sha_short }}
-        run: cargo build --workspace --bins
+        run: cargo build --bins -p pacto-bot-api -p pacto-bot-utils
 
       - name: Upload daemon binary
         uses: actions/upload-artifact@v4
@@ -255,6 +255,14 @@ jobs:
         with:
           name: pacto-bot-admin-bin
           path: target/debug/pacto-bot-admin
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload create-mls-group binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-mls-group-bin
+          path: target/debug/create-mls-group
           retention-days: 14
           if-no-files-found: error
 
@@ -411,7 +419,7 @@ jobs:
       - name: Build release binaries
         env:
           GIT_COMMIT_SHORT: ${{ steps.vars.outputs.sha_short }}
-        run: cargo build --workspace --bins --release
+        run: cargo build --bins --release -p pacto-bot-api -p pacto-bot-utils
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -420,6 +428,7 @@ jobs:
           path: |
             target/release/pacto-bot-api
             target/release/pacto-bot-admin
+            target/release/create-mls-group
           retention-days: 7
           if-no-files-found: error
 

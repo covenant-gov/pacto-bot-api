@@ -186,7 +186,7 @@ main() {
 
   ensure_bin_dir
 
-  local bin binaries=(pacto-bot-api pacto-bot-admin)
+  local bin binaries=(pacto-bot-api pacto-bot-admin create-mls-group)
   for bin in "${binaries[@]}"; do
     local src="${tmpdir}/${bin}"
     if [ -f "$src" ]; then

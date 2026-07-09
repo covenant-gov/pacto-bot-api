@@ -21,7 +21,7 @@ A standalone Rust daemon that multiplexes multiple Pacto bot identities onto one
 The fastest way to get the daemon and admin CLI is to use the release install
 script. It detects your platform (macOS or Linux) and architecture (x86_64 or
 arm64), downloads the latest GitHub release, verifies the SHA-256 checksum, and
-installs both binaries into `/usr/local/bin`:
+installs the workspace binaries into `/usr/local/bin`:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | bash
@@ -53,6 +53,7 @@ Binaries:
 
 - `target/release/pacto-bot-api` — the daemon
 - `target/release/pacto-bot-admin` — lifecycle/admin CLI
+- `target/release/create-mls-group` — MLS group creation utility
 
 ### 2. Create a bot identity
 
