@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Bot(...)` now defaults to `auto_acknowledge=True`. Existing bots that rely on the previous no-response semantics for `None` returns can set `auto_acknowledge=False` during a transition.
 
+### Removed
+
+- Removed the Rust `crates/governance-bot` example crate from the workspace. The reference governance snapshot bot implementation now lives in `pacto-governance-bots` (Python).
+
 ## [0.6.0] - 2026-07-04
 
 ### Changed
