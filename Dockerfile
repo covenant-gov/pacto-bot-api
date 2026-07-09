@@ -17,7 +17,6 @@ WORKDIR /usr/src/pacto-bot-api
 COPY Cargo.toml Cargo.lock ./
 COPY build.rs build.rs
 COPY xtask xtask
-COPY crates/governance-bot crates/governance-bot
 COPY schemas schemas
 COPY python/pyproject.toml python/pyproject.toml
 COPY src src
