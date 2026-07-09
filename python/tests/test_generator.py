@@ -32,7 +32,7 @@ class HandlerRegisterParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Bot identities this handler wants to serve.
     bot_ids: list[str]
-    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, and ReceiveGroupMessages.
+    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, and InviteToMlsGroup.
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]

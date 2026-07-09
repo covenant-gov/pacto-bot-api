@@ -1,4 +1,5 @@
 //! req(R19, R20)
+mod common;
 mod support;
 
 use support::mock_mls_peer::{MockMlsPeer, group_wire_id};
@@ -15,7 +16,6 @@ use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::events::EventType;
 use pacto_bot_api::nostr::NostrClient;
 use secrecy::SecretString;
-use tempfile::tempdir;
 use tokio::sync::RwLock;
 
 fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
@@ -36,7 +36,7 @@ fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
 
 #[tokio::test]
 async fn daemon_bot_joins_mls_group_and_sends_message() {
-    let dir = tempdir().expect("tempdir");
+    let dir = common::tempdir().expect("tempdir");
     let bot_keys = nostr::Keys::generate();
     let config = DaemonConfig {
         daemon: GlobalDaemonConfig::default(),

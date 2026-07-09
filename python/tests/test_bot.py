@@ -1355,6 +1355,34 @@ async def test_is_squad_member_prefills_bot_id():
     )
 
 
+@pytest.mark.asyncio
+async def test_create_mls_group_prefills_bot_id():
+    """bot.create_mls_group calls agent_create_mls_group with bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_create_mls_group.return_value = AsyncMock(wire_id="wire-create")
+
+    result = await bot.create_mls_group("group-a", "npub1recipient")
+    assert result == "wire-create"
+    bot._client.agent_create_mls_group.assert_awaited_once_with(
+        bot_id="test-bot", group_name="group-a", recipient="npub1recipient"
+    )
+
+
+@pytest.mark.asyncio
+async def test_invite_to_mls_group_prefills_bot_id():
+    """bot.invite_to_mls_group calls agent_invite_to_mls_group with bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_invite_to_mls_group.return_value = AsyncMock(wire_id="wire-invite")
+
+    result = await bot.invite_to_mls_group("group-a", "npub1recipient")
+    assert result == "wire-invite"
+    bot._client.agent_invite_to_mls_group.assert_awaited_once_with(
+        bot_id="test-bot", group_name="group-a", recipient="npub1recipient"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Throttle and lock (U7)
 # ---------------------------------------------------------------------------

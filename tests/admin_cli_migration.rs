@@ -3,8 +3,9 @@ mod support;
 
 /// req(R10, R29, R31, R35)
 use assert_cmd::Command;
-use pacto_bot_api::db::Database;
+use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::events::EventType;
+use serde_json::json;
 use std::error::Error;
 use std::fs;
 
@@ -55,6 +56,63 @@ fn export_import_roundtrip() -> Result<(), Box<dyn Error>> {
     assert_eq!(cursor.1, 42);
     let handlers = db.load_handlers()?;
     assert_eq!(handlers.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn export_import_roundtrips_mls_groups() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+
+    // Seed an MLS group row for the bot.
+    {
+        let db = Database::open(&dir.path().join("agent.db"))?;
+        let row = MlsGroupRow {
+            bot_id: "echo-bot".to_string(),
+            group_name: "my-squad".to_string(),
+            wire_id: "aabbccdd".to_string(),
+            creator_npub: bot.npub.clone(),
+            relay: "wss://relay.example.com".to_string(),
+            invited_bots: vec!["npub1member".to_string()],
+        };
+        db.insert_mls_group_export(&row)?;
+    }
+
+    // Export
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args(["--config", &config.to_string_lossy(), "export", "echo-bot"]);
+    let output = cmd.assert().success();
+    let state_json = std::str::from_utf8(&output.get_output().stdout)?;
+
+    let state: serde_json::Value = serde_json::from_str(state_json)?;
+    let mls_groups = state["mls_groups"].as_array().expect("mls_groups array");
+    assert_eq!(mls_groups.len(), 1);
+    assert_eq!(mls_groups[0]["group_name"], "my-squad");
+    assert_eq!(mls_groups[0]["wire_id"], "aabbccdd");
+    assert_eq!(mls_groups[0]["invited_bots"], json!(["npub1member"]));
+
+    // Save state to file, delete DB, then import
+    let state_path = dir.path().join("state.json");
+    fs::write(&state_path, state_json)?;
+    fs::remove_file(dir.path().join("agent.db"))?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "import",
+        "echo-bot",
+        &state_path.to_string_lossy(),
+    ]);
+    cmd.assert().success();
+
+    let db = Database::open(&dir.path().join("agent.db"))?;
+    let groups = db.load_all_mls_groups("echo-bot")?;
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].group_name, "my-squad");
+    assert_eq!(groups[0].wire_id, "aabbccdd");
+    assert_eq!(groups[0].invited_bots, vec!["npub1member"]);
     Ok(())
 }
 

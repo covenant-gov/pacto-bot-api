@@ -95,6 +95,26 @@ mod tests {
     use super::*;
     use crate::config::{BotConfig, SigningConfig};
     use nostr::ToBech32;
+    use std::path::PathBuf;
+
+    fn test_tempdir() -> tempfile::TempDir {
+        let root = test_temp_root();
+        std::fs::create_dir_all(&root).expect("create test temp root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod test temp root");
+        }
+        tempfile::tempdir_in(root).expect("tempdir")
+    }
+
+    fn test_temp_root() -> PathBuf {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+        target.join("test-temp").join("bot-state-unit")
+    }
 
     fn test_bot_config() -> BotConfig {
         let keys = nostr::Keys::generate();
@@ -148,7 +168,7 @@ mod tests {
     #[test]
     fn new_with_mls_creates_engine_and_permissions() {
         let config = test_bot_config();
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let db_path = temp.path().join("vector-mls.db");
 
         let state = BotState::new_with_mls(config, &db_path).expect("new_with_mls");
@@ -187,7 +207,7 @@ mod tests {
     #[test]
     fn new_with_mls_parent_dir_is_0700() {
         let config = test_bot_config();
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let parent = temp.path().join("bot-id");
         std::fs::create_dir_all(&parent).expect("create parent");
         #[cfg(unix)]

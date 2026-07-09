@@ -426,12 +426,27 @@ fn validate_bots(bots: &mut [BotConfig], data_dir: &Path) -> Result<(), DaemonEr
     Ok(())
 }
 
+/// Create and secure a directory with restrictive Unix permissions.
+///
+/// This is typically used for parent directories that must be readable only
+/// by the owner. On non-Unix platforms the permission call is a no-op.
+fn secure_create_parent_dir(path: &Path, mode: u32) -> Result<(), DaemonError> {
+    std::fs::create_dir_all(path).map_err(DaemonError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .map_err(DaemonError::Io)?;
+    }
+    Ok(())
+}
+
 /// Validate and canonicalize a bot's configured `mls_db_path`.
 ///
 /// The path is resolved against the per-bot data directory if relative. It
 /// must remain inside that directory after canonicalization, must not
-/// contain symlinks, and must not be an absolute path under `/tmp` or
-/// `/dev/shm`. The parent directory is created with `0o700` permissions.
+/// contain symlinks, and must not resolve under `/tmp` or `/dev/shm`. The
+/// parent directory is created with `0o700` permissions.
 pub fn validate_mls_db_path(
     bot: &BotConfig,
     data_dir: impl AsRef<Path>,
@@ -442,20 +457,10 @@ pub fn validate_mls_db_path(
         .as_ref()
         .ok_or_else(|| DaemonError::Config(format!("bot {}: mls_db_path is missing", bot.id)))?;
 
-    // Ensure the bot's data directory exists and enforce 0o700. The bot data
-    // directory is the sandbox for the MLS database.
-    let bot_data_dir = data_dir.join(&bot.id);
-    std::fs::create_dir_all(&bot_data_dir).map_err(DaemonError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bot_data_dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(DaemonError::Io)?;
-    }
-
     // Resolve the configured path relative to the bot data directory if needed.
     // Keep this path non-canonical so that symlinks are detected before they
     // are resolved away.
+    let bot_data_dir = data_dir.join(&bot.id);
     let was_absolute = path.is_absolute();
     let resolved_path = if was_absolute {
         path.to_path_buf()
@@ -463,16 +468,15 @@ pub fn validate_mls_db_path(
         bot_data_dir.join(path)
     };
 
-    // Reject absolute paths that explicitly point under /tmp or /dev/shm.
-    if was_absolute {
-        let tmp = Path::new("/tmp");
-        let shm = Path::new("/dev/shm");
-        if resolved_path.starts_with(tmp) || resolved_path.starts_with(shm) {
-            return Err(DaemonError::Config(format!(
-                "bot {}: mls_db_path must not be under /tmp or /dev/shm",
-                bot.id
-            )));
-        }
+    // Reject paths that resolve under /tmp or /dev/shm, whether they were
+    // configured as absolute paths or relative to the bot data directory.
+    let tmp = Path::new("/tmp");
+    let shm = Path::new("/dev/shm");
+    if resolved_path.starts_with(tmp) || resolved_path.starts_with(shm) {
+        return Err(DaemonError::Config(format!(
+            "bot {}: mls_db_path must not be under /tmp or /dev/shm",
+            bot.id
+        )));
     }
 
     // Reject any symlinks in the path components. This check uses the
@@ -494,6 +498,10 @@ pub fn validate_mls_db_path(
         }
     }
 
+    // Ensure the bot's data directory exists and enforce 0o700. The bot data
+    // directory is the sandbox for the MLS database.
+    secure_create_parent_dir(&bot_data_dir, 0o700)?;
+
     // Create the parent directory and enforce 0o700.
     let parent = resolved_path.parent().ok_or_else(|| {
         DaemonError::Config(format!(
@@ -501,13 +509,7 @@ pub fn validate_mls_db_path(
             bot.id
         ))
     })?;
-    std::fs::create_dir_all(parent).map_err(DaemonError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-            .map_err(DaemonError::Io)?;
-    }
+    secure_create_parent_dir(parent, 0o700)?;
 
     // Canonicalize the parent and the bot data directory, then verify the
     // parent remains inside the sandbox.
@@ -1095,7 +1097,10 @@ capabilities = ["CreateMlsGroup"]
     }
 
     fn restricted_tempdir() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
+        // Keep the temp directory out of /tmp so that relative mls_db_path
+        // values do not accidentally resolve under /tmp and get rejected.
+        let current_dir = std::env::current_dir().unwrap();
+        let dir = tempfile::tempdir_in(&current_dir).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1105,6 +1110,30 @@ capabilities = ["CreateMlsGroup"]
         }
         let file_path = dir.path().join("pacto-bot-api.toml");
         (dir, file_path)
+    }
+
+    #[cfg(unix)]
+    fn tempdir_under(base: &Path) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir_in(base).unwrap();
+        let path = dir.path().to_path_buf();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn write_config_file(path: &Path, content: &str) {
+        std::fs::write(path, content).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(path, perms).unwrap();
+        }
     }
 
     #[test]
@@ -1165,12 +1194,12 @@ mls_db_path = "vector-mls.db"
     #[test]
     #[cfg(unix)]
     fn mls_db_path_rejects_absolute_tmp() {
-        let (dir, file_path) = restricted_tempdir();
-        let data_dir = dir.path().join("data");
+        let (_dir, file_path) = restricted_tempdir();
+        let data_dir = _dir.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
+        write_config_file(
             &file_path,
-            format!(
+            &format!(
                 r#"
 [daemon]
 data_dir = "{}"
@@ -1183,21 +1212,73 @@ mls_db_path = "/tmp/vector-mls.db"
 "#,
                 data_dir.display()
             ),
-        )
-        .unwrap();
-
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&file_path).unwrap().permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&file_path, perms).unwrap();
-        }
+        );
 
         let err = DaemonConfig::load(&file_path).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("must not be under /tmp or /dev/shm"),
             "expected /tmp rejection: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mls_db_path_rejects_relative_tmp() {
+        let (_dir, file_path) = restricted_tempdir();
+        let (_data_dir_tmp, data_dir) = tempdir_under(Path::new("/tmp"));
+        write_config_file(
+            &file_path,
+            &format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+mls_db_path = "vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        );
+
+        let err = DaemonConfig::load(&file_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must not be under /tmp or /dev/shm"),
+            "expected /tmp rejection for relative path: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn mls_db_path_rejects_relative_shm() {
+        let (_dir, file_path) = restricted_tempdir();
+        let (_data_dir_tmp, data_dir) = tempdir_under(Path::new("/dev/shm"));
+        write_config_file(
+            &file_path,
+            &format!(
+                r#"
+[daemon]
+data_dir = "{}"
+
+[[bots]]
+id = "mls-bot"
+npub = "npub1a"
+signing = {{ backend = "nsec", nsec = "nsec1a" }}
+mls_db_path = "vector-mls.db"
+"#,
+                data_dir.display()
+            ),
+        );
+
+        let err = DaemonConfig::load(&file_path).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must not be under /tmp or /dev/shm"),
+            "expected /dev/shm rejection for relative path: {msg}"
         );
     }
 

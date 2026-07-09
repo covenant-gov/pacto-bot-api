@@ -87,6 +87,9 @@ pub enum DaemonError {
     #[error("handler backpressure")]
     HandlerBackpressure,
 
+    #[error("operation timed out")]
+    OperationTimedOut,
+
     #[error("invalid event type: {0}")]
     InvalidEventType(String),
 
@@ -135,6 +138,7 @@ impl DaemonError {
             DaemonError::Bunker(_) => -32003,
             DaemonError::Nostr(_) => -32004,
             DaemonError::RateLimited => -32005,
+            DaemonError::OperationTimedOut => -32012,
             DaemonError::StaleKeyPackage => -32016,
             DaemonError::InvalidKeyPackage => -32017,
             DaemonError::MlsEngineNotConfigured => -32013,
@@ -199,6 +203,7 @@ mod tests {
         assert_eq!(DaemonError::Bunker("x".into()).to_json_rpc_code(), -32003);
         assert_eq!(DaemonError::Nostr("x".into()).to_json_rpc_code(), -32004);
         assert_eq!(DaemonError::RateLimited.to_json_rpc_code(), -32005);
+        assert_eq!(DaemonError::OperationTimedOut.to_json_rpc_code(), -32012);
         assert_eq!(DaemonError::UnauthorizedBot.to_json_rpc_code(), -32006);
         assert_eq!(
             DaemonError::MlsEngineNotConfigured.to_json_rpc_code(),

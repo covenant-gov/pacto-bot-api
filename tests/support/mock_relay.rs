@@ -280,6 +280,7 @@ impl MockRelay {
                 // receive relevant messages.
                 let events = self.inner.events.read().await.clone();
                 let opts = MatchEventOptions::new().since(false).until(false);
+                let mut sent = 0;
                 for event in events {
                     if filter.match_event(&event, opts) {
                         let _ = out_tx.send(json!([
@@ -287,6 +288,12 @@ impl MockRelay {
                             sub_id.clone(),
                             serde_json::to_value(&event).unwrap_or(Value::Null)
                         ]));
+                        sent += 1;
+                        if let Some(limit) = filter.limit
+                            && sent >= limit
+                        {
+                            break;
+                        }
                     }
                 }
                 let _ = out_tx.send(json!(["EOSE", sub_id]));
