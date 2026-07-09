@@ -243,13 +243,36 @@ impl MockRelay {
                 // receive relevant messages.
                 let events = self.inner.events.read().await.clone();
                 let opts = MatchEventOptions::new().since(false).until(false);
+                let mut sent = 0;
+                eprintln!(
+                    "DEBUG: mock relay filter author={:?} kind={:?} since={:?} limit={:?}",
+                    filter
+                        .authors
+                        .as_ref()
+                        .map(|a| a.iter().map(|p| p.to_hex()).collect::<Vec<_>>()),
+                    filter.kinds,
+                    filter.since,
+                    filter.limit
+                );
                 for event in events {
+                    eprintln!(
+                        "DEBUG: mock relay checking event pubkey={} kind={} match={}",
+                        event.pubkey.to_hex(),
+                        event.kind.as_u16(),
+                        filter.match_event(&event, opts)
+                    );
                     if filter.match_event(&event, opts) {
                         let _ = out_tx.send(json!([
                             "EVENT",
                             sub_id.clone(),
                             serde_json::to_value(&event).unwrap_or(Value::Null)
                         ]));
+                        sent += 1;
+                        if let Some(limit) = filter.limit
+                            && sent >= limit
+                        {
+                            break;
+                        }
                     }
                 }
                 let _ = out_tx.send(json!(["EOSE", sub_id]));

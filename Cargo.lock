@@ -4384,6 +4384,7 @@ dependencies = [
  "nostr-connect",
  "nostr-relay-pool",
  "nostr-sdk",
+ "openmls_traits",
  "parking_lot",
  "percent-encoding",
  "predicates",

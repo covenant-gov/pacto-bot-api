@@ -214,14 +214,14 @@ pacto-bot-admin send-test-dm echo-bot npub1recipient... "hello"
 Notes:
 The bot must have the `Admin` capability. Useful for verifying the daemon can sign and publish without involving a client.
 
-### `mls_group`
+### `mls-group`
 
 Create or manage MLS groups for group messaging.
 
 Examples:
 ```bash
-pacto-bot-admin mls_group create --bot echo-bot --group my-squad --recipient npub1...
-pacto-bot-admin mls_group invite --bot echo-bot --group my-squad --recipient npub1...
+pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1...
+pacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...
 ```
 
 Notes:

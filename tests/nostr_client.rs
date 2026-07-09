@@ -77,7 +77,8 @@ async fn subscribe_bot_returns_subscription_id() {
 
 #[tokio::test]
 async fn send_dm_returns_event_id() {
-    let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
+    let relay = MockRelay::start().await.unwrap();
+    let client = NostrClient::new(vec![relay.url()]).await.unwrap();
     let (sender, _) = test_signer();
     let recipient = Keys::generate();
     let recipient_npub = recipient.public_key().to_bech32().unwrap();
@@ -87,6 +88,14 @@ async fn send_dm_returns_event_id() {
         .await
         .unwrap();
     assert_valid_event_id(&event_id);
+
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(events.iter().any(|e| e.kind == Kind::GiftWrap));
+
+    relay.stop().await;
 }
 
 #[tokio::test]
@@ -423,6 +432,21 @@ fn event_with_signature(event: &Event, sig: Signature) -> Event {
     )
 }
 
+async fn build_key_package(
+    keys: &Keys,
+    content: &str,
+    created_at: Timestamp,
+) -> Result<Event, Box<dyn std::error::Error>> {
+    let unsigned = UnsignedEvent::new(
+        keys.public_key(),
+        created_at,
+        Kind::MlsKeyPackage,
+        Vec::new(),
+        content.to_string(),
+    );
+    Ok(unsigned.sign(keys).await?)
+}
+
 #[tokio::test]
 async fn spoofed_gift_wrap_is_rejected_and_recorded() {
     let diagnostics = Diagnostics::new();
@@ -535,4 +559,47 @@ async fn malformed_seal_is_rejected_and_recorded() {
     assert_eq!(snap.errors.len(), 1);
     assert_eq!(snap.errors[0].code, "seal_verify_failed");
     assert_eq!(snap.errors[0].message, expected);
+}
+
+#[tokio::test]
+async fn fetch_key_package_selects_fresh_over_stale() -> Result<(), Box<dyn std::error::Error>> {
+    let relay = MockRelay::start().await?;
+    let client = NostrClient::new(vec![relay.url()]).await?;
+
+    let recipient_keys = Keys::generate();
+    let recipient = recipient_keys.public_key();
+    let stale_marker = "STALE_KP_CIPHERTEXT_abc123";
+    let fresh_marker = "FRESH_KP_CIPHERTEXT_xyz789";
+
+    // Inject a stale package first, then a fresh one. A relay that respects
+    // Filter::limit would return only the stale package if the filter had a
+    // limit of 1; the client must collect all events and select the fresh one.
+    let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 3600);
+    let stale_event = build_key_package(&recipient_keys, stale_marker, stale_ts).await?;
+    relay.inject_event(stale_event).await;
+
+    let fresh_event = build_key_package(&recipient_keys, fresh_marker, Timestamp::now()).await?;
+    let fresh_id = fresh_event.id;
+    relay.inject_event(fresh_event).await;
+
+    let (fetched, age) = client
+        .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
+        .await?;
+
+    assert_eq!(fetched.kind, Kind::MlsKeyPackage);
+    assert_eq!(fetched.pubkey, recipient);
+    assert_eq!(
+        fetched.id, fresh_id,
+        "fetched event should be the fresh one, not the stale one"
+    );
+    assert!(
+        fetched.content.contains(fresh_marker),
+        "fetched package should contain the fresh content"
+    );
+    assert!(
+        !fetched.content.contains(stale_marker),
+        "fetched package should not contain the stale content"
+    );
+    assert!(age <= Duration::from_secs(5));
+    Ok(())
 }

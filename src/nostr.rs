@@ -23,7 +23,7 @@ use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
@@ -309,7 +309,34 @@ impl NostrClient {
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to publish event: {e}")))?;
 
-        Ok(*output.id())
+        let event_id = *output.id();
+        let success_count = output.success.len();
+        let failed_count = output.failed.len();
+
+        if success_count == 0 {
+            return Err(DaemonError::Nostr(
+                "failed to publish gift wrap: no relay accepted the event".into(),
+            ));
+        }
+
+        if failed_count > 0 {
+            for (url, err) in &output.failed {
+                warn!(
+                    event_id = %event_id.to_hex(),
+                    relay_url = %url.to_string(),
+                    error = %err,
+                    "gift wrap publish failed for relay"
+                );
+            }
+            warn!(
+                event_id = %event_id.to_hex(),
+                success_relays = success_count,
+                failed_relays = failed_count,
+                "gift wrap published with partial relay failures"
+            );
+        }
+
+        Ok(event_id)
     }
 
     /// Fetch a fresh kind:443 KeyPackage authored by `recipient` from the relay
@@ -325,10 +352,15 @@ impl NostrClient {
         timeout: Duration,
         freshness: Duration,
     ) -> Result<(Event, Duration), DaemonError> {
+        let now = Timestamp::now();
+        let now_secs = now.as_u64();
+        let freshness_secs = freshness.as_secs();
+        let since = now - freshness_secs;
+
         let filter = Filter::new()
             .kind(Kind::MlsKeyPackage)
             .author(*recipient)
-            .limit(1);
+            .since(since);
 
         let events = self
             .client
@@ -337,36 +369,79 @@ impl NostrClient {
             .map_err(|e| DaemonError::Nostr(format!("key package fetch failed: {e}")))?;
 
         if events.is_empty() {
-            return Err(DaemonError::Nostr("key package fetch timed out".into()));
+            return Err(DaemonError::Nostr(
+                "key package fetch returned no valid package; ensure the recipient has published a fresh kind:443 KeyPackage within the freshness window".into(),
+            ));
         }
 
-        let now = Timestamp::now().as_u64();
-        let freshness_secs = freshness.as_secs();
         let mut selected: Option<Event> = None;
         let mut selected_ts: u64 = 0;
+        let mut saw_invalid = false;
 
         for event in events.iter() {
+            let event_id = event.id.to_hex();
+            let author = event.pubkey.to_hex();
+
             if event.verify().is_err() {
+                warn!(
+                    event_id = %event_id,
+                    author = %author,
+                    "fetched key package failed signature verification; treating as absent"
+                );
+                saw_invalid = true;
                 continue;
             }
+
             if event.kind != Kind::MlsKeyPackage || event.pubkey != *recipient {
+                warn!(
+                    event_id = %event_id,
+                    author = %author,
+                    kind = ?event.kind,
+                    expected_author = %recipient.to_hex(),
+                    "fetched key package has wrong kind or author; treating as absent"
+                );
+                saw_invalid = true;
                 continue;
             }
+
             let event_ts = event.created_at.as_u64();
-            if event_ts > now + 60 {
+            if event_ts > now_secs + 60 {
+                warn!(
+                    event_id = %event_id,
+                    author = %author,
+                    created_at = event_ts,
+                    now = now_secs,
+                    "fetched key package is dated more than 60 seconds in the future; treating as absent"
+                );
                 continue;
             }
-            if event_ts + freshness_secs < now {
+
+            if event_ts + freshness_secs < now_secs {
+                warn!(
+                    event_id = %event_id,
+                    author = %author,
+                    created_at = event_ts,
+                    now = now_secs,
+                    freshness_secs = freshness_secs,
+                    "fetched key package is older than the freshness window; treating as absent"
+                );
                 continue;
             }
+
             if event_ts > selected_ts {
                 selected_ts = event_ts;
                 selected = Some(event.clone());
             }
         }
 
-        let event = selected.ok_or(DaemonError::StaleKeyPackage)?;
-        let age = Duration::from_secs(now - selected_ts);
+        let event = selected.ok_or_else(|| {
+            if saw_invalid {
+                DaemonError::InvalidKeyPackage
+            } else {
+                DaemonError::StaleKeyPackage
+            }
+        })?;
+        let age = Duration::from_secs(now_secs - selected_ts);
         info!(
             event_id = %event.id.to_hex(),
             author = %event.pubkey.to_hex(),
@@ -421,13 +496,40 @@ impl NostrClient {
                 DaemonError::Nostr(format!("failed to publish evolution event: {e}"))
             })?;
 
+        let event_id = *output.id();
+        let success_count = output.success.len();
+        let failed_count = output.failed.len();
+
+        if success_count == 0 {
+            return Err(DaemonError::Nostr(
+                "failed to publish evolution event: no relay accepted the event".into(),
+            ));
+        }
+
+        if failed_count > 0 {
+            for (url, err) in &output.failed {
+                warn!(
+                    event_id = %event_id.to_hex(),
+                    relay_url = %url.to_string(),
+                    error = %err,
+                    "evolution event publish failed for relay"
+                );
+            }
+            warn!(
+                event_id = %event_id.to_hex(),
+                success_relays = success_count,
+                failed_relays = failed_count,
+                "evolution event published with partial relay failures"
+            );
+        }
+
         info!(
             event_id = %event.id.to_hex(),
             author = %event.pubkey.to_hex(),
             "published evolution event"
         );
 
-        Ok(*output.id())
+        Ok(event_id)
     }
 
     /// Publish a KeyPackage event (kind:443) for MLS group participation.
@@ -1121,7 +1223,8 @@ mod tests {
 
     #[tokio::test]
     async fn send_dm_builds_gift_wrap() {
-        let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
         let (sender, _) = test_signer();
         let recipient_keys = nostr::Keys::generate();
         let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
@@ -1131,11 +1234,19 @@ mod tests {
             .await
             .unwrap();
         assert_valid_event_id(&event_id);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("gift wrap should be published");
+        assert!(events.iter().any(|e| e.kind == Kind::GiftWrap));
+        relay.stop().await;
     }
 
     #[tokio::test]
     async fn send_dm_with_reply_to_adds_e_tag() {
-        let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
         let (sender, _) = test_signer();
         let recipient_keys = nostr::Keys::generate();
         let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
@@ -1148,6 +1259,13 @@ mod tests {
             .await
             .unwrap();
         assert_valid_event_id(&event_id);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("gift wrap should be published");
+        assert!(events.iter().any(|e| e.kind == Kind::GiftWrap));
+        relay.stop().await;
     }
 
     #[test]
@@ -1412,6 +1530,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_key_package_selects_fresh_over_older() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+
+        let recipient_keys = nostr::Keys::generate();
+        let recipient = recipient_keys.public_key();
+        let older_marker = "OLDER_KP_CIPHERTEXT_abc123";
+        let fresh_marker = "FRESH_KP_CIPHERTEXT_xyz789";
+
+        // Inject an older package first, then a fresh one. The relay returns
+        // events in injection order, so a .limit(1) would return only the older
+        // package and the client would select it incorrectly. With a generous
+        // limit (or no limit), the client should select the fresh package.
+        let older_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 120);
+        let older_event = build_key_package(&recipient_keys, older_marker, older_ts);
+        relay.inject_event(older_event).await;
+
+        let fresh_event = build_key_package(&recipient_keys, fresh_marker, Timestamp::now());
+        relay.inject_event(fresh_event).await;
+
+        let (fetched, age) = client
+            .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
+            .await
+            .expect("fresh key package should be selected");
+
+        assert_eq!(fetched.kind, Kind::MlsKeyPackage);
+        assert_eq!(fetched.pubkey, recipient);
+        assert!(
+            fetched.content.contains(fresh_marker),
+            "fetched package should contain the fresh content"
+        );
+        assert!(
+            !fetched.content.contains(older_marker),
+            "fetched package should not contain the older content"
+        );
+        assert!(age <= Duration::from_secs(5));
+    }
+
+    #[tokio::test]
     async fn fetch_key_package_rejects_stale_package() {
         let relay = MockRelay::start().await.expect("mock relay should start");
         let client = NostrClient::new(vec![relay.url()]).await.unwrap();
@@ -1431,7 +1588,7 @@ mod tests {
 
         assert!(
             matches!(err, DaemonError::StaleKeyPackage),
-            "expected StaleKeyPackage, got {err:?}"
+            "expected StaleKeyPackage when stale package is outside the freshness window, got {err:?}"
         );
         assert!(!err.to_string().contains(secret_marker));
     }
@@ -1475,20 +1632,33 @@ mod tests {
         let bad_sig = build_key_package_bad_sig(&recipient_keys, secret_marker, Timestamp::now());
         relay.inject_event(bad_sig).await;
 
+        eprintln!(
+            "DEBUG: relay.events().len() = {}",
+            relay.events().await.len()
+        );
+        for e in relay.events().await {
+            eprintln!(
+                "DEBUG: relay event pubkey={} kind={} created_at={}",
+                e.pubkey.to_hex(),
+                e.kind.as_u16(),
+                e.created_at.as_u64()
+            );
+        }
+
         let err = client
             .fetch_key_package(&recipient, Duration::from_secs(5), Duration::from_secs(300))
             .await
             .unwrap_err();
 
         assert!(
-            matches!(err, DaemonError::Nostr(_) | DaemonError::StaleKeyPackage),
-            "expected timeout or StaleKeyPackage when only forged packages are present, got {err:?}"
+            matches!(err, DaemonError::Nostr(_)),
+            "expected Nostr error when client filters out forged packages, got {err:?}"
         );
         assert!(!err.to_string().contains(secret_marker));
     }
 
     #[tokio::test]
-    async fn fetch_key_package_returns_timeout_when_none_arrives() {
+    async fn fetch_key_package_returns_no_valid_package_when_none_arrives() {
         let relay = MockRelay::start().await.expect("mock relay should start");
         let client = NostrClient::new(vec![relay.url()]).await.unwrap();
 
@@ -1507,7 +1677,10 @@ mod tests {
             matches!(err, DaemonError::Nostr(_)),
             "expected Nostr error, got {err:?}"
         );
-        assert!(err.to_string().contains("timed out"));
+        assert!(
+            err.to_string().contains("no valid package"),
+            "error should include operator guidance: {err}"
+        );
     }
 
     #[tokio::test]

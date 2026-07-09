@@ -801,7 +801,7 @@ async fn run_mls_admin_cli(config: &std::path::Path, args: &[&str]) -> CliOutput
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let output = tokio::task::spawn_blocking(move || {
         let mut cmd = Command::cargo_bin("pacto-bot-admin").expect("cargo bin");
-        cmd.arg("--config").arg(config).arg("mls_group");
+        cmd.arg("--config").arg(config).arg("mls-group");
         for a in args {
             cmd.arg(a);
         }

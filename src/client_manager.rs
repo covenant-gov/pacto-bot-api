@@ -200,6 +200,7 @@ mod tests {
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;
     use crate::handlers::ConnectionHandle;
+    use crate::test_support::test_tempdir;
     use nostr::nips::nip59;
     use nostr::{SubscriptionId, Timestamp, ToBech32};
     use parking_lot::Mutex;
@@ -227,7 +228,7 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: bot_configs,
         };
-        let data_dir = tempfile::tempdir().unwrap();
+        let data_dir = test_tempdir();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             ClientManager::new(
                 data_dir.path(),
@@ -279,7 +280,7 @@ mod tests {
         mls_bot.capabilities.push("SendGroupMessages".into());
         let dm_only_bot = bot_config("dm-bot", &nostr::Keys::generate());
 
-        let _temp = tempfile::tempdir().unwrap();
+        let _temp = test_tempdir();
         let config = DaemonConfig {
             daemon: GlobalDaemonConfig::default(),
             bots: vec![mls_bot, dm_only_bot],
@@ -312,7 +313,7 @@ mod tests {
         bot_b.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         bot_b.capabilities.push("SendGroupMessages".into());
 
-        let _temp = tempfile::tempdir().unwrap();
+        let _temp = test_tempdir();
         let config = DaemonConfig {
             daemon: GlobalDaemonConfig::default(),
             bots: vec![bot_a, bot_b],
@@ -353,7 +354,7 @@ mod tests {
         bot.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
         bot.capabilities.push("SendGroupMessages".into());
 
-        let _temp = tempfile::tempdir().unwrap();
+        let _temp = test_tempdir();
         let config = DaemonConfig {
             daemon: GlobalDaemonConfig::default(),
             bots: vec![bot],
@@ -392,7 +393,7 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let data_dir = tempfile::tempdir().unwrap();
+            let data_dir = test_tempdir();
             ClientManager::new(
                 data_dir.path(),
                 config,
@@ -415,7 +416,7 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let data_dir = tempfile::tempdir().unwrap();
+            let data_dir = test_tempdir();
             ClientManager::new(
                 data_dir.path(),
                 config,
@@ -452,7 +453,7 @@ mod tests {
         };
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let data_dir = tempfile::tempdir().unwrap();
+            let data_dir = test_tempdir();
             ClientManager::new(
                 data_dir.path(),
                 config,
@@ -470,7 +471,7 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: bot_configs,
         };
-        let data_dir = tempfile::tempdir().unwrap();
+        let data_dir = test_tempdir();
         ClientManager::new(
             data_dir.path(),
             config,
@@ -481,7 +482,7 @@ mod tests {
     }
 
     async fn temp_db() -> (Db, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = test_tempdir();
         let db = Db::open(&dir.path().join("agent.db")).await.unwrap();
         (db, dir)
     }

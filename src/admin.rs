@@ -13,6 +13,7 @@ use nostr::{PublicKey, ToBech32};
 use pacto_bot_api::config::{
     BotConfig, DaemonConfig, SigningConfig, enforce_config_permissions, validate_bot_id,
 };
+use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::diagnostics::{
     BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
     check_relay_connectivity,
@@ -158,8 +159,8 @@ const SEND_TEST_DM_AFTER_HELP: &str = r#"Examples:
 "#;
 
 const MLS_GROUP_AFTER_HELP: &str = r#"Examples:
-  pacto-bot-admin mls_group create --bot echo-bot --group my-squad --recipient npub1...
-  pacto-bot-admin mls_group invite --bot echo-bot --group my-squad --recipient npub1...
+  pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1...
+  pacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...
 "#;
 
 const TRACE_EVENTS_AFTER_HELP: &str = r#"Examples:
@@ -415,7 +416,7 @@ enum Command {
         content: String,
     },
     /// Create or manage MLS groups (admin-only).
-    #[command(name = "mls_group", subcommand, after_help = MLS_GROUP_AFTER_HELP)]
+    #[command(name = "mls-group", subcommand, after_help = MLS_GROUP_AFTER_HELP)]
     MlsGroup(MlsGroupCommand),
     /// Read recent event trace rows from the daemon database.
     #[command(after_help = TRACE_EVENTS_AFTER_HELP)]
@@ -552,7 +553,7 @@ enum HandlersCommand {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(after_help = MLS_GROUP_AFTER_HELP)]
+#[command(name = "mls-group", after_help = MLS_GROUP_AFTER_HELP)]
 enum MlsGroupCommand {
     /// Create a new MLS group and invite the recipient.
     Create {
@@ -1500,6 +1501,21 @@ fn cmd_export(
 
     let handlers = load_bot_handlers(&conn, bot_id)?;
 
+    let mls_groups = {
+        let db = Database::open(&db_path)?;
+        db.load_all_mls_groups(bot_id)?
+            .into_iter()
+            .map(|row| MlsGroupExport {
+                bot_id: row.bot_id,
+                group_name: row.group_name,
+                wire_id: row.wire_id,
+                creator_npub: row.creator_npub,
+                relay: row.relay,
+                invited_bots: row.invited_bots,
+            })
+            .collect()
+    };
+
     let state = ExportState {
         metadata: ExportMetadata {
             daemon_version: pacto_bot_api::version::VERSION.to_string(),
@@ -1508,6 +1524,7 @@ fn cmd_export(
         },
         cursors,
         handlers,
+        mls_groups,
         split_brain_warning: true,
     };
 
@@ -1534,6 +1551,21 @@ fn cmd_import(
 
     let db_path = data_dir.join(AGENT_DB_FILE);
     let conn = open_agent_db(&db_path)?;
+    let db = Database::open(&db_path)?;
+
+    for group in &state.mls_groups {
+        if group.bot_id == bot_id {
+            let row = MlsGroupRow {
+                bot_id: group.bot_id.clone(),
+                group_name: group.group_name.clone(),
+                wire_id: group.wire_id.clone(),
+                creator_npub: group.creator_npub.clone(),
+                relay: group.relay.clone(),
+                invited_bots: group.invited_bots.clone(),
+            };
+            db.insert_mls_group_export(&row)?;
+        }
+    }
 
     for cursor in &state.cursors {
         if cursor.bot_id == bot_id {
@@ -2136,16 +2168,16 @@ async fn cmd_mls_group_create(
     {
         let _ = (config_path, data_dir_override, bot_id, group, recipient);
         return Err(DaemonError::Config(
-            "mls_group is only available on Unix platforms".into(),
+            "mls-group is only available on Unix platforms".into(),
         ));
     }
 
     #[cfg(unix)]
     {
         let config = load_admin_config(config_path)?;
-        let _bot = find_bot(&config.bots, bot_id)?;
-        let _data_dir = resolve_data_dir(&config, data_dir_override);
-        let socket_path = PathBuf::from(config.socket_path());
+        let bot = find_bot(&config.bots, bot_id)?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
         let recipient = validate_mls_recipient(recipient)?;
 
         let request = JsonRpcMessage::request(
@@ -2175,16 +2207,16 @@ async fn cmd_mls_group_invite(
     {
         let _ = (config_path, data_dir_override, bot_id, group, recipient);
         return Err(DaemonError::Config(
-            "mls_group is only available on Unix platforms".into(),
+            "mls-group is only available on Unix platforms".into(),
         ));
     }
 
     #[cfg(unix)]
     {
         let config = load_admin_config(config_path)?;
-        let _bot = find_bot(&config.bots, bot_id)?;
-        let _data_dir = resolve_data_dir(&config, data_dir_override);
-        let socket_path = PathBuf::from(config.socket_path());
+        let bot = find_bot(&config.bots, bot_id)?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
         let recipient = validate_mls_recipient(recipient)?;
 
         let request = JsonRpcMessage::request(
@@ -2208,6 +2240,36 @@ fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
         .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))?;
     pk.to_bech32()
         .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))
+}
+
+#[cfg(unix)]
+fn resolve_admin_socket_path(
+    config: &DaemonConfig,
+    bot: &BotConfig,
+    data_dir: &Path,
+) -> Result<PathBuf, DaemonError> {
+    let socket_path = PathBuf::from(config.socket_path());
+    let socket_path = if socket_path.is_relative() {
+        data_dir.join(socket_path)
+    } else {
+        socket_path
+    };
+    let expected_parent = socket_path.parent().ok_or_else(|| {
+        DaemonError::Config(format!(
+            "bot {}: socket path {} has no parent directory",
+            bot.id,
+            socket_path.display()
+        ))
+    })?;
+    if expected_parent != data_dir {
+        return Err(DaemonError::Config(format!(
+            "bot {}: socket path {} is not under the resolved data directory {}",
+            bot.id,
+            socket_path.display(),
+            data_dir.display()
+        )));
+    }
+    Ok(socket_path)
 }
 
 async fn cmd_trace_events(
@@ -2524,6 +2586,149 @@ async fn call_agent_unregister_handler(
     Ok(response)
 }
 
+/// Translate a JSON-RPC error code returned by the daemon into a structured,
+/// non-secret message for the admin CLI user.
+fn rpc_error_to_admin_message(code: i32) -> String {
+    let description = match code {
+        -32000 => "unknown bot",
+        -32001 => "handler not registered",
+        -32002 => "invalid event type",
+        -32003 => "bunker error",
+        -32004 => "nostr relay error",
+        -32005 => "rate limited",
+        -32006 => "unauthorized bot",
+        -32007 => "handler already connected",
+        -32008 => "invalid reconnect token",
+        -32009 => "method not supported",
+        -32010 => "handler not dispatched",
+        -32011 => "handler backpressure",
+        -32013 => "MLS engine not configured",
+        -32014 => "MLS group already exists",
+        -32015 => "MLS group not found",
+        -32016 => "stale key package",
+        -32017 => "invalid key package",
+        -32600 => "invalid request",
+        -32601 => "method not found",
+        -32602 => "invalid params",
+        -32603 => "internal error",
+        -32700 => "parse error",
+        _ => return format!("daemon request failed with error code {code}"),
+    };
+    format!("daemon request failed with error code {code} ({description})")
+}
+
+#[cfg(unix)]
+struct AdminSession {
+    writer: Option<tokio::net::unix::OwnedWriteHalf>,
+    reader: Option<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    handler_id: Option<String>,
+    cleaned_up: bool,
+}
+
+#[cfg(unix)]
+impl AdminSession {
+    fn new(
+        reader: BufReader<tokio::net::unix::OwnedReadHalf>,
+        writer: tokio::net::unix::OwnedWriteHalf,
+    ) -> Self {
+        Self {
+            writer: Some(writer),
+            reader: Some(reader),
+            handler_id: None,
+            cleaned_up: false,
+        }
+    }
+
+    fn set_handler_id(&mut self, handler_id: String) {
+        self.handler_id = Some(handler_id);
+    }
+
+    async fn write_request(&mut self, request: &JsonRpcMessage) -> Result<(), DaemonError> {
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| DaemonError::Config("admin session writer is closed".into()))?;
+        let line = format!("{}\n", serialize_message(request)?);
+        writer.write_all(line.as_bytes()).await?;
+        Ok(())
+    }
+
+    async fn read_response(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<JsonRpcMessage, DaemonError> {
+        let reader = self
+            .reader
+            .as_mut()
+            .ok_or_else(|| DaemonError::Config("admin session reader is closed".into()))?;
+        let mut buf = Vec::new();
+        let n = tokio::time::timeout(timeout_duration, reader.read_until(b'\n', &mut buf))
+            .await
+            .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
+        if n == 0 {
+            return Err(DaemonError::Config("unix socket closed".into()));
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        let line = String::from_utf8(buf)
+            .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
+        parse_message(&line)
+    }
+
+    async fn cleanup(&mut self) {
+        if self.handler_id.is_none() || self.cleaned_up {
+            self.cleaned_up = true;
+            return;
+        }
+        let unregister = JsonRpcMessage::request(
+            3.into(),
+            "handler.unregister",
+            Some(Value::Object(Default::default())),
+        );
+        let _ = self.write_request(&unregister).await;
+        let _ = self.read_response(Duration::from_secs(2)).await;
+        self.cleaned_up = true;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for AdminSession {
+    fn drop(&mut self) {
+        if self.cleaned_up || self.handler_id.is_none() {
+            return;
+        }
+        let Some(writer) = self.writer.take() else {
+            return;
+        };
+        let Some(reader) = self.reader.take() else {
+            return;
+        };
+        let _handler_id = self.handler_id.take();
+        let unregister = JsonRpcMessage::request(
+            3.into(),
+            "handler.unregister",
+            Some(Value::Object(Default::default())),
+        );
+        if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+            std::mem::drop(tokio::task::spawn_blocking(move || {
+                let _handle = tokio::runtime::Handle::current();
+                _handle.block_on(async move {
+                    let mut writer = writer;
+                    let mut reader = reader;
+                    let _ = write_request(&mut writer, &unregister).await;
+                    let mut buf = Vec::new();
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(2),
+                        reader.read_until(b'\n', &mut buf),
+                    )
+                    .await;
+                });
+            }));
+        }
+    }
+}
+
 /// Open a Unix socket connection, register an admin handler, send the provided
 /// request, and clean up the temporary handler. The same connection is used
 /// for all messages so the Unix transport associates the admin identity with
@@ -2534,11 +2739,27 @@ async fn with_admin_session(
     bot_id: &str,
     request: JsonRpcMessage,
 ) -> Result<Value, DaemonError> {
+    tokio::select! {
+        biased;
+        result = admin_session_call(socket_path, bot_id, request) => result,
+        _ = tokio::signal::ctrl_c() => {
+            Err(DaemonError::Config("admin session interrupted by SIGINT".into()))
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn admin_session_call(
+    socket_path: &Path,
+    bot_id: &str,
+    request: JsonRpcMessage,
+) -> Result<Value, DaemonError> {
     let stream = tokio::time::timeout(Duration::from_secs(15), UnixStream::connect(socket_path))
         .await
         .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
-    let (reader, mut writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
+    let (reader, writer) = stream.into_split();
+    let reader = BufReader::new(reader);
+    let mut session = AdminSession::new(reader, writer);
 
     // Register a temporary handler with Admin capability.
     let register = JsonRpcMessage::request(
@@ -2550,8 +2771,8 @@ async fn with_admin_session(
             "capabilities": ["Admin"],
         })),
     );
-    write_request(&mut writer, &register).await?;
-    let response = read_response(&mut reader, Duration::from_secs(5)).await?;
+    session.write_request(&register).await?;
+    let response = session.read_response(Duration::from_secs(5)).await?;
     let admin_handler_id = match response {
         JsonRpcMessage::Response {
             result: Some(r), ..
@@ -2560,26 +2781,18 @@ async fn with_admin_session(
             parsed.handler_id
         }
         JsonRpcMessage::Error { error, .. } => {
-            return Err(DaemonError::Config(format!(
-                "admin handler registration failed: {}",
-                error.message
-            )));
+            return Err(DaemonError::Config(rpc_error_to_admin_message(error.code)));
         }
         _ => return Err(DaemonError::Config("unexpected daemon response".into())),
     };
+    session.set_handler_id(admin_handler_id);
 
     // Send the actual admin request on the same authenticated connection.
-    write_request(&mut writer, &request).await?;
-    let result = read_response(&mut reader, Duration::from_secs(15)).await?;
+    session.write_request(&request).await?;
+    let result = session.read_response(Duration::from_secs(15)).await?;
 
-    // Best-effort cleanup of the temporary admin handler.
-    let unregister = JsonRpcMessage::request(
-        3.into(),
-        "handler.unregister",
-        Some(Value::Object(Default::default())),
-    );
-    let _ = write_request(&mut writer, &unregister).await;
-    let _ = read_response(&mut reader, Duration::from_secs(2)).await;
+    // Clean up the temporary admin handler before returning.
+    session.cleanup().await;
 
     match result {
         JsonRpcMessage::Response {
@@ -2590,18 +2803,7 @@ async fn with_admin_session(
             Err(DaemonError::Config("empty daemon response".into()))
         }
         JsonRpcMessage::Error { error, .. } => {
-            // If the call was unauthorized, surface a clearer message.
-            if error.code == -32006 || error.code == -32007 || error.code == -32008 {
-                Err(DaemonError::Config(format!(
-                    "admin handler {} is not authorized for this operation",
-                    admin_handler_id
-                )))
-            } else {
-                Err(DaemonError::Config(format!(
-                    "daemon error: {}",
-                    error.message
-                )))
-            }
+            Err(DaemonError::Config(rpc_error_to_admin_message(error.code)))
         }
         _ => Err(DaemonError::Config("unexpected daemon response".into())),
     }
@@ -2616,27 +2818,6 @@ async fn write_request(
     writer.write_all(line.as_bytes()).await?;
     Ok(())
 }
-
-#[cfg(unix)]
-async fn read_response(
-    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
-    timeout_duration: Duration,
-) -> Result<JsonRpcMessage, DaemonError> {
-    let mut buf = Vec::new();
-    let n = tokio::time::timeout(timeout_duration, reader.read_until(b'\n', &mut buf))
-        .await
-        .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
-    if n == 0 {
-        return Err(DaemonError::Config("unix socket closed".into()));
-    }
-    if buf.last() == Some(&b'\n') {
-        buf.pop();
-    }
-    let line = String::from_utf8(buf)
-        .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
-    parse_message(&line)
-}
-
 #[cfg(unix)]
 async fn cmd_handlers(
     config_path: &Path,
@@ -3264,6 +3445,8 @@ struct ExportState {
     metadata: ExportMetadata,
     cursors: Vec<CursorExport>,
     handlers: Vec<HandlerExport>,
+    #[serde(default)]
+    mls_groups: Vec<MlsGroupExport>,
     split_brain_warning: bool,
 }
 
@@ -3289,6 +3472,16 @@ struct HandlerExport {
     capabilities: Vec<String>,
     reconnect_token: String,
     registered_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MlsGroupExport {
+    bot_id: String,
+    group_name: String,
+    wire_id: String,
+    creator_npub: String,
+    relay: String,
+    invited_bots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

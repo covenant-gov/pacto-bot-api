@@ -54,6 +54,10 @@ pub enum MlsError {
     #[error("invalid MLS key package")]
     InvalidKeyPackage,
 
+    /// The MLS database path is unsafe (symlink, mountpoint, or shared temp directory).
+    #[error("MLS database path is insecure: {0}")]
+    InsecurePath(String),
+
     /// Channel communication error with the MLS worker thread.
     #[error("MLS worker communication error")]
     WorkerDisconnected,
@@ -61,31 +65,29 @@ pub enum MlsError {
 
 impl From<mdk_core::Error> for MlsError {
     fn from(err: mdk_core::Error) -> Self {
-        let msg = err.to_string();
-        // Log the raw MDK string only at DEBUG level; never expose it to callers
+        // Log the raw MDK error only at DEBUG level; never expose it to callers
         // or INFO+ logs.
-        tracing::debug!(error = %msg, "MLS engine raw error");
-        if msg.contains("group not found") || msg.contains("unknown group") {
-            MlsError::GroupNotFound
-        } else if msg.contains("not initialized") || msg.contains("no group") {
-            MlsError::NotInitialized
-        } else if msg.contains("poison") || msg.contains("corrupt") {
-            MlsError::GroupPoisoned
-        } else if msg.contains("crypto") || msg.contains("signature") {
-            MlsError::CryptoError
-        } else {
-            // Any unclassified MDK error is rewritten to a fixed, generic message
-            // so that raw MDK strings never reach callers.
-            MlsError::Engine("MLS engine failure".into())
+        tracing::debug!(error = %err, "MLS engine raw error");
+        match err {
+            mdk_core::Error::GroupNotFound => MlsError::GroupNotFound,
+            mdk_core::Error::Crypto(_) => MlsError::CryptoError,
+            _ => {
+                // Any unclassified MDK error is rewritten to a fixed, generic message
+                // so that raw MDK strings never reach callers.
+                MlsError::Engine("MLS engine failure".into())
+            }
         }
     }
 }
 
 /// Validate a KeyPackage event before passing it to the MDK engine.
 ///
-/// The event must be kind:443, have non-empty content, and be authored by the
-/// expected recipient.
+/// The event must have a valid signature, be kind:443, have non-empty content,
+/// and be authored by the expected recipient.
 fn validate_key_package(key_package: &Event, recipient: &PublicKey) -> Result<(), MlsError> {
+    if key_package.verify().is_err() {
+        return Err(MlsError::InvalidKeyPackage);
+    }
     if key_package.kind != Kind::MlsKeyPackage {
         return Err(MlsError::InvalidKeyPackage);
     }
@@ -190,8 +192,18 @@ impl MlsEngineHandle {
     pub fn new_persistent<P: AsRef<Path>>(db_path: P) -> Result<Self, MlsError> {
         let db_path = db_path.as_ref().to_path_buf();
 
-        if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        prepare_mls_db_dir(&db_path)?;
+
+        // Reject a database file that is already a symlink. The parent
+        // directory has already been hardened; this catches the case where the
+        // file path itself is a symlink to a sensitive location.
+        if let Ok(meta) = std::fs::symlink_metadata(&db_path)
+            && meta.file_type().is_symlink()
+        {
+            return Err(MlsError::InsecurePath(format!(
+                "MLS database path is a symlink: {}",
+                db_path.display()
+            )));
         }
 
         // Enable WAL mode first. We hold a temporary connection open while
@@ -206,9 +218,11 @@ impl MlsEngineHandle {
             "CREATE TABLE IF NOT EXISTS _pacto_mls_wal_trigger (x INTEGER)",
             [],
         )?;
+        set_db_permissions(&db_path)?;
 
         let storage = MdkSqliteStorage::new(&db_path)?;
         set_db_permissions(&db_path)?;
+        wal_conn.execute("DROP TABLE IF EXISTS _pacto_mls_wal_trigger;", [])?;
 
         let engine = MDK::new(storage);
 
@@ -222,10 +236,17 @@ impl MlsEngineHandle {
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
                     MlsCommand::CreateKeyPackage { pubkey, relays, tx } => {
-                        let result: Result<(String, Vec<nostr::Tag>), MlsError> = engine
-                            .create_key_package_for_event(&pubkey, relays)
-                            .map_err(MlsError::from)
-                            .map(|(encoded, tags)| (encoded, tags.to_vec()));
+                        let result: Result<(String, Vec<nostr::Tag>), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                engine
+                                    .create_key_package_for_event(&pubkey, relays)
+                                    .map_err(MlsError::from)
+                                    .map(|(encoded, tags)| (encoded, tags.to_vec()))
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::ProcessWelcome {
@@ -233,36 +254,51 @@ impl MlsEngineHandle {
                         welcome_rumor,
                         tx,
                     } => {
-                        let result: Result<(), MlsError> = (|| {
-                            // Convert nostr::Event to UnsignedEvent for process_welcome
-                            let unsigned = nostr::UnsignedEvent {
-                                id: Some(welcome_rumor.id),
-                                pubkey: welcome_rumor.pubkey,
-                                created_at: welcome_rumor.created_at,
-                                kind: welcome_rumor.kind,
-                                tags: welcome_rumor.tags.clone(),
-                                content: welcome_rumor.content.clone(),
-                            };
-                            engine.process_welcome(&event_id, &unsigned)?;
-                            Ok(())
-                        })();
+                        let result: Result<(), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    // Convert nostr::Event to UnsignedEvent for process_welcome
+                                    let unsigned = nostr::UnsignedEvent {
+                                        id: Some(welcome_rumor.id),
+                                        pubkey: welcome_rumor.pubkey,
+                                        created_at: welcome_rumor.created_at,
+                                        kind: welcome_rumor.kind,
+                                        tags: welcome_rumor.tags.clone(),
+                                        content: welcome_rumor.content.clone(),
+                                    };
+                                    engine.process_welcome(&event_id, &unsigned)?;
+                                    Ok(())
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::AcceptPendingWelcome { tx } => {
-                        let result: Result<GroupInfo, MlsError> = (|| {
-                            let welcomes = engine.get_pending_welcomes()?;
-                            let welcome = welcomes.first().ok_or(MlsError::NotInitialized)?;
-                            engine.accept_welcome(welcome)?;
+                        let result: Result<GroupInfo, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let welcomes = engine.get_pending_welcomes()?;
+                                    let welcome =
+                                        welcomes.first().ok_or(MlsError::NotInitialized)?;
+                                    engine.accept_welcome(welcome)?;
 
-                            // Get the group info for the accepted group
-                            let groups = engine.get_groups()?;
-                            let group = groups.first().ok_or(MlsError::NotInitialized)?;
-                            Ok(GroupInfo {
-                                mls_group_id: group.mls_group_id.as_slice().to_vec(),
-                                nostr_group_id: group.nostr_group_id.to_vec(),
-                                name: group.name.clone(),
-                            })
-                        })();
+                                    // Get the group info for the accepted group
+                                    let groups = engine.get_groups()?;
+                                    let group = groups.first().ok_or(MlsError::NotInitialized)?;
+                                    Ok(GroupInfo {
+                                        mls_group_id: group.mls_group_id.as_slice().to_vec(),
+                                        nostr_group_id: group.nostr_group_id.to_vec(),
+                                        name: group.name.clone(),
+                                    })
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::CreateGroup {
@@ -273,33 +309,40 @@ impl MlsEngineHandle {
                         relays,
                         tx,
                     } => {
-                        let result: Result<(String, UnsignedEvent), MlsError> = (|| {
-                            validate_key_package(&key_package, &recipient)?;
+                        let result: Result<(String, UnsignedEvent), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    validate_key_package(&key_package, &recipient)?;
 
-                            let image_hash = random_bytes::<32>()?;
-                            let image_key = random_bytes::<32>()?;
-                            let image_nonce = random_bytes::<12>()?;
+                                    let image_hash = random_bytes::<32>()?;
+                                    let image_key = random_bytes::<32>()?;
+                                    let image_nonce = random_bytes::<12>()?;
 
-                            let config = NostrGroupConfigData::new(
-                                group_name,
-                                String::new(),
-                                Some(image_hash),
-                                Some(image_key),
-                                Some(image_nonce),
-                                relays,
-                                vec![creator],
-                            );
+                                    let config = NostrGroupConfigData::new(
+                                        group_name,
+                                        String::new(),
+                                        Some(image_hash),
+                                        Some(image_key),
+                                        Some(image_nonce),
+                                        relays,
+                                        vec![creator],
+                                    );
 
-                            let result =
-                                engine.create_group(&creator, vec![key_package], config)?;
-                            let wire_id = hex::encode(result.group.nostr_group_id.as_slice());
-                            let welcome_rumor =
-                                result.welcome_rumors.into_iter().next().ok_or_else(|| {
-                                    MlsError::Engine("missing welcome rumor".into())
-                                })?;
-                            Ok((wire_id, welcome_rumor))
-                        })(
-                        );
+                                    let result =
+                                        engine.create_group(&creator, vec![key_package], config)?;
+                                    let wire_id =
+                                        hex::encode(result.group.nostr_group_id.as_slice());
+                                    let welcome_rumor =
+                                        result.welcome_rumors.into_iter().next().ok_or_else(
+                                            || MlsError::Engine("missing welcome rumor".into()),
+                                        )?;
+                                    Ok((wire_id, welcome_rumor))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::AddMember {
@@ -308,25 +351,36 @@ impl MlsEngineHandle {
                         key_package,
                         tx,
                     } => {
-                        let result: Result<(UnsignedEvent, Event), MlsError> = (|| {
-                            let groups = engine.get_groups()?;
-                            let group = groups
-                                .iter()
-                                .find(|g| hex::encode(g.nostr_group_id.as_slice()) == wire_id)
-                                .ok_or(MlsError::GroupNotFound)?;
+                        let result: Result<(UnsignedEvent, Event), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let group = groups
+                                        .iter()
+                                        .find(|g| {
+                                            hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                        })
+                                        .ok_or(MlsError::GroupNotFound)?;
 
-                            validate_key_package(&key_package, &recipient)?;
+                                    validate_key_package(&key_package, &recipient)?;
 
-                            let update = engine.add_members(&group.mls_group_id, &[key_package])?;
-                            engine.merge_pending_commit(&group.mls_group_id)?;
+                                    let update =
+                                        engine.add_members(&group.mls_group_id, &[key_package])?;
+                                    engine.merge_pending_commit(&group.mls_group_id)?;
 
-                            let welcome_rumor = update
-                                .welcome_rumors
-                                .and_then(|v| v.into_iter().next())
-                                .ok_or_else(|| MlsError::Engine("missing welcome rumor".into()))?;
-                            Ok((welcome_rumor, update.evolution_event))
-                        })(
-                        );
+                                    let welcome_rumor = update
+                                        .welcome_rumors
+                                        .and_then(|v| v.into_iter().next())
+                                        .ok_or_else(|| {
+                                            MlsError::Engine("missing welcome rumor".into())
+                                        })?;
+                                    Ok((welcome_rumor, update.evolution_event))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::CreateGroupMessage {
@@ -334,53 +388,76 @@ impl MlsEngineHandle {
                         rumor,
                         tx,
                     } => {
-                        let result: Result<Event, MlsError> = (|| {
-                            let group_id = GroupId::from_slice(&group_id);
-                            let event = engine.create_message(&group_id, rumor)?;
-                            Ok(event)
-                        })();
+                        let result: Result<Event, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let group_id = GroupId::from_slice(&group_id);
+                                    let event = engine.create_message(&group_id, rumor)?;
+                                    Ok(event)
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::DecryptGroupMessage { event, tx } => {
-                        let group_id = event
-                            .tags
-                            .iter()
-                            .find(|t| t.kind() == nostr::TagKind::h())
-                            .and_then(|t| t.content())
-                            .map(|s| s.to_string());
+                        let result: Result<Option<DecryptedMessage>, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let group_id = event
+                                    .tags
+                                    .iter()
+                                    .find(|t| t.kind() == nostr::TagKind::h())
+                                    .and_then(|t| t.content())
+                                    .map(|s| s.to_string());
 
-                        let result = match group_id {
-                            Some(group_id) => match engine.process_message(&event) {
-                                Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
-                                    Ok(Some(DecryptedMessage {
-                                        content: msg.content,
-                                        group_id,
-                                        author: msg.pubkey.to_hex(),
-                                        event_id: event.id.to_hex(),
-                                        timestamp: event.created_at.as_u64(),
-                                    }))
+                                match group_id {
+                                    Some(group_id) => match engine.process_message(&event) {
+                                        Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
+                                            Ok(Some(DecryptedMessage {
+                                                content: msg.content,
+                                                group_id,
+                                                author: msg.pubkey.to_hex(),
+                                                event_id: event.id.to_hex(),
+                                                timestamp: event.created_at.as_u64(),
+                                            }))
+                                        }
+                                        Ok(
+                                            MessageProcessingResult::Proposal(_)
+                                            | MessageProcessingResult::Commit { .. }
+                                            | MessageProcessingResult::ExternalJoinProposal {
+                                                ..
+                                            }
+                                            | MessageProcessingResult::Unprocessable { .. },
+                                        ) => Ok(None),
+                                        Err(_) => Err(MlsError::Engine(
+                                            "failed to process group message".into(),
+                                        )),
+                                    },
+                                    None => Err(MlsError::Engine("missing group id h tag".into())),
                                 }
-                                Ok(
-                                    MessageProcessingResult::Proposal(_)
-                                    | MessageProcessingResult::Commit { .. }
-                                    | MessageProcessingResult::ExternalJoinProposal { .. }
-                                    | MessageProcessingResult::Unprocessable { .. },
-                                ) => Ok(None),
-                                Err(_) => {
-                                    Err(MlsError::Engine("failed to process group message".into()))
-                                }
-                            },
-                            None => Err(MlsError::Engine("missing group id h tag".into())),
-                        };
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::HasGroupWithWireId { group_id, tx } => {
-                        let result: Result<bool, MlsError> = (|| {
-                            let groups = engine.get_groups()?;
-                            Ok(groups
-                                .iter()
-                                .any(|g| hex::encode(g.nostr_group_id.as_slice()) == group_id))
-                        })();
+                        let result: Result<bool, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    Ok(groups.iter().any(|g| {
+                                        hex::encode(g.nostr_group_id.as_slice()) == group_id
+                                    }))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                     MlsCommand::IsGroupMember {
@@ -388,15 +465,24 @@ impl MlsEngineHandle {
                         member,
                         tx,
                     } => {
-                        let result: Result<bool, MlsError> = (|| {
-                            let groups = engine.get_groups()?;
-                            let group = groups
-                                .iter()
-                                .find(|g| hex::encode(g.nostr_group_id.as_slice()) == wire_id)
-                                .ok_or(MlsError::GroupNotFound)?;
-                            let members = engine.get_members(&group.mls_group_id)?;
-                            Ok(members.contains(&member))
-                        })();
+                        let result: Result<bool, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let group = groups
+                                        .iter()
+                                        .find(|g| {
+                                            hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                        })
+                                        .ok_or(MlsError::GroupNotFound)?;
+                                    let members = engine.get_members(&group.mls_group_id)?;
+                                    Ok(members.contains(&member))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
                         let _ = tx.send(result);
                     }
                 }
@@ -643,10 +729,167 @@ pub(crate) fn set_db_permissions<P: AsRef<Path>>(_db_path: P) -> Result<(), MlsE
     Ok(())
 }
 
+/// Create and secure the parent directory of the MLS database.
+///
+/// On Unix this creates the directory with mode `0o700` (bypassing the process
+/// umask), rejects symlinks and mountpoints, and rejects paths that resolve
+/// under `/tmp` or `/dev/shm`. On other platforms it is equivalent to
+/// `create_dir_all`.
+fn prepare_mls_db_dir(db_path: &Path) -> Result<(), MlsError> {
+    #[cfg(unix)]
+    {
+        secure_ensure_parent_dir(db_path)
+    }
+    #[cfg(not(unix))]
+    {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn secure_ensure_parent_dir(db_path: &Path) -> Result<(), MlsError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    let Some(parent) = db_path.parent() else {
+        return Err(MlsError::InsecurePath(
+            "MLS database path has no parent directory".into(),
+        ));
+    };
+
+    // Reject any symlinks in the path before creating directories, so an
+    // attacker cannot redirect a newly created directory into a sensitive
+    // location.
+    if path_contains_symlink(parent) {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent path contains a symlink: {}",
+            parent.display()
+        )));
+    }
+
+    // Create the parent directory (and any missing ancestors) with explicit
+    // owner-only permissions. `DirBuilder::create` with `recursive(true)` is
+    // equivalent to `create_dir_all` and returns `Ok` if the path already
+    // exists, so we unconditionally harden the final directory afterwards.
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder.create(parent).map_err(MlsError::Io)?;
+
+    // Harden the directory to owner-only permissions and verify it is safe.
+    validate_mls_parent_structure(parent)?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    validate_mls_parent_permissions(parent)
+}
+
+#[cfg(unix)]
+fn validate_mls_parent_structure(parent: &Path) -> Result<(), MlsError> {
+    let meta = std::fs::symlink_metadata(parent).map_err(MlsError::Io)?;
+    if meta.file_type().is_symlink() {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent is a symlink: {}",
+            parent.display()
+        )));
+    }
+    if !meta.is_dir() {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent is not a directory: {}",
+            parent.display()
+        )));
+    }
+
+    // Reject shared temp directories and mountpoints.
+    let canonical = parent.canonicalize().map_err(MlsError::Io)?;
+    let tmp = Path::new("/tmp");
+    let shm = Path::new("/dev/shm");
+    if canonical.starts_with(tmp) || canonical.starts_with(shm) {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent resolves under /tmp or /dev/shm: {}",
+            canonical.display()
+        )));
+    }
+    if is_mountpoint(&canonical)? {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent is a mountpoint: {}",
+            canonical.display()
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_mls_parent_permissions(parent: &Path) -> Result<(), MlsError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let meta = std::fs::symlink_metadata(parent).map_err(MlsError::Io)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        return Err(MlsError::InsecurePath(format!(
+            "MLS database parent is not owner-only: {}",
+            parent.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn path_contains_symlink(path: &Path) -> bool {
+    let mut current = path;
+    loop {
+        if let Ok(meta) = std::fs::symlink_metadata(current)
+            && meta.file_type().is_symlink()
+        {
+            return true;
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    false
+}
+
+#[cfg(unix)]
+fn is_mountpoint(path: &Path) -> Result<bool, MlsError> {
+    use std::os::unix::fs::MetadataExt;
+
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
+    let path_dev = std::fs::metadata(path).map_err(MlsError::Io)?.dev();
+    let parent_dev = std::fs::metadata(parent).map_err(MlsError::Io)?.dev();
+    Ok(path_dev != parent_dev)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::DaemonError;
+    use nostr::secp256k1::schnorr::Signature;
     use nostr::{EventBuilder, Keys, Kind};
+    use std::path::PathBuf;
+
+    /// Return a test temp directory outside of `/tmp` and `/dev/shm` so the
+    /// MLS path-hardening checks do not reject the test fixtures.
+    fn test_tempdir() -> tempfile::TempDir {
+        let root = test_temp_root();
+        std::fs::create_dir_all(&root).expect("create test temp root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod test temp root");
+        }
+        tempfile::tempdir_in(root).expect("tempdir")
+    }
+
+    fn test_temp_root() -> PathBuf {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+        target.join("test-temp").join("mls-unit")
+    }
 
     async fn build_key_package(engine: &MlsEngineHandle, keys: &Keys) -> Event {
         let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
@@ -662,7 +905,7 @@ mod tests {
 
     #[test]
     fn new_persistent_creates_0600_db_and_sidecars() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let db_path = temp.path().join("vector-mls.db");
 
         let _handle = MlsEngineHandle::new_persistent(&db_path).expect("new_persistent");
@@ -699,15 +942,53 @@ mod tests {
 
     #[test]
     fn handle_is_clone() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let handle = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
             .expect("new_persistent");
         let _clone = handle.clone();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn new_persistent_rejects_symlink_parent() {
+        let temp = test_tempdir();
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).expect("create real dir");
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let db_path = link.join("vector-mls.db");
+        let result = MlsEngineHandle::new_persistent(&db_path);
+        assert!(
+            matches!(result, Err(MlsError::InsecurePath(_))),
+            "expected InsecurePath for symlink parent, got {result:?}"
+        );
+        assert!(!db_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_persistent_enforces_parent_dir_permissions() {
+        let temp = test_tempdir();
+        let parent = temp.path().join("loose-parent");
+        std::fs::create_dir_all(&parent).expect("create parent");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755))
+                .expect("loosen parent permissions");
+        }
+
+        let db_path = parent.join("vector-mls.db");
+        let _handle = MlsEngineHandle::new_persistent(&db_path).expect("new_persistent");
+
+        let meta = std::fs::metadata(&parent).expect("metadata");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    }
+
     #[tokio::test]
     async fn create_group_returns_wire_id_and_welcome_rumor() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let recipient_keys = Keys::generate();
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
@@ -732,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_member_returns_welcome_rumor_and_evolution_event() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let member1_keys = Keys::generate();
         let member2_keys = Keys::generate();
@@ -764,7 +1045,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_member_unknown_wire_id_returns_group_not_found() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let keys = Keys::generate();
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
             .expect("new_persistent");
@@ -780,7 +1061,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_group_invalid_key_package_returns_invalid_key_package() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let recipient_keys = Keys::generate();
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
@@ -833,11 +1114,33 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+
+        // Signature forgery: valid kind/content/author, but the signature is
+        // invalid (does not verify against the claimed pubkey).
+        let (content, tags) = engine
+            .publish_key_package(&recipient_keys.public_key(), vec![])
+            .await
+            .expect("publish_key_package");
+        let mut forged_signature = EventBuilder::new(Kind::MlsKeyPackage, content)
+            .tags(tags)
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+        forged_signature.sig = Signature::from_slice(&[0u8; 64]).expect("signature bytes");
+        let result = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                forged_signature,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await;
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
     }
 
     #[tokio::test]
     async fn create_group_bad_key_package_content_maps_to_safe_engine_error() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let recipient_keys = Keys::generate();
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
@@ -868,5 +1171,85 @@ mod tests {
             Err(other) => panic!("unexpected error: {other:?}"),
             Ok(_) => panic!("expected error for invalid key package content"),
         }
+    }
+
+    #[test]
+    fn mdk_error_group_not_found_maps_to_group_not_found() {
+        let err: MlsError = mdk_core::Error::GroupNotFound.into();
+        assert!(matches!(err, MlsError::GroupNotFound));
+    }
+
+    #[test]
+    fn mdk_error_crypto_maps_to_crypto_error() {
+        use openmls_traits::types::CryptoError;
+        let err: MlsError = mdk_core::Error::Crypto(CryptoError::CryptoLibraryError).into();
+        assert!(matches!(err, MlsError::CryptoError));
+    }
+
+    #[test]
+    fn mdk_error_unmapped_variant_maps_to_engine_fallback() {
+        let err: MlsError = mdk_core::Error::KeyPackage("malformed key package".into()).into();
+        match err {
+            MlsError::Engine(msg) => assert_eq!(msg, "MLS engine failure"),
+            other => panic!("unexpected MlsError: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn validate_key_package_accepts_valid_key_package() {
+        let recipient_keys = Keys::generate();
+        let key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+
+        let result = validate_key_package(&key_package, &recipient_keys.public_key());
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn validate_key_package_rejects_invalid_signature() {
+        let recipient_keys = Keys::generate();
+        let mut key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+        key_package.sig = Signature::from_slice(&[0u8; 64]).expect("signature bytes");
+
+        let result = validate_key_package(&key_package, &recipient_keys.public_key());
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+        assert_eq!(
+            DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
+            -32017
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_key_package_rejects_wrong_kind() {
+        let recipient_keys = Keys::generate();
+        let key_package = EventBuilder::new(Kind::TextNote, "not a key package")
+            .sign_with_keys(&recipient_keys)
+            .expect("sign");
+
+        let result = validate_key_package(&key_package, &recipient_keys.public_key());
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+        assert_eq!(
+            DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
+            -32017
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_key_package_rejects_wrong_author() {
+        let author_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
+            .sign_with_keys(&author_keys)
+            .expect("sign");
+
+        let result = validate_key_package(&key_package, &recipient_keys.public_key());
+        assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
+        assert_eq!(
+            DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
+            -32017
+        );
     }
 }
