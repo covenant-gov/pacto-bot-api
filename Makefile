@@ -57,8 +57,8 @@ test-fast: ## Run the full test suite with cargo-nextest (parallel, fastest)
 test-cargo: ## Run the full test suite with cargo test (alias for `test`)
 	cargo test --all-targets --all-features
 
-build: ## Build all targets
-	cargo build --all-targets
+build: ## Build all workspace targets
+	cargo build --all-targets -p pacto-bot-api -p pacto-bot-utils
 
 coverage: ## Generate test coverage report (requires cargo-llvm-cov)
 	@if command -v cargo-llvm-cov >/dev/null 2>&1; then \

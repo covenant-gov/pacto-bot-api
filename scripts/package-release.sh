@@ -55,7 +55,7 @@ for target in "${targets[@]}"; do
   fi
 
   binaries=()
-  for bin in pacto-bot-api pacto-bot-admin; do
+  for bin in pacto-bot-api pacto-bot-admin create-mls-group; do
     if [[ -f "$dir/$bin" ]]; then
       binaries+=("$bin")
     elif [[ -f "$dir/$bin.exe" ]]; then

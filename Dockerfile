@@ -3,8 +3,8 @@
 # Multi-stage build for the Pacto bot API daemon, admin CLI, and utility binaries.
 #
 # The image is intended for Docker Compose deployments. The daemon is the
-# default command; the admin CLI is available at /usr/local/bin/pacto-bot-admin.
-# The create-mls-group utility is available at /usr/local/bin/create-mls-group.
+# default command; the admin CLI and the create-mls-group utility are
+# available under /usr/local/bin.
 #
 # Example usage:
 #   docker build -t pacto-bot-api .
@@ -27,8 +27,7 @@ COPY src src
 ARG GIT_COMMIT_SHORT=unknown
 ENV GIT_COMMIT_SHORT=${GIT_COMMIT_SHORT}
 
-RUN cargo build --release --bins
-RUN cargo build --release -p pacto-bot-utils --bin create-mls-group
+RUN cargo build --release --bins -p pacto-bot-api -p pacto-bot-utils
 
 FROM debian:bookworm-slim AS runtime
 
