@@ -66,10 +66,10 @@ async fn setup_dispatch_with_capabilities(
     };
     let dir = common::tempdir()?;
     let nostr_client = NostrClient::new(vec![]).await?;
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, nostr_client).await?,
-    ));
     let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
     let diagnostics = Diagnostics::new();
     let dispatch = Arc::new(Dispatch::new(cm, db, diagnostics));
     Ok((dispatch, dir))

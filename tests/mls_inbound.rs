@@ -64,10 +64,10 @@ async fn setup_mls_dispatch(
     let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;
     let nostr_client = NostrClient::new(vec![relay.url()]).await?;
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, nostr_client).await?,
-    ));
     let db = Db::open(dir.path().join("test.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
     let dispatch = Arc::new(Dispatch::new(cm.clone(), db.clone(), Diagnostics::new()));
 
     {

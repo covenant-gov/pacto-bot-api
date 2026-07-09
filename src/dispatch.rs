@@ -2270,14 +2270,14 @@ mod tests {
         };
         let nostr_client = NostrClient::new(vec![]).await.unwrap();
         let dir = test_tempdir();
-        let cm = Arc::new(RwLock::new(
-            ClientManager::new(dir.path(), config, nostr_client)
-                .await
-                .unwrap(),
-        ));
         let db = Db::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(dir.path(), config, nostr_client, &db)
+                .await
+                .unwrap(),
+        ));
         let diagnostics = Diagnostics::new();
         let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
         (dispatch, cm)
@@ -3271,14 +3271,14 @@ mod tests {
         };
         let nostr_client = NostrClient::new(vec![relay_url.to_owned()]).await.unwrap();
         let dir = test_tempdir();
-        let cm = Arc::new(RwLock::new(
-            ClientManager::new(dir.path(), config, nostr_client)
-                .await
-                .unwrap(),
-        ));
         let db = Db::open(dir.path().join("test.db").as_path())
             .await
             .unwrap();
+        let cm = Arc::new(RwLock::new(
+            ClientManager::new(dir.path(), config, nostr_client, &db)
+                .await
+                .unwrap(),
+        ));
         let diagnostics = Diagnostics::new();
         let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
         (dispatch, cm)

@@ -3,13 +3,13 @@ use crate::config::{DaemonConfig, validate_bot_id};
 use crate::db::Db;
 use crate::diagnostics::{BotHealth, Diagnostics};
 use crate::errors::DaemonError;
-
 use crate::handlers::HandlerRegistry;
+use crate::mls::MlsEngineHandle;
 use crate::nostr::NostrClient;
 use crate::nostr::NostrSubscribe;
 use crate::signer::Signer;
 use nostr::nips::nip59;
-use nostr::{PublicKey, Timestamp};
+use nostr::{PublicKey, Timestamp, ToBech32};
 #[cfg(test)]
 use secrecy::SecretString;
 use std::collections::HashMap;
@@ -35,11 +35,46 @@ pub struct ClientManager {
     pub handler_registry: HandlerRegistry,
 }
 
+/// Reconcile a bot's MLS engine groups with the daemon database.
+///
+/// On daemon startup, the engine may already know about groups whose rows were
+/// never persisted to `agent.db` (e.g., a crash after the engine mutation but
+/// before the DB insert). This helper inserts any missing rows using the Squad
+/// wire id as the stable key.
+async fn reconcile_mls_groups(
+    bot_id: &str,
+    bot_npub: &str,
+    mls: &MlsEngineHandle,
+    db: &Db,
+) -> Result<(), DaemonError> {
+    let groups = mls.list_groups().await?;
+    for group in groups {
+        let members: Vec<String> = group
+            .members
+            .iter()
+            .map(|pk| {
+                pk.to_bech32()
+                    .map_err(|e| DaemonError::Config(format!("invalid public key: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        db.upsert_mls_group_from_reconciliation(
+            bot_id,
+            bot_npub,
+            &group.wire_id,
+            &group.name,
+            members,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 impl ClientManager {
     pub async fn new(
         data_dir: impl AsRef<Path>,
         config: DaemonConfig,
         nostr_client: NostrClient,
+        db: &Db,
     ) -> Result<Self, DaemonError> {
         let mut bots = HashMap::with_capacity(config.bots.len());
         let mut bot_id_to_pubkey = HashMap::with_capacity(config.bots.len());
@@ -56,7 +91,11 @@ impl ClientManager {
             let bot_state = if bot_config.mls_db_path.is_some() {
                 let canonical_path =
                     crate::config::validate_mls_db_path(&bot_config, data_dir.as_ref())?;
-                BotState::new_with_mls(bot_config, canonical_path)?
+                let state = BotState::new_with_mls(bot_config, canonical_path)?;
+                if let Some(mls) = state.mls.as_ref() {
+                    reconcile_mls_groups(state.bot_id(), state.npub(), mls, db).await?;
+                }
+                state
             } else {
                 BotState::new(bot_config)?
             };
@@ -230,10 +269,12 @@ mod tests {
         };
         let data_dir = test_tempdir();
         tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 data_dir.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap()
@@ -286,10 +327,12 @@ mod tests {
             bots: vec![mls_bot, dm_only_bot],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = Db::open(&_temp.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 _temp.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap()
@@ -319,10 +362,12 @@ mod tests {
             bots: vec![bot_a, bot_b],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = Db::open(&_temp.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 _temp.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap()
@@ -360,10 +405,12 @@ mod tests {
             bots: vec![bot],
         };
         let manager = tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let db = Db::open(&_temp.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 _temp.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap()
@@ -394,10 +441,12 @@ mod tests {
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
             let data_dir = test_tempdir();
+            let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 data_dir.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap_err()
@@ -417,10 +466,12 @@ mod tests {
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
             let data_dir = test_tempdir();
+            let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 data_dir.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap_err()
@@ -454,10 +505,12 @@ mod tests {
 
         let err = tokio::runtime::Runtime::new().unwrap().block_on(async {
             let data_dir = test_tempdir();
+            let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
             ClientManager::new(
                 data_dir.path(),
                 config,
                 NostrClient::new(vec![]).await.unwrap(),
+                &db,
             )
             .await
             .unwrap_err()
@@ -472,10 +525,12 @@ mod tests {
             bots: bot_configs,
         };
         let data_dir = test_tempdir();
+        let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
         ClientManager::new(
             data_dir.path(),
             config,
             NostrClient::new(vec![]).await.unwrap(),
+            &db,
         )
         .await
         .unwrap()

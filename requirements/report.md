@@ -14,10 +14,10 @@
 The following requirements were tagged directly in test source files:
 
 - **R1** — tests/mls_group.rs, tests/transport_http.rs, tests/transport_unix.rs
-- **R2** — tests/mls_group.rs, tests/transport_http.rs
+- **R2** — tests/transport_http.rs
 - **R3** — tests/sighup_token_reload.rs, tests/transport_http.rs, tests/transport_unix.rs
 - **R4** — tests/integration_test.rs, tests/mls_group.rs, tests/multi_bot.rs
-- **R5** — tests/integration_test.rs, tests/mls_group.rs, tests/multi_bot.rs
+- **R5** — tests/integration_test.rs, tests/multi_bot.rs
 - **R6** — tests/admin_cli_bunker.rs, tests/daemon_startup.rs, tests/mls_group.rs
 - **R7** — tests/cli_args.rs, tests/daemon_startup.rs, tests/mls_group.rs
 - **R8** — tests/daemon_startup.rs, tests/mls_group.rs
@@ -34,15 +34,15 @@ The following requirements were tagged directly in test source files:
 - **R19** — tests/daemon_shutdown.rs, tests/mls_group.rs, tests/mls_send_only.rs
 - **R20** — tests/daemon_startup.rs, tests/mls_group.rs, tests/mls_send_only.rs
 - **R21** — tests/cli_args.rs, tests/daemon_startup.rs
-- **R22** — tests/daemon_shutdown.rs, tests/mls_group.rs
+- **R22** — tests/daemon_shutdown.rs
 - **R23** — tests/daemon_shutdown.rs
 - **R24** — tests/cli_args.rs, tests/daemon_startup.rs
 - **R25** — tests/daemon_startup.rs
 - **R26** — tests/dispatch_integration.rs
 - **R27** — tests/dispatch_integration.rs
-- **R28** — tests/mls_group.rs, tests/transport_unix.rs
-- **R29** — tests/admin_cli_migration.rs, tests/mls_group.rs
-- **R30** — tests/dispatch_integration.rs, tests/mls_group.rs
+- **R28** — tests/transport_unix.rs
+- **R29** — tests/admin_cli_migration.rs
+- **R30** — tests/dispatch_integration.rs
 - **R31** — tests/admin_cli_migration.rs, tests/admin_cli_status.rs, tests/diagnostics.rs
 - **R32** — tests/metrics_response_schema.rs, tests/schema_sync.rs
 - **R33** — tests/integration_test.rs, tests/multi_bot.rs
@@ -56,10 +56,10 @@ The following requirements were tagged directly in test source files:
 | ID | Summary | Tests | Sources | Justification | Status |
 |---|---|---|---|---|---|
 | R1 | The daemon exposes a JSON-RPC 2.0 API over a Unix domain socket (`$PACTO_DATA_DIR/pacto-bot-api.sock`) with `0o600` permissions. Unix socket authentication is kernel file-permission only; handler i... | tests/transport_unix.rs<br>tests/integration_test.rs<br>tests/mls_group.rs<br>tests/transport_http.rs | src/transport/unix.rs | — | ✅ covered |
-| R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs<br>tests/mls_group.rs | src/transport/http.rs | — | ✅ covered |
+| R2 | The daemon exposes the same JSON-RPC 2.0 API over localhost HTTP (`127.0.0.1:9800`), bound to loopback only. The HTTP transport requires an `X-Pacto-Bot-Secret` header on every request. The secret ... | tests/transport_http.rs<br>tests/integration_test.rs | src/transport/http.rs | — | ✅ covered |
 | R3 | The API uses newline-delimited JSON frames (one JSON-RPC message per line, `\n` terminated). No length prefix. Maximum frame size is 1 MB; connections sending larger frames are dropped. The transpo... | tests/transport_unix.rs<br>tests/transport_http.rs<br>tests/sighup_token_reload.rs | src/transport/unix.rs<br>src/transport/http.rs<br>src/transport/mod.rs | — | ✅ covered |
 | R4 | The API supports the full method catalog defined in the architecture doc §7.7.4, adapted for daemon→handler direction (see High-Level Technical Design). | tests/integration_test.rs<br>tests/dispatch_integration.rs<br>tests/mls_group.rs<br>tests/multi_bot.rs | src/transport/protocol.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
-| R5 | The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir... | tests/integration_test.rs<br>tests/mls_group.rs<br>tests/multi_bot.rs | src/client_manager.rs<br>src/bot_state.rs | — | ✅ covered |
+| R5 | The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir... | tests/integration_test.rs<br>tests/multi_bot.rs | src/client_manager.rs<br>src/bot_state.rs | — | ✅ covered |
 | R6 | The daemon supports three signing backends per bot identity: (a) **local test key** — nsec hex in config or `PACTO_BOT_NSEC` env var, for early iteration; (b) **local NIP-46 bunker** — a bunker on ... | tests/admin_cli_bunker.rs<br>tests/secret_redaction.rs<br>tests/daemon_startup.rs<br>tests/mls_group.rs | src/signer.rs<br>src/nip46.rs<br>src/config.rs | — | ✅ covered |
 | R7 | Bot identities are configured via a TOML config file (`pacto-bot-api.toml`) listing each bot's npub, signing backend (one of `nsec`, `bunker_local`, `bunker_remote`), relay list, and capabilities. ... | tests/admin_cli_migration.rs<br>tests/daemon_startup.rs<br>tests/cli_args.rs<br>tests/mls_group.rs | src/config.rs | — | ✅ covered |
 | R8 | A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` ↔ `npub` mapping, and duplicate `bot_id` values within a single config are a validati... | tests/daemon_startup.rs<br>tests/mls_group.rs | src/client_manager.rs<br>src/db.rs | — | ✅ covered |
@@ -76,15 +76,15 @@ The following requirements were tagged directly in test source files:
 | R19 | The daemon persists event cursors, handler registrations, and bot configuration in a SQLite database (`agent.db`) using WAL journal mode (`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`). The ... | tests/daemon_shutdown.rs<br>tests/admin_cli_migration.rs<br>tests/mls_group.rs<br>tests/mls_send_only.rs | src/db.rs | — | ✅ covered |
 | R20 | The daemon recovers state on restart: validates that stored npub values match the config, resets cursors for mismatched identities, and resumes event subscriptions from the last persisted cursor. C... | tests/daemon_startup.rs<br>tests/daemon_shutdown.rs<br>tests/mls_group.rs<br>tests/mls_send_only.rs | src/db.rs<br>src/client_manager.rs | — | ✅ covered |
 | R21 | The daemon runs as a long-lived process. On first run it creates `$DATA_DIR` if it does not exist. It starts, acquires an exclusive file lock on `$DATA_DIR/daemon.lock` (exit if held), validates co... | tests/daemon_startup.rs<br>tests/cli_args.rs | src/main.rs<br>src/config.rs<br>src/db.rs | — | ✅ covered |
-| R22 | The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:"shutting_down"}`, closes relay and bunker connections, releases the lock file, ... | tests/daemon_shutdown.rs<br>tests/mls_group.rs | src/main.rs<br>src/diagnostics.rs | — | ✅ covered |
+| R22 | The daemon handles graceful shutdown on SIGTERM/SIGINT: persists cursors, notifies handlers via `agent.status {state:"shutting_down"}`, closes relay and bunker connections, releases the lock file, ... | tests/daemon_shutdown.rs | src/main.rs<br>src/diagnostics.rs | — | ✅ covered |
 | R23 | The daemon emits `agent.status` notifications to handlers on state transitions: `initializing`, `ready`, `shutting_down`, `stopped`. | tests/daemon_shutdown.rs | src/diagnostics.rs<br>src/transport/mod.rs | — | ✅ covered |
 | R24 | **First-run setup.** If `$DATA_DIR` or the config file is missing, the daemon exits with an actionable error. The daemon logs the HTTP secret token path on first run when `--enable-http` is used; o... | tests/cli_args.rs<br>tests/daemon_startup.rs | src/main.rs<br>src/config.rs | — | ✅ covered |
 | R25 | **Config rotation.** Runtime editing of bot config (relay list, bunker URI, capabilities) requires a daemon restart in Phase 1. Hot reload via SIGHUP is deferred to Phase 3. | tests/daemon_startup.rs | src/config.rs | Static config model is enforced by design; no runtime reload path exists in Phase 1. | ✅ covered |
 | R26 | **Event delivery semantics.** The daemon provides best-effort delivery to currently connected handlers. If a handler crashes or disconnects before returning a terminal response, the event is not re... | tests/dispatch_integration.rs<br>tests/daemon_shutdown.rs | src/dispatch.rs | — | ✅ covered |
 | R27 | **Cursor advancement.** The event cursor advances only after all registered handlers have returned a terminal response (`ack`, `reply`, `ignore`) or the dispatch timeout has expired. This defines t... | tests/dispatch_integration.rs<br>tests/daemon_shutdown.rs | src/dispatch.rs<br>src/db.rs | — | ✅ covered |
-| R28 | **Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron... | tests/transport_unix.rs<br>tests/mls_group.rs | src/transport/unix.rs | — | ✅ covered |
-| R29 | **State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti... | tests/admin_cli_migration.rs<br>tests/mls_group.rs | src/admin.rs | Active split-brain detection is deferred to Phase 2; metadata warning is verified. | ✅ covered |
-| R30 | **Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing... | tests/dispatch_integration.rs<br>tests/mls_group.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
+| R28 | **Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron... | tests/transport_unix.rs | src/transport/unix.rs | — | ✅ covered |
+| R29 | **State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti... | tests/admin_cli_migration.rs | src/admin.rs | Active split-brain detection is deferred to Phase 2; metadata warning is verified. | ✅ covered |
+| R30 | **Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R31 | **Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,... | tests/diagnostics.rs<br>tests/admin_cli_migration.rs<br>tests/admin_cli_status.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
 | R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs<br>tests/metrics_response_schema.rs | schemas/<br>src/config_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
 | R33 | **Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `... | tests/support/mock_relay.rs<br>tests/support/mock_bunker.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | tests/support/ | — | ✅ covered |

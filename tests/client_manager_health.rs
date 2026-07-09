@@ -3,6 +3,7 @@
 use nostr::ToBech32;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+use pacto_bot_api::db::Db;
 use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::nostr::NostrClient;
 use secrecy::SecretString;
@@ -27,10 +28,12 @@ async fn manager_with_bots(bots: Vec<BotConfig>) -> ClientManager {
         daemon: GlobalDaemonConfig::default(),
         bots,
     };
+    let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
     ClientManager::new(
         data_dir.path(),
         config,
         NostrClient::new(vec![]).await.unwrap(),
+        &db,
     )
     .await
     .unwrap()

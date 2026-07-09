@@ -426,27 +426,13 @@ fn validate_bots(bots: &mut [BotConfig], data_dir: &Path) -> Result<(), DaemonEr
     Ok(())
 }
 
-/// Create and secure a directory with restrictive Unix permissions.
-///
-/// This is typically used for parent directories that must be readable only
-/// by the owner. On non-Unix platforms the permission call is a no-op.
-fn secure_create_parent_dir(path: &Path, mode: u32) -> Result<(), DaemonError> {
-    std::fs::create_dir_all(path).map_err(DaemonError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
-            .map_err(DaemonError::Io)?;
-    }
-    Ok(())
-}
-
 /// Validate and canonicalize a bot's configured `mls_db_path`.
 ///
 /// The path is resolved against the per-bot data directory if relative. It
 /// must remain inside that directory after canonicalization, must not
-/// contain symlinks, and must not resolve under `/tmp` or `/dev/shm`. The
-/// parent directory is created with `0o700` permissions.
+/// contain symlinks or mountpoints in the parent chain, and must not resolve
+/// under `/tmp` or `/dev/shm`. The parent directory is created with `0o700`
+/// permissions through the shared MLS path helper.
 pub fn validate_mls_db_path(
     bot: &BotConfig,
     data_dir: impl AsRef<Path>,
@@ -458,62 +444,31 @@ pub fn validate_mls_db_path(
         .ok_or_else(|| DaemonError::Config(format!("bot {}: mls_db_path is missing", bot.id)))?;
 
     // Resolve the configured path relative to the bot data directory if needed.
-    // Keep this path non-canonical so that symlinks are detected before they
-    // are resolved away.
     let bot_data_dir = data_dir.join(&bot.id);
-    let was_absolute = path.is_absolute();
-    let resolved_path = if was_absolute {
+    let resolved_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
         bot_data_dir.join(path)
     };
 
-    // Reject paths that resolve under /tmp or /dev/shm, whether they were
-    // configured as absolute paths or relative to the bot data directory.
-    let tmp = Path::new("/tmp");
-    let shm = Path::new("/dev/shm");
-    if resolved_path.starts_with(tmp) || resolved_path.starts_with(shm) {
-        return Err(DaemonError::Config(format!(
-            "bot {}: mls_db_path must not be under /tmp or /dev/shm",
-            bot.id
-        )));
-    }
+    // The shared helper requires an absolute path. Make it absolute relative
+    // to the current directory (which is what the relative data_dir would have
+    // used anyway).
+    let resolved_path = if resolved_path.is_absolute() {
+        resolved_path
+    } else {
+        std::env::current_dir()
+            .map_err(DaemonError::Io)?
+            .join(resolved_path)
+    };
 
-    // Reject any symlinks in the path components. This check uses the
-    // unresolved path so that symlinks inside the bot data directory are
-    // detected before canonicalization resolves them away.
-    let mut current = resolved_path.as_path();
-    loop {
-        if let Ok(meta) = std::fs::symlink_metadata(current)
-            && meta.file_type().is_symlink()
-        {
-            return Err(DaemonError::Config(format!(
-                "bot {}: mls_db_path must not contain symlinks",
-                bot.id
-            )));
-        }
-        match current.parent() {
-            Some(parent) if parent != current => current = parent,
-            _ => break,
-        }
-    }
+    // Validate and harden the parent directory. The shared helper rejects
+    // symlinks, mountpoints, shared temporary directories, and non-owner-only
+    // permissions, and creates the parent with 0o700.
+    let canonical_parent = crate::mls_path::secure_ensure_mls_parent_dir(&resolved_path)
+        .map_err(|e| map_mls_path_error_to_config(bot, e))?;
 
-    // Ensure the bot's data directory exists and enforce 0o700. The bot data
-    // directory is the sandbox for the MLS database.
-    secure_create_parent_dir(&bot_data_dir, 0o700)?;
-
-    // Create the parent directory and enforce 0o700.
-    let parent = resolved_path.parent().ok_or_else(|| {
-        DaemonError::Config(format!(
-            "bot {}: mls_db_path has no parent directory",
-            bot.id
-        ))
-    })?;
-    secure_create_parent_dir(parent, 0o700)?;
-
-    // Canonicalize the parent and the bot data directory, then verify the
-    // parent remains inside the sandbox.
-    let canonical_parent = parent.canonicalize().map_err(DaemonError::Io)?;
+    // Verify the parent remains inside the bot data directory sandbox.
     let canonical_bot_data_dir = bot_data_dir.canonicalize().map_err(DaemonError::Io)?;
     if !canonical_parent.starts_with(&canonical_bot_data_dir) {
         return Err(DaemonError::Config(format!(
@@ -543,6 +498,24 @@ pub fn validate_mls_db_path(
     };
 
     Ok(canonical_path)
+}
+
+fn map_mls_path_error_to_config(
+    bot: &BotConfig,
+    err: crate::mls_path::MlsPathError,
+) -> DaemonError {
+    match err {
+        crate::mls_path::MlsPathError::SharedTemp => DaemonError::Config(format!(
+            "bot {}: mls_db_path must not be under /tmp or /dev/shm",
+            bot.id
+        )),
+        crate::mls_path::MlsPathError::Symlink(_) => DaemonError::Config(format!(
+            "bot {}: mls_db_path must not contain symlinks",
+            bot.id
+        )),
+        crate::mls_path::MlsPathError::Io(io) => DaemonError::Io(io),
+        other => DaemonError::Config(format!("bot {}: {}", bot.id, other)),
+    }
 }
 
 /// Expand `${ENV_VAR}` references in a string. Supports `${ENV_VAR}` and

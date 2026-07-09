@@ -4,6 +4,7 @@ use nostr::ToBech32;
 use pacto_bot_api::bot_state::BotState;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+use pacto_bot_api::db::Db;
 use pacto_bot_api::diagnostics::{
     BotHealth, DaemonStatus, Diagnostics, ErrorRecord, HealthSnapshot,
 };
@@ -289,10 +290,12 @@ async fn client_manager_populates_diagnostics_bots() {
     };
 
     let data_dir = tempfile::tempdir().unwrap();
+    let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
     let manager = ClientManager::new(
         data_dir.path(),
         config,
         NostrClient::new(vec![]).await.unwrap(),
+        &db,
     )
     .await
     .unwrap();

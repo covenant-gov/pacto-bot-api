@@ -43,14 +43,14 @@ async fn daemon_bot_joins_mls_group_and_sends_message() {
         bots: vec![bot_config("mls-bot", &bot_keys)],
     };
     let nostr_client = NostrClient::new(vec![]).await.expect("nostr client");
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, nostr_client)
-            .await
-            .expect("client manager"),
-    ));
     let db = Db::open(dir.path().join("test.db").as_path())
         .await
         .expect("db");
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db)
+            .await
+            .expect("client manager"),
+    ));
     let dispatch = Arc::new(Dispatch::new(cm.clone(), db, Diagnostics::new()));
 
     // Peer: create key package and group with daemon bot as member.

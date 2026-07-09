@@ -413,14 +413,14 @@ async fn setup_mls_dispatch(
         .await
         .expect("nostr client connects to mock relay");
     let dir = common::tempdir().expect("tempdir");
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, client)
-            .await
-            .expect("client manager initializes"),
-    ));
     let db = Db::open(dir.path().join("agent.db").as_path())
         .await
         .expect("db opens");
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, client, &db)
+            .await
+            .expect("client manager initializes"),
+    ));
     let dispatch = Dispatch::new(cm.clone(), db, Diagnostics::new());
     (Arc::new(dispatch), cm)
 }

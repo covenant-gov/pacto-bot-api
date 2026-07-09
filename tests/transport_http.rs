@@ -1215,10 +1215,10 @@ async fn start_dispatch_server_with_capabilities(
     };
 
     let nostr_client = NostrClient::new(vec![relay.url()]).await?;
-    let cm = Arc::new(tokio::sync::RwLock::new(
-        ClientManager::new(&data_dir, config, nostr_client).await?,
-    ));
     let db = Db::open(&data_dir.join("test.db")).await?;
+    let cm = Arc::new(tokio::sync::RwLock::new(
+        ClientManager::new(&data_dir, config, nostr_client, &db).await?,
+    ));
     let dispatch = Arc::new(Dispatch::new(cm, db, Diagnostics::new()));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;

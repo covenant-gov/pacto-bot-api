@@ -436,6 +436,75 @@ impl Database {
         Ok(())
     }
 
+    /// Insert an MLS group row from engine reconciliation if it is missing.
+    ///
+    /// This is idempotent: if `(bot_id, group_name)` already exists with the
+    /// same wire id, no changes are made. If the existing row has a different
+    /// wire id, or if the wire id is already assigned to a different group, a
+    /// collision error is returned.
+    pub fn upsert_mls_group_from_reconciliation(
+        &self,
+        bot_id: &str,
+        bot_npub: &str,
+        wire_id: &str,
+        group_name: &str,
+        members: &[String],
+    ) -> Result<(), DaemonError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+
+        let existing_wire_id: Option<String> = tx
+            .query_row(
+                "SELECT wire_id FROM mls_groups
+                 WHERE bot_id = ?1 AND group_name = ?2",
+                (bot_id, group_name),
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        if let Some(existing_wire_id) = existing_wire_id {
+            if existing_wire_id != wire_id {
+                return Err(DaemonError::Config(format!(
+                    "MLS group '{group_name}' has wire id {existing_wire_id}, but engine reports {wire_id}"
+                )));
+            }
+            tx.commit()?;
+            return Ok(());
+        }
+
+        let wire_collision: Option<String> = tx
+            .query_row(
+                "SELECT group_name FROM mls_groups
+                 WHERE bot_id = ?1 AND wire_id = ?2",
+                (bot_id, wire_id),
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(colliding_name) = wire_collision {
+            return Err(DaemonError::Config(format!(
+                "MLS wire id {wire_id} already belongs to group '{colliding_name}'"
+            )));
+        }
+
+        let invited_bots = serde_json::to_string(members)?;
+        tx.execute(
+            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            (bot_id, group_name, wire_id, bot_npub, "", invited_bots),
+        )?;
+
+        for member in members {
+            tx.execute(
+                "INSERT OR IGNORE INTO mls_group_members (bot_id, group_name, member_npub)
+                 VALUES (?1, ?2, ?3)",
+                (bot_id, group_name, member),
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Append a recipient to the `invited_bots` JSON array only if not already present.
     ///
     /// Returns `Ok(true)` when the row existed and the recipient was added or
@@ -735,6 +804,31 @@ impl Db {
     pub async fn insert_mls_group_export(&self, row: MlsGroupRow) -> Result<(), DaemonError> {
         self.run(move |db| db.insert_mls_group_export(&row)).await
     }
+
+    /// Insert an MLS group row from engine reconciliation if it is missing.
+    pub async fn upsert_mls_group_from_reconciliation(
+        &self,
+        bot_id: &str,
+        bot_npub: &str,
+        wire_id: &str,
+        group_name: &str,
+        members: Vec<String>,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let bot_npub = bot_npub.to_string();
+        let wire_id = wire_id.to_string();
+        let group_name = group_name.to_string();
+        self.run(move |db| {
+            db.upsert_mls_group_from_reconciliation(
+                &bot_id,
+                &bot_npub,
+                &wire_id,
+                &group_name,
+                &members,
+            )
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -743,6 +837,7 @@ mod tests {
     use crate::events::EventType;
     use crate::handlers::ConnectionHandle;
     use rusqlite::Connection;
+    use std::collections::HashSet;
     use tokio::sync::mpsc::channel;
 
     fn in_memory_db() -> Result<Database, DaemonError> {
@@ -779,6 +874,146 @@ mod tests {
             last_seen: now,
             transport: "unknown".to_string(),
         }
+    }
+
+    #[derive(Debug)]
+    struct ColumnInfo {
+        name: String,
+        type_: String,
+        not_null: bool,
+        pk: i32,
+    }
+
+    fn table_info(conn: &Connection, table: &str) -> Result<Vec<ColumnInfo>, DaemonError> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ColumnInfo {
+                name: row.get("name")?,
+                type_: row.get("type")?,
+                not_null: row.get("notnull")?,
+                pk: row.get("pk")?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DaemonError::Sqlite)
+    }
+
+    fn unique_index_columns(
+        conn: &Connection,
+        table: &str,
+    ) -> Result<Vec<Vec<String>>, DaemonError> {
+        let mut stmt = conn.prepare(&format!("PRAGMA index_list({table})"))?;
+        let indexes = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>("name")?, row.get::<_, i32>("unique")?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut result = Vec::new();
+        for (name, unique) in indexes {
+            if unique != 1 {
+                continue;
+            }
+            let mut col_stmt = conn.prepare(&format!("PRAGMA index_info({name})"))?;
+            let cols = col_stmt
+                .query_map([], |row| row.get::<_, String>("name"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(DaemonError::Sqlite)?;
+            result.push(cols);
+        }
+        Ok(result)
+    }
+
+    fn assert_mls_groups_schema(conn: &Connection) -> Result<(), DaemonError> {
+        let columns = table_info(conn, "mls_groups")?;
+        let names: HashSet<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        let expected: HashSet<&str> = [
+            "bot_id",
+            "group_name",
+            "wire_id",
+            "creator_npub",
+            "relay",
+            "invited_bots",
+        ]
+        .iter()
+        .copied()
+        .collect();
+        assert_eq!(names, expected, "mls_groups column set mismatch");
+
+        let pk: HashSet<&str> = columns
+            .iter()
+            .filter(|c| c.pk > 0)
+            .map(|c| c.name.as_str())
+            .collect();
+        let expected_pk: HashSet<&str> = ["bot_id", "group_name"].iter().copied().collect();
+        assert_eq!(pk, expected_pk, "mls_groups primary key mismatch");
+
+        for col in &columns {
+            assert!(col.not_null, "mls_groups.{} should be NOT NULL", col.name);
+            assert_eq!(col.type_, "TEXT", "mls_groups.{} should be TEXT", col.name);
+        }
+
+        let unique_indexes = unique_index_columns(conn, "mls_groups")?;
+        let pk_index: Vec<String> = ["bot_id", "group_name"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let wire_id_index: Vec<String> = ["wire_id"].iter().map(|s| (*s).to_string()).collect();
+        assert!(
+            unique_indexes.contains(&pk_index),
+            "mls_groups primary key index missing"
+        );
+        assert!(
+            unique_indexes.contains(&wire_id_index),
+            "mls_groups wire_id unique index missing"
+        );
+
+        Ok(())
+    }
+
+    fn assert_mls_group_members_schema(conn: &Connection) -> Result<(), DaemonError> {
+        let columns = table_info(conn, "mls_group_members")?;
+        let names: HashSet<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+        let expected: HashSet<&str> = ["bot_id", "group_name", "member_npub"]
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(names, expected, "mls_group_members column set mismatch");
+
+        let pk: HashSet<&str> = columns
+            .iter()
+            .filter(|c| c.pk > 0)
+            .map(|c| c.name.as_str())
+            .collect();
+        let expected_pk: HashSet<&str> = ["bot_id", "group_name", "member_npub"]
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(pk, expected_pk, "mls_group_members primary key mismatch");
+
+        for col in &columns {
+            assert!(
+                col.not_null,
+                "mls_group_members.{} should be NOT NULL",
+                col.name
+            );
+            assert_eq!(
+                col.type_, "TEXT",
+                "mls_group_members.{} should be TEXT",
+                col.name
+            );
+        }
+
+        let unique_indexes = unique_index_columns(conn, "mls_group_members")?;
+        let pk_index: Vec<String> = ["bot_id", "group_name", "member_npub"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert!(
+            unique_indexes.contains(&pk_index),
+            "mls_group_members primary key index missing"
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -833,6 +1068,40 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(table_count, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn migrations_create_mls_tables_with_expected_schema() -> Result<(), DaemonError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("agent.db");
+        let db = Database::open(&path)?;
+
+        assert_mls_groups_schema(&db.conn)?;
+        assert_mls_group_members_schema(&db.conn)?;
+
+        let fk_groups: Vec<String> = db
+            .conn
+            .prepare("PRAGMA foreign_key_list(mls_groups)")?
+            .query_map([], |row| row.get::<_, String>("from"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DaemonError::Sqlite)?;
+        assert!(
+            fk_groups.is_empty(),
+            "mls_groups should declare no foreign keys"
+        );
+
+        let fk_members: Vec<String> = db
+            .conn
+            .prepare("PRAGMA foreign_key_list(mls_group_members)")?
+            .query_map([], |row| row.get::<_, String>("from"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DaemonError::Sqlite)?;
+        assert!(
+            fk_members.is_empty(),
+            "mls_group_members should declare no foreign keys"
+        );
+
         Ok(())
     }
 

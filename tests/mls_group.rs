@@ -1,4 +1,3 @@
-//! req(R28, R29, R30)
 #![allow(clippy::panic)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -60,14 +59,14 @@ async fn setup_dispatch_with_relay(
         .await
         .expect("nostr client should connect to mock relay");
     let dir = common::tempdir().expect("tempdir");
-    let cm = Arc::new(RwLock::new(
-        ClientManager::new(dir.path(), config, nostr_client)
-            .await
-            .expect("client manager should initialize"),
-    ));
     let db = Db::open(dir.path().join("agent.db").as_path())
         .await
         .expect("db should open");
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db)
+            .await
+            .expect("client manager should initialize"),
+    ));
     let diagnostics = Diagnostics::new();
     let dispatch = Dispatch::new(cm.clone(), db, diagnostics);
     (Arc::new(dispatch), cm)
@@ -220,7 +219,7 @@ async fn admin_cli_create_publishes_welcome_gift_wrap() -> Result<(), Box<dyn Er
     Ok(())
 }
 
-/// req(R2, R5, R12, R20, R22)
+/// req(R12)
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_invite_publishes_welcome_and_evolution() -> Result<(), Box<dyn Error>> {
