@@ -7,8 +7,8 @@ set -euo pipefail
 #   ./scripts/prep-release.sh <daemon-version> [--sdk-version <version>] [--contract-version <version>]
 #
 # Examples:
-#   ./scripts/prep-release.sh 0.6.0
-#   ./scripts/prep-release.sh 0.6.0 --sdk-version 0.3.0 --contract-version 0.2.0
+#   ./scripts/prep-release.sh 0.7.0
+#   ./scripts/prep-release.sh 0.7.0 --sdk-version 0.4.0 --contract-version 0.7.0
 
 usage() {
   cat <<'EOF' >&2
@@ -21,8 +21,8 @@ Options:
                       Defaults to the requested daemon version.
 
 Examples:
-  ./scripts/prep-release.sh 0.6.0
-  ./scripts/prep-release.sh 0.6.0 --sdk-version 0.3.0 --contract-version 0.2.0
+  ./scripts/prep-release.sh 0.7.0
+  ./scripts/prep-release.sh 0.7.0 --sdk-version 0.4.0 --contract-version 0.7.0
 EOF
   exit 1
 }

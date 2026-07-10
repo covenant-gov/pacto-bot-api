@@ -79,7 +79,7 @@ fn new_scaffold_lock_file_contains_expected_fields() -> Result<(), Box<dyn Error
     );
     assert!(lock_text.contains("[admin]"), "admin table missing");
     assert!(
-        lock_text.contains("version = \"0.6.0\""),
+        lock_text.contains("version = \"0.7.0\""),
         "admin version missing"
     );
 

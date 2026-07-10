@@ -156,6 +156,14 @@ def update_scaffold_lock_versions(root: Path, current_daemon: str, new_daemon: s
     for path in paths:
         text = path.read_text()
         new_text = re.sub(rf'"{re.escape(current_daemon)}"', f'"{new_daemon}"', text)
+        # Fallback for the integration-test assertion that checks the generated
+        # lock file text: version = "X.Y.Z".
+        if new_text == text:
+            new_text = re.sub(
+                rf'version = "{re.escape(current_daemon)}"',
+                f'version = "{new_daemon}"',
+                text,
+            )
         if new_text != text:
             path.write_text(new_text)
             print(f"{path.relative_to(root)}: admin version {current_daemon} -> {new_daemon}")
@@ -318,7 +326,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Bump pacto-bot-api version strings across the repository."
     )
-    parser.add_argument("daemon_version", help="New daemon version (e.g. 0.6.0)")
+    parser.add_argument("daemon_version", help="New daemon version (e.g. 0.7.0)")
     parser.add_argument(
         "--sdk-version",
         default=None,
@@ -362,7 +370,7 @@ def main() -> int:
     with open(root / "Cargo.toml", "rb") as f:
         cargo = tomllib.load(f)
     if "package" in cargo and "repository" in cargo["package"]:
-        repo_url = cargo["package"]["repository"].rstrip(".git")
+        repo_url = cargo["package"]["repository"].removesuffix(".git")
 
     update_cargo_toml(root, new_daemon)
     update_jsonrpc_contract(root, new_contract)

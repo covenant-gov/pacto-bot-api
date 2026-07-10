@@ -161,7 +161,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: crate::scaffold::lock::AdminLock {
-                    version: "0.6.0".to_string(),
+                    version: "0.7.0".to_string(),
                 },
             },
             scaffold: crate::scaffold::lock::ScaffoldSettings::default(),
@@ -214,7 +214,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: crate::scaffold::lock::AdminLock {
-                    version: "0.6.0".to_string(),
+                    version: "0.7.0".to_string(),
                 },
             },
             scaffold: crate::scaffold::lock::ScaffoldSettings::default(),
@@ -241,7 +241,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: crate::scaffold::lock::AdminLock {
-                    version: "0.6.0".to_string(),
+                    version: "0.7.0".to_string(),
                 },
             },
             scaffold: crate::scaffold::lock::ScaffoldSettings::default(),

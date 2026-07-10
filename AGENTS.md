@@ -4,7 +4,7 @@
 
 `pacto-bot-api` is a standalone Rust daemon that multiplexes multiple Pacto bot identities onto one shared backend. Bot developers write handlers in any language and connect to the daemon over a language-agnostic JSON-RPC 2.0 API; the daemon owns Nostr relay connections, encrypted DM handling, signing keys, and message routing.
 
-> **Current state:** Active implementation. The daemon, admin CLI, JSON-RPC transports, SQLite persistence, NIP-46 signing, handler dispatch, and bot project scaffolding are all implemented. The crate is currently at version **0.6.0**. See `CHANGELOG.md` for release history and `docs/plans/` for upcoming work.
+> **Current state:** Active implementation. The daemon, admin CLI, JSON-RPC transports, SQLite persistence, NIP-46 signing, handler dispatch, and bot project scaffolding are all implemented. The crate is currently at version **0.7.0**. See `CHANGELOG.md` for release history and `docs/plans/` for upcoming work.
 
 ## Architecture & Data Flow
 
@@ -171,7 +171,7 @@ See also `docs/solutions/` for documented solutions and patterns in these areas.
 
 | File | Purpose |
 |------|---------|
-| `Cargo.toml` | Package manifest, workspace definition, lints, and dependency set. Current version is 0.6.0. |
+| `Cargo.toml` | Package manifest, workspace definition, lints, and dependency set. Current version is 0.7.0. |
 | `Makefile` | Development shortcuts including validation, cross-compilation, packaging, and hooks. |
 | `pacto-bot-api.toml` | Runtime daemon config (gitignored in production; example in repo root or docs). |
 | `README.md` | Operator-facing quickstart and installation guide. |

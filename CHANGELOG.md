@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-09
+
 ### Added
 
 - Python SDK usability improvements (Bosun Phase 2 review):
@@ -32,6 +34,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Removed the Rust `crates/governance-bot` example crate from the workspace. The reference governance snapshot bot implementation now lives in `pacto-governance-bots` (Python).
+
+### Security
+
+- Server-assigned handler IDs: `handler.register` no longer accepts client-supplied `handler_id`, preventing takeover of existing registrations.
+- Reconnect token enforcement: `handler.reconnect` requires a secret server-generated token, and live takeovers of already-connected handlers are rejected.
+- Authorized handler unregister: `agent.unregister_handler` now requires the caller to have the `Admin` capability or be the target handler itself.
+
+### Fixed
+
+- Move blocking SQLite and filesystem I/O off the async runtime: config load, diagnostics report flush, daemon lock acquisition, HTTP secret token creation, Unix socket setup, and SQLite cursor/handler operations now run on Tokio's blocking thread pool or via async filesystem APIs.
+- Replace the `std::sync::Mutex<Database>` in `Dispatch` with an async `Db` wrapper that runs blocking SQLite work on worker threads, preventing async runtime threads from being blocked by the SQLite mutex.
+- Exit daemon gracefully when the Nostr event stream ends (`None`) instead of looping indefinitely while unresponsive.
+- `NostrClient::shutdown` now stops the underlying relay-pool notification loop so `receive_events` streams terminate cleanly.
+- `MockRelay` closes active WebSocket connections on `stop()`, improving integration-test coverage of relay-loss scenarios.
 
 ## [0.6.0] - 2026-07-04
 
@@ -76,22 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Makefile `validate` target comment now correctly describes that it runs `fmt-check` and `clippy` (tests are run via `make test`).
-
-## [Unreleased]
-
-### Security
-
-- Server-assigned handler IDs: `handler.register` no longer accepts client-supplied `handler_id`, preventing takeover of existing registrations.
-- Reconnect token enforcement: `handler.reconnect` requires a secret server-generated token, and live takeovers of already-connected handlers are rejected.
-- Authorized handler unregister: `agent.unregister_handler` now requires the caller to have the `Admin` capability or be the target handler itself.
-
-### Fixed
-
-- Move blocking SQLite and filesystem I/O off the async runtime: config load, diagnostics report flush, daemon lock acquisition, HTTP secret token creation, Unix socket setup, and SQLite cursor/handler operations now run on Tokio's blocking thread pool or via async filesystem APIs.
-- Replace the `std::sync::Mutex<Database>` in `Dispatch` with an async `Db` wrapper that runs blocking SQLite work on worker threads, preventing async runtime threads from being blocked by the SQLite mutex.
-- Exit daemon gracefully when the Nostr event stream ends (`None`) instead of looping indefinitely while unresponsive.
-- `NostrClient::shutdown` now stops the underlying relay-pool notification loop so `receive_events` streams terminate cleanly.
-- `MockRelay` closes active WebSocket connections on `stop()`, improving integration-test coverage of relay-loss scenarios.
 
 ## [0.4.1] - 2026-07-01
 
@@ -242,8 +242,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-ap/compare/v0.6.0...HEAD
-[0.6.0]: https://github.com/covenant-gov/pacto-bot-ap/compare/v0.5.0...v0.6.0
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.3.0...v0.4.0

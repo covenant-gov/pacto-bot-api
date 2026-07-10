@@ -180,7 +180,7 @@ mod tests {
                     version: "0.2.0".to_string(),
                 },
                 admin: AdminLock {
-                    version: "0.6.0".to_string(),
+                    version: "0.7.0".to_string(),
                 },
             },
             scaffold: ScaffoldSettings {
@@ -246,7 +246,7 @@ name = "pacto-bot-sdk"
 version = "0.2.0"
 
 [admin]
-version = "0.6.0"
+version = "0.7.0"
 "#;
 
         let lock: ScaffoldLock = toml::from_str(raw).unwrap();
