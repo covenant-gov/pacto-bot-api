@@ -216,7 +216,7 @@ flowchart TB
 ### Failure propagation
 
 - A missing bot or missing MLS engine is caught at the top of the dispatch handler and returned as a JSON-RPC error before any network or MLS operation.
-- A stale or missing KeyPackage is returned as `InvalidKeyPackage` (`-32017`), `StaleKeyPackage` (`-32016`), or a timeout error after the `NostrClient` fetch completes; no MLS mutation occurs.
+- A stale KeyPackage is returned as `StaleKeyPackage` (`-32016`), a missing KeyPackage as `KeyPackageNotFound` (`-32017`), and an invalid KeyPackage as `InvalidKeyPackage` (`-32018`) after the `NostrClient` fetch completes; no MLS mutation occurs.
 - An MLS engine error is wrapped in `DaemonError::Mls` and sanitized at the dispatch boundary before the JSON-RPC response is sent.
 - A DB error during the final persistence step is returned to the caller. Because the MLS mutation and welcome publish have already happened, the caller sees an error even though the Nostr side effects are durable. This is the crash-between-mutation-and-DB-update risk described in the Risks section.
 
@@ -234,7 +234,7 @@ flowchart TB
 - **Admin session expansion.** The admin CLI registers a temporary handler with the `Admin` capability for the duration of each `mls_group` command. This handler can invoke any admin method, so R35 requires the CLI to unregister it in a cleanup path and the daemon to reap stale handlers via the existing handler timeout policy.
 - **New capabilities and config fields.** `CreateMlsGroup` and `InviteToMlsGroup` are added to the capability allow-list, and `mls_db_path` / `mls_key_package_freshness_secs` are added to the bot config. Existing bot configs will not have these capabilities, so they cannot be used until the config is updated.
 - **Group metadata persistence.** The `mls_groups` table in `agent.db` stores group names, wire IDs, creator npubs, relay URLs, and invited-bot npubs. This table is protected by the same `0o600` permission model as the rest of `agent.db`, but backups and file copies must preserve those permissions.
-- **Error surface expansion.** The new `-32013` through `-32017` error codes and the KeyPackage/MLS error paths introduce new opportunities to leak cryptographic material or filesystem paths. Redaction must be applied to all new paths.
+- **Error surface expansion.** The new `-32013` through `-32018` error codes and the KeyPackage/MLS error paths introduce new opportunities to leak cryptographic material or filesystem paths. Redaction must be applied to all new paths.
 
 ## Implementation Units
 
@@ -531,7 +531,8 @@ The following Pacto-specific JSON-RPC codes are added or reused by this plan:
 | `-32014` | MLS group already exists — new |
 | `-32015` | MLS group not found — new |
 | `-32016` | Stale KeyPackage — new (also used for future-dated packages) |
-| `-32017` | Invalid KeyPackage — new (signature, kind, or author mismatch) |
+| `-32017` | KeyPackage not found — new (no kind:443 KeyPackage for the recipient within the freshness window) |
+| `-32018` | Invalid KeyPackage — new (signature, kind, or author mismatch) |
 
 ## Risks & Dependencies
 
@@ -560,7 +561,7 @@ The following Pacto-specific JSON-RPC codes are added or reused by this plan:
   - **Mitigation:** Add an operational control: the daemon host must run NTP or an equivalent time-sync service. If the daemon detects significant clock skew (e.g., by comparing `created_at` to UTC with a tolerance), it should log a warning and fail closed on KeyPackage freshness.
 - **Risk:** Publishing the welcome gift-wrap to every configured relay leaks group membership metadata (creator and recipient identities) to all relays.
   - **Mitigation:** This is accepted as a privacy trade-off for reliability, matching KTD-10. Document that operators should configure relays they trust, because any relay in the pool learns that the creator bot invited the recipient bot to a group. Future work can add per-recipient relay selection.
-- **Risk:** New JSON-RPC error codes (`-32013` to `-32017`) and MLS error messages may leak group names, wire IDs, or filesystem paths.
+- **Risk:** New JSON-RPC error codes (`-32013` to `-32018`) and MLS error messages may leak group names, wire IDs, or filesystem paths.
   - **Mitigation:** R34 requires that error messages not include the welcome rumor/seal/gift-wrap content, KeyPackage ciphertext, nsec, bunker URI, or `mls_db_path`. Group names and wire IDs are operational metadata and may appear in error messages for clarity (e.g., "group my-squad already exists"). `DaemonError::Mls`, `DaemonError::Nostr`, and `DaemonError::Config` messages produced by this feature are reviewed for redaction. Add secret-scan tests that place synthetic markers in `mls_db_path`, KeyPackage ciphertext, and sealed content and assert they do not appear in JSON-RPC responses or `INFO`+ logs.
 - **Risk:** Rate limiting is intentionally not applied to admin methods, but a compromised local process with access to the Unix socket could flood group creation or invitation requests.
   - **Mitigation:** The Unix socket must have owner-only permissions (`0o600` or tighter). Document that only the daemon owner should have access to the admin socket. If future hardening is desired, add a per-bot rate limit on admin `create`/`invite` methods.

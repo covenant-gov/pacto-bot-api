@@ -1185,7 +1185,7 @@ mod tests {
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
         assert_eq!(
             DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
-            -32017
+            -32018
         );
     }
 
@@ -1200,7 +1200,7 @@ mod tests {
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
         assert_eq!(
             DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
-            -32017
+            -32018
         );
     }
 
@@ -1216,7 +1216,7 @@ mod tests {
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
         assert_eq!(
             DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
-            -32017
+            -32018
         );
     }
 }

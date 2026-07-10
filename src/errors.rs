@@ -96,6 +96,11 @@ pub enum DaemonError {
     #[error("stale key package")]
     StaleKeyPackage,
 
+    #[error(
+        "no key package found for recipient {recipient} within the freshness window; ensure the recipient has published a fresh kind:443 KeyPackage"
+    )]
+    KeyPackageNotFound { recipient: String },
+
     #[error("invalid key package")]
     InvalidKeyPackage,
 
@@ -140,7 +145,8 @@ impl DaemonError {
             DaemonError::RateLimited => -32005,
             DaemonError::OperationTimedOut => -32012,
             DaemonError::StaleKeyPackage => -32016,
-            DaemonError::InvalidKeyPackage => -32017,
+            DaemonError::KeyPackageNotFound { .. } => -32017,
+            DaemonError::InvalidKeyPackage => -32018,
             DaemonError::MlsEngineNotConfigured => -32013,
             DaemonError::MlsGroupAlreadyExists => -32014,
             DaemonError::MlsGroupNotFound => -32015,
@@ -215,7 +221,14 @@ mod tests {
         );
         assert_eq!(DaemonError::MlsGroupNotFound.to_json_rpc_code(), -32015);
         assert_eq!(DaemonError::StaleKeyPackage.to_json_rpc_code(), -32016);
-        assert_eq!(DaemonError::InvalidKeyPackage.to_json_rpc_code(), -32017);
+        assert_eq!(
+            DaemonError::KeyPackageNotFound {
+                recipient: "npub1…".into()
+            }
+            .to_json_rpc_code(),
+            -32017
+        );
+        assert_eq!(DaemonError::InvalidKeyPackage.to_json_rpc_code(), -32018);
 
         assert_eq!(
             DaemonError::HandlerAlreadyConnected.to_json_rpc_code(),

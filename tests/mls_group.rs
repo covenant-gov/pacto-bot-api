@@ -896,15 +896,20 @@ async fn forged_key_package_is_treated_as_absent() -> Result<(), Box<dyn Error>>
         .unwrap();
     // The forged event is not returned by the relay (author filter does not
     // match the forger's pubkey), so the daemon sees no valid package and
-    // reports a relay-level not-found error.
+    // reports a KeyPackageNotFound error.
     let JsonRpcMessage::Error { error, .. } = resp else {
         panic!("expected error, got {resp:?}");
     };
+    assert_eq!(
+        error.code, -32017,
+        "expected KeyPackageNotFound, got {error:?}"
+    );
     assert!(
-        error.code == -32004
-            || error.code == -32016
-            || error.message.to_lowercase().contains("timed out"),
-        "unexpected error: {error:?}"
+        error
+            .message
+            .to_lowercase()
+            .contains("no key package found"),
+        "error should tell the operator the recipient has no key package: {error:?}"
     );
 
     relay.stop().await;

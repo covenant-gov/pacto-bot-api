@@ -369,9 +369,10 @@ impl NostrClient {
             .map_err(|e| DaemonError::Nostr(format!("key package fetch failed: {e}")))?;
 
         if events.is_empty() {
-            return Err(DaemonError::Nostr(
-                "key package fetch returned no valid package; ensure the recipient has published a fresh kind:443 KeyPackage within the freshness window".into(),
-            ));
+            let recipient_npub = recipient.to_bech32().unwrap_or_else(|_| recipient.to_hex());
+            return Err(DaemonError::KeyPackageNotFound {
+                recipient: recipient_npub,
+            });
         }
 
         let mut selected: Option<Event> = None;
@@ -1651,8 +1652,8 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(err, DaemonError::Nostr(_)),
-            "expected Nostr error when client filters out forged packages, got {err:?}"
+            matches!(err, DaemonError::KeyPackageNotFound { .. }),
+            "expected KeyPackageNotFound error when client filters out forged packages, got {err:?}"
         );
         assert!(!err.to_string().contains(secret_marker));
     }
@@ -1674,11 +1675,11 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(err, DaemonError::Nostr(_)),
-            "expected Nostr error, got {err:?}"
+            matches!(err, DaemonError::KeyPackageNotFound { .. }),
+            "expected KeyPackageNotFound error, got {err:?}"
         );
         assert!(
-            err.to_string().contains("no valid package"),
+            err.to_string().contains("no key package found"),
             "error should include operator guidance: {err}"
         );
     }
