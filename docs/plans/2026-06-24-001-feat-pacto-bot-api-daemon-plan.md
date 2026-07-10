@@ -382,6 +382,12 @@ Handlers respond to `agent.event` by sending a `handler.response` notification c
 | `-32010` | Handler not dispatched — the handler was not dispatched this event |
 | `-32011` | Handler backpressure — the handler's outbound channel is full |
 | `-32012` | HTTP payload too large — the request body exceeded the configured max frame size |
+| `-32013` | MLS engine not configured — the bot does not have an MLS engine configured |
+| `-32014` | MLS group already exists — the group name is already in use for this bot |
+| `-32015` | MLS group not found — the specified MLS group does not exist |
+| `-32016` | Stale key package — the recipient's KeyPackage is outside the freshness window |
+| `-32017` | Key package not found — no kind:443 KeyPackage exists for the recipient within the freshness window |
+| `-32018` | Invalid key package — the provided KeyPackage failed validation |
 | `-32600` | Invalid request — the JSON-RPC request is malformed |
 | `-32601` | Method not found — the method is not recognized |
 | `-32602` | Invalid params — the params are malformed or missing required fields |

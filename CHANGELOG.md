@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `Bot(...)` now defaults to `auto_acknowledge=True`. Existing bots that rely on the previous no-response semantics for `None` returns can set `auto_acknowledge=False` during a transition.
+- Improved MLS KeyPackage error reporting in `pacto-bot-admin` and JSON-RPC responses:
+  - A missing recipient KeyPackage now returns a dedicated `KeyPackageNotFound` error (`-32017`) instead of the generic `Nostr relay error` (`-32004`), with a message naming the recipient and pointing to kind:443 freshness requirements.
+  - `InvalidKeyPackage` (signature, kind, or author mismatch) is now mapped to `-32018` so it is distinct from the missing-package case.
 
 ### Removed
 
