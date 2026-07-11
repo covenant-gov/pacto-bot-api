@@ -172,6 +172,10 @@ enum MlsCommand {
         key_package: Event,
         tx: oneshot::Sender<Result<(UnsignedEvent, Event), MlsError>>,
     },
+    ResolveWireId {
+        wire_id: String,
+        tx: oneshot::Sender<Result<Vec<u8>, MlsError>>,
+    },
     IsGroupMember {
         wire_id: String,
         member: PublicKey,
@@ -519,6 +523,26 @@ impl MlsEngineHandle {
                             });
                         let _ = tx.send(result);
                     }
+                    MlsCommand::ResolveWireId { wire_id, tx } => {
+                        let result: Result<Vec<u8>, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let group = groups
+                                        .iter()
+                                        .find(|g| {
+                                            hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                        })
+                                        .ok_or(MlsError::GroupNotFound)?;
+                                    Ok(group.mls_group_id.as_slice().to_vec())
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
                     MlsCommand::IsGroupMember {
                         wire_id,
                         member,
@@ -662,6 +686,25 @@ impl MlsEngineHandle {
             .send(MlsCommand::IsGroupMember {
                 wire_id: wire_id.to_string(),
                 member: *member,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Resolve a Squad wire id (`hex(nostr_group_id)`) to the raw MLS group id
+    /// bytes used by the engine for creating group messages.
+    ///
+    /// Returns `MlsError::GroupNotFound` if no group matches the wire id.
+    pub async fn resolve_wire_id(
+        &self,
+        wire_id: &str,
+    ) -> Result<Vec<u8>, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::ResolveWireId {
+                wire_id: wire_id.to_string(),
                 tx,
             })
             .await

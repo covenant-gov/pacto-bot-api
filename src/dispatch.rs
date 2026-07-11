@@ -1869,11 +1869,16 @@ impl Dispatch {
             .mls
             .as_ref()
             .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
-        let group_id_bytes = hex::decode(group_id)
-            .map_err(|e| DaemonError::Config(format!("invalid group_id hex: {e}")))?;
+        let mls_group_id = mls_engine
+            .resolve_wire_id(group_id)
+            .await
+            .map_err(|e| match e {
+                crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
+                other => DaemonError::Mls(other),
+            })?;
         let event_id = cm
             .nostr_client
-            .send_group_message(mls_engine, &bot.signer, group_id_bytes, content)
+            .send_group_message(mls_engine, &bot.signer, mls_group_id, content)
             .await?;
         Ok(event_id)
     }
