@@ -697,10 +697,7 @@ impl MlsEngineHandle {
     /// bytes used by the engine for creating group messages.
     ///
     /// Returns `MlsError::GroupNotFound` if no group matches the wire id.
-    pub async fn resolve_wire_id(
-        &self,
-        wire_id: &str,
-    ) -> Result<Vec<u8>, MlsError> {
+    pub async fn resolve_wire_id(&self, wire_id: &str) -> Result<Vec<u8>, MlsError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(MlsCommand::ResolveWireId {
