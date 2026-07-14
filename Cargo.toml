@@ -30,7 +30,7 @@ serde_json = "1"
 serde_with = "3"
 serde_yaml = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
-toml = "0.8"
+toml = "1.1"
 axum = "0.8"
 nostr-sdk = { version = "0.43", features = ["nip06", "nip44", "nip59"] }
 nostr = { version = "0.43", features = ["nip46", "nip44", "nip59"] }
