@@ -715,7 +715,8 @@ impl NostrClient {
     /// Decrypt a single incoming gift-wrap event using the registered bot signer.
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
-        Self::process_gift_wrap(&snapshot, event, self.diagnostics.as_ref()).await
+        let mls_engines = self.mls_engines.read().await.clone();
+        Self::process_gift_wrap(&snapshot, &mls_engines, event, self.diagnostics.as_ref()).await
     }
 
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
@@ -742,11 +743,14 @@ impl NostrClient {
                                     // other bots from receiving DMs.
                                     let tx = tx.clone();
                                     let signers = Arc::clone(&signers);
+                                    let mls_engines = Arc::clone(&mls_engines);
                                     let diagnostics = diagnostics.clone();
                                     tokio::spawn(async move {
                                         let snapshot = signers.read().await.clone();
+                                        let mls_engines = mls_engines.read().await.clone();
                                         let result = Self::process_gift_wrap(
                                             &snapshot,
+                                            &mls_engines,
                                             &event,
                                             diagnostics.as_ref(),
                                         )
@@ -794,6 +798,7 @@ impl NostrClient {
 
     async fn process_gift_wrap(
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
+        mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
         diagnostics: Option<&Diagnostics>,
     ) -> Result<AgentEvent, DaemonError> {
@@ -867,6 +872,24 @@ impl NostrClient {
             EventType::DmReceived
         };
 
+        // For MLS Welcome messages, process the welcome using the bot's
+        // MLS engine so the daemon can participate in the Squad. The group
+        // wire id is surfaced in chat_id for observability, but the event is
+        // not fanned out to handlers (the daemon accepts the invite on the
+        // bot's behalf).
+        let chat_id: Option<String> = if event_type == EventType::MlsWelcomeReceived {
+            let (_mls_bot_id, mls) = mls_engines.get(&recipient).ok_or_else(|| {
+                DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
+            })?;
+            let wire_id = mls
+                .process_welcome_and_return_wire_id(event.id, rumor.clone())
+                .await
+                .map_err(|e| DaemonError::Nostr(format!("failed to process MLS welcome: {e}")))?;
+            Some(wire_id)
+        } else {
+            None
+        };
+
         info!(
             event_id = %event.id.to_hex(),
             bot_id = %bot_id,
@@ -885,7 +908,7 @@ impl NostrClient {
             bot_id: bot_id.clone(),
             event_id: event.id.to_hex(),
             event_type,
-            chat_id: None,
+            chat_id,
             content: rumor.content,
             rumor_id,
             author: seal_event.pubkey.to_hex(),
@@ -1363,7 +1386,8 @@ mod tests {
         .unwrap();
 
         let signers = client.signers.read().await.clone();
-        let agent_event = NostrClient::process_gift_wrap(&signers, &event, None)
+        let mls_engines = client.mls_engines.read().await.clone();
+        let agent_event = NostrClient::process_gift_wrap(&signers, &mls_engines, &event, None)
             .await
             .unwrap();
         assert_eq!(agent_event.bot_id, "bot-1");

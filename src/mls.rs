@@ -145,6 +145,16 @@ enum MlsCommand {
         relays: Vec<RelayUrl>,
         tx: oneshot::Sender<Result<(String, Vec<nostr::Tag>), MlsError>>,
     },
+    ProcessWelcomeAndAccept {
+        event_id: nostr::EventId,
+        welcome_rumor: UnsignedEvent,
+        tx: oneshot::Sender<Result<String, MlsError>>,
+    },
+    ProcessWelcomeUnsigned {
+        event_id: nostr::EventId,
+        welcome_rumor: UnsignedEvent,
+        tx: oneshot::Sender<Result<(), MlsError>>,
+    },
     ProcessWelcome {
         event_id: nostr::EventId,
         welcome_rumor: nostr::Event,
@@ -277,6 +287,50 @@ impl MlsEngineHandle {
                                     .create_key_package_for_event(&pubkey, relays)
                                     .map_err(MlsError::from)
                                     .map(|(encoded, tags)| (encoded, tags.to_vec()))
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::ProcessWelcomeAndAccept {
+                        event_id,
+                        welcome_rumor,
+                        tx,
+                    } => {
+                        let result: Result<String, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    engine.process_welcome(&event_id, &welcome_rumor)?;
+
+                                    let welcomes = engine.get_pending_welcomes()?;
+                                    let welcome =
+                                        welcomes.first().ok_or(MlsError::NotInitialized)?;
+                                    engine.accept_welcome(welcome)?;
+
+                                    let groups = engine.get_groups()?;
+                                    let group = groups.first().ok_or(MlsError::NotInitialized)?;
+                                    Ok(hex::encode(group.nostr_group_id.as_slice()))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::ProcessWelcomeUnsigned {
+                        event_id,
+                        welcome_rumor,
+                        tx,
+                    } => {
+                        let result: Result<(), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    engine.process_welcome(&event_id, &welcome_rumor)?;
+                                    Ok(())
+                                })()
                             }))
                             .unwrap_or_else(|e| {
                                 tracing::error!(panic = ?e, "MLS worker panic");
@@ -595,6 +649,50 @@ impl MlsEngineHandle {
             .send(MlsCommand::CreateKeyPackage {
                 pubkey: *pubkey,
                 relays,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Process a received Welcome message and return the Squad wire id.
+    ///
+    /// This is a convenience wrapper that decrypts and validates the Welcome,
+    /// accepts it, and returns the hex-encoded Nostr group id. Use this when
+    /// the welcome rumor has already been unwrapped from a NIP-59 gift-wrap.
+    pub async fn process_welcome_and_return_wire_id(
+        &self,
+        event_id: nostr::EventId,
+        welcome_rumor: UnsignedEvent,
+    ) -> Result<String, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::ProcessWelcomeAndAccept {
+                event_id,
+                welcome_rumor,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Process a received Welcome message from an unsigned rumor.
+    ///
+    /// This decrypts and validates the Welcome, persisting the group state.
+    /// Use this when the welcome rumor has already been unwrapped from a
+    /// NIP-59 gift-wrap and only the unsigned rumor is available.
+    pub async fn process_welcome_unsigned(
+        &self,
+        event_id: nostr::EventId,
+        welcome_rumor: UnsignedEvent,
+    ) -> Result<(), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::ProcessWelcomeUnsigned {
+                event_id,
+                welcome_rumor,
                 tx,
             })
             .await
