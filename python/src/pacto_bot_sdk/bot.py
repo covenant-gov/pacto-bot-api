@@ -728,12 +728,31 @@ class Bot:
 
         self._logger.info(f"connected via {self._transport.name}")
 
+        # Daemon error codes that mean the stored registration is no longer
+        # valid and we should fall back to a fresh handler.register.
+        _STALE_REGISTRATION_CODES = frozenset({-32001, -32008})
+
         try:
             if self._handler_id and self._reconnect_token:
-                result = await self._client.handler_reconnect(
-                    handler_id=self._handler_id,
-                    reconnect_token=self._reconnect_token,
-                )
+                try:
+                    result = await self._client.handler_reconnect(
+                        handler_id=self._handler_id,
+                        reconnect_token=self._reconnect_token,
+                    )
+                except PactoClientError as exc:
+                    if getattr(exc, "code", None) not in _STALE_REGISTRATION_CODES:
+                        raise
+                    self._logger.warn(
+                        f"reconnect token rejected ({exc}); falling back to fresh registration"
+                    )
+                    self._handler_id = None
+                    self._reconnect_token = None
+                    result = await self._client.handler_register(
+                        bot_ids=[self.bot_id],
+                        event_types=self.event_types,
+                        capabilities=self.capabilities,
+                    )
+                    self._reconnect_token = result.reconnect_token
             else:
                 result = await self._client.handler_register(
                     bot_ids=[self.bot_id],

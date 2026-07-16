@@ -538,7 +538,12 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append("_DEFAULT_TIMEOUT: Any = object()\n\n")
 
     out.append("class PactoClientError(Exception):\n")
-    out.append("    \"\"\"Error returned by the daemon for a JSON-RPC request.\"\"\"\n\n")
+    out.append("    \"\"\"Error returned by the daemon for a JSON-RPC request.\"\"\"\n")
+    out.append("\n")
+    out.append("    def __init__(self, message: str, code: int | None = None) -> None:\n")
+    out.append("        super().__init__(message)\n")
+    out.append("        self.code = code\n")
+    out.append("\n")
 
     out.append("class PactoClient:\n")
     out.append(
@@ -603,7 +608,8 @@ def generate_client(schema: dict[str, Any], output_path: Path) -> None:
     out.append('            if "error" in response:\n')
     out.append("                error = response[\"error\"]\n")
     out.append("                raise PactoClientError(\n")
-    out.append("                    error.get(\"message\", str(error))\n")
+    out.append("                    error.get(\"message\", str(error)),\n")
+    out.append("                    code=error.get(\"code\"),\n")
     out.append("                ) from None\n")
     out.append("            return response\n")
     out.append("        except asyncio.TimeoutError as exc:\n")
