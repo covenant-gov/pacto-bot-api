@@ -18,6 +18,10 @@ _DEFAULT_TIMEOUT: Any = object()
 class PactoClientError(Exception):
     """Error returned by the daemon for a JSON-RPC request."""
 
+    def __init__(self, message: str, code: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+
 class PactoClient:
     """Transport-agnostic async client for the Pacto daemon."""
 
@@ -74,7 +78,8 @@ class PactoClient:
             if "error" in response:
                 error = response["error"]
                 raise PactoClientError(
-                    error.get("message", str(error))
+                    error.get("message", str(error)),
+                    code=error.get("code"),
                 ) from None
             return response
         except asyncio.TimeoutError as exc:

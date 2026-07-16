@@ -462,6 +462,156 @@ async def test_bot_reconnect_after_transient_disconnect(
 
 
 @pytest.mark.asyncio
+async def test_bot_reconnect_falls_back_to_register_when_token_rejected(
+    transport: MockTransport,
+) -> None:
+    """A rejected reconnect token causes a fresh handler registration."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=5,
+    )
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+
+    # Complete first registration.
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+    await asyncio.sleep(0.05)
+
+    # Simulate a graceful daemon disconnect.
+    transport.inject_eof()
+
+    # Poll for the reconnect frame after the disconnect.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    reconnect_frame = None
+    while reconnect_frame is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        for frame in transport.frames:
+            if frame.get("method") == "handler.reconnect":
+                reconnect_frame = frame
+                break
+    assert reconnect_frame is not None
+
+    # Daemon no longer recognizes the old handler.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": reconnect_frame["id"],
+        "error": {"code": -32001, "message": "handler not registered"},
+    })
+
+    # Poll for the fallback register frame.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    register_frame = None
+    while register_frame is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        for frame in transport.frames:
+            if frame.get("method") == "handler.register":
+                register_frame = frame
+                break
+    assert register_frame is not None
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": register_frame["id"],
+        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"]},
+    })
+
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) == 2
+    reconnect_frames = [f for f in transport.frames if f.get("method") == "handler.reconnect"]
+    assert len(reconnect_frames) == 1
+
+
+@pytest.mark.asyncio
+async def test_bot_reconnect_falls_back_to_register_on_invalid_reconnect_token(
+    transport: MockTransport,
+) -> None:
+    """An invalid reconnect token error causes a fresh handler registration."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        retry_initial_backoff=0.05,
+        retry_max_backoff=0.1,
+        circuit_failure_threshold=5,
+    )
+
+    task = asyncio.create_task(bot._run([]))
+    await asyncio.sleep(0.05)
+
+    # Complete first registration.
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+            })
+            break
+    await asyncio.sleep(0.05)
+
+    # Simulate a graceful daemon disconnect.
+    transport.inject_eof()
+
+    # Poll for the reconnect frame after the disconnect.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    reconnect_frame = None
+    while reconnect_frame is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        for frame in transport.frames:
+            if frame.get("method") == "handler.reconnect":
+                reconnect_frame = frame
+                break
+    assert reconnect_frame is not None
+
+    # Daemon recognizes the handler id but the token is wrong.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": reconnect_frame["id"],
+        "error": {"code": -32008, "message": "invalid reconnect token"},
+    })
+
+    # Poll for the fallback register frame.
+    deadline = asyncio.get_running_loop().time() + 5.0
+    register_frame = None
+    while register_frame is None and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.05)
+        for frame in transport.frames:
+            if frame.get("method") == "handler.register":
+                register_frame = frame
+                break
+    assert register_frame is not None
+    transport.inject({
+        "jsonrpc": "2.0",
+        "id": register_frame["id"],
+        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"]},
+    })
+
+    await asyncio.sleep(0.05)
+
+    bot._request_shutdown()
+    await task
+
+    register_frames = [f for f in transport.frames if f.get("method") == "handler.register"]
+    assert len(register_frames) == 2
+    reconnect_frames = [f for f in transport.frames if f.get("method") == "handler.reconnect"]
+    assert len(reconnect_frames) == 1
+
+
+@pytest.mark.asyncio
 async def test_bot_shutdown_during_backoff_exits_cleanly(
     transport: MockTransport,
 ) -> None:

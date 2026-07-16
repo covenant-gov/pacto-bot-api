@@ -192,8 +192,10 @@ async def test_error_response_raises_pacto_client_error(client, transport):
         }
     )
 
-    with pytest.raises(PactoClientError, match="Invalid Request"):
+    with pytest.raises(PactoClientError, match="Invalid Request") as exc_info:
         await task
+
+    assert exc_info.value.code == -32600
 
 
 @pytest.mark.asyncio
