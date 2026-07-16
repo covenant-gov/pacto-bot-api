@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-07-09
+### Added
+
+- Daemon now accepts MLS Welcome messages on behalf of a bot, joins the Squad, and records the hex-encoded group wire id in `AgentEvent.chat_id`. These bookkeeping events are not fanned out to handlers.
+
+### Changed
+
+### Removed
+
+### Fixed
+
+### Security
 
 ### Added
 

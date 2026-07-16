@@ -543,6 +543,20 @@ impl Dispatch {
             return Ok(());
         }
 
+        // The daemon accepts MLS Welcome messages on behalf of the bot in
+        // process_gift_wrap; they are bookkeeping events and should not be
+        // fanned out to handlers.
+        if event.event_type == EventType::MlsWelcomeReceived {
+            self.diagnostics.record_event_dispatched().await;
+            info!(
+                bot_id = %event.bot_id,
+                event_id = %event.event_id,
+                chat_id = %event.chat_id.as_deref().unwrap_or(""),
+                "MLS welcome accepted; skipping handler fan-out"
+            );
+            return Ok(());
+        }
+
         self.diagnostics
             .set_handlers_registered(self.handlers_registered.load(Ordering::SeqCst))
             .await;
