@@ -205,6 +205,69 @@ async def test_command_handler_receives_parsed_args_and_sends_response(bot, tran
 
 
 @pytest.mark.asyncio
+async def test_version_command_auto_registered():
+    """A version string passed to Bot is returned by /version and /info."""
+    bot = Bot("test-bot", transport=MockTransport(), version="test-bot v1.2.3")
+    bot._client = AsyncMock()
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-1",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/version",
+        rumor_id="r-1",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.handler_response.assert_awaited_once_with(
+        action="reply", event_id="e-1", content="test-bot v1.2.3"
+    )
+
+
+@pytest.mark.asyncio
+async def test_info_command_alias_returns_version():
+    """/info is an alias for /version."""
+    bot = Bot("test-bot", transport=MockTransport(), version="test-bot v1.2.3")
+    bot._client = AsyncMock()
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-2",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/info",
+        rumor_id="r-2",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.handler_response.assert_awaited_once_with(
+        action="reply", event_id="e-2", content="test-bot v1.2.3"
+    )
+
+
+@pytest.mark.asyncio
+async def test_version_command_defaults_to_unknown_without_version():
+    """/version returns 'unknown' when no version string is provided."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    event = AgentEventParams(
+        bot_id="test-bot",
+        event_id="e-3",
+        type="dm_received",
+        chat_id="npub1chat",
+        content="/version",
+        rumor_id="r-3",
+        author="npub1author",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.handler_response.assert_awaited_once_with(
+        action="reply", event_id="e-3", content="unknown"
+    )
+
+
+@pytest.mark.asyncio
 async def test_unknown_command_routes_to_default(bot, transport):
     @bot.default
     async def fallback(event, b):

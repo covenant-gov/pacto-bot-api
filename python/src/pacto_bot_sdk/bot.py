@@ -57,9 +57,10 @@ class Bot:
     ``SendGroupMessages`` capability. For full control, use
     ``@bot.on_squad_join`` to provide a custom handler.
 
-    Transport settings are resolved with the same precedence as the hand-written
-    seed SDK: explicit constructor argument → CLI flag → environment variable →
-    default.
+    Set ``version`` to a bot-specific version string and the bot will
+    automatically respond to ``/version`` and ``/info`` with that string.
+    When ``version`` is omitted, the commands still work and return
+    ``"unknown"``.
     """
 
     def __init__(
@@ -83,6 +84,7 @@ class Bot:
         degraded_log_interval: float = 60.0,
         log_level: str | None = None,
         hello_message: str | None = None,
+        version: str | None = None,
     ) -> None:
         self.bot_id = bot_id
         self.event_types = list(event_types or ["dm_received"])
@@ -91,6 +93,7 @@ class Bot:
         self.error_message = error_message
         self.auto_acknowledge = auto_acknowledge
         self._hello_message = hello_message
+        self._version = version if version is not None else "unknown"
 
         # Logger is created first so every later step can emit diagnostics.
         self._logger = Logger(bot_id, log_level)
@@ -122,6 +125,9 @@ class Bot:
         self._default_handler: CommandHandler | None = None
         self._status_handler: StatusHandler | None = None
         self._rate_limited_handler: RateLimitedHandler | None = None
+
+        self._commands["version"] = self._version_handler
+        self._commands["info"] = self._version_handler
 
         if self._hello_message is not None:
             if "SendGroupMessages" in self.capabilities:
@@ -258,6 +264,12 @@ class Bot:
     def _request_shutdown(self) -> None:
         self._logger.info("shutdown signal received")
         self._shutdown.set()
+
+    async def _version_handler(
+        self, event: AgentEventParams, bot: "Bot"
+    ) -> dict[str, Any]:
+        """Return the configured version string for a ``/version`` command."""
+        return self.reply(event, self._version)
 
     # -----------------------------------------------------------------------
     # Decorators
