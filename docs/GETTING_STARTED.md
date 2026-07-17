@@ -292,7 +292,25 @@ cargo test
 
 ## 8. Work on `pacto-bot-api`
 
-The easiest path for bot development is to start with the default Docker stack and use the daemon's local `nsec` signing backend. This avoids setting up a NIP-46 bunker while you are iterating on bot logic.
+### Visual overview
+
+If you are new to the daemon, these pirate-themed diagrams explain the moving parts without reading code. Open the `.excalidraw` files in `docs/diagrams/` if you want to edit them.
+
+**The fleet at a glance** — your bots are small ships that just talk to the Flagship. The Flagship handles all the crypto stuff and keeps your keys safe in the vault.
+
+![How Pacto Bots Work](diagrams/pacto-bot-api-big-picture-cartoon.png)
+
+**How a message voyages from a Nostr user to a handler and back** — the daemon decrypts, routes, and reseals the bottle.
+
+![Message flow](diagrams/pacto-bot-api-message-flow.png)
+
+**Who holds the treasure** — the daemon never stores the signing key; it asks a NIP-46 bunker or uses a dev-only `nsec` chest.
+
+![Security model](diagrams/pacto-bot-api-security-model.png)
+
+See `docs/diagrams/README.md` for the full set of diagrams, including how a bot identity joins the fleet and how handlers talk to the daemon.
+
+
 
 ### Easiest start (nsec backend, no bunker)
 
