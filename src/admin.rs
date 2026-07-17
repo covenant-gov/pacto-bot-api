@@ -265,7 +265,7 @@ enum Command {
 
         /// Capabilities granted to handlers for the new bot.
         /// Valid values: ReadMessages, SendMessages, ManageProfile, SendGroupMessages,
-        /// ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup.
+        /// ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, ExitMlsGroup.
         /// Defaults to ReadMessages,SendMessages when omitted.
         #[arg(long, value_name = "CAPABILITY")]
         capabilities: Vec<String>,
@@ -1260,9 +1260,10 @@ fn validate_capability(cap: &str) -> Result<(), DaemonError> {
         | "SendGroupMessages"
         | "ReceiveGroupMessages"
         | "CreateMlsGroup"
-        | "InviteToMlsGroup" => Ok(()),
+        | "InviteToMlsGroup"
+        | "ExitMlsGroup" => Ok(()),
         _ => Err(DaemonError::Config(format!(
-            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, or InviteToMlsGroup"
+            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, or ExitMlsGroup"
         ))),
     }
 }

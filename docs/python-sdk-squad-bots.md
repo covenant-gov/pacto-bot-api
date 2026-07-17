@@ -11,7 +11,7 @@ This guide covers how to build a bot that participates in a Pacto Squad using th
 ## What this guide covers
 
 - What a Squad bot is and how it differs from a DM bot.
-- The lifecycle of a Squad bot: KeyPackage, Welcome, send, receive.
+- The lifecycle of a Squad bot: KeyPackage, Welcome, send, receive, leave.
 - How to register a bot with the right capabilities and event types.
 - High-level patterns with the `Bot` class.
 - Low-level patterns with the generated `PactoClient`.
@@ -27,9 +27,10 @@ A Pacto Squad is an MLS (Messaging Layer Security) group running over Nostr. Mes
 
 | | DM bot | Squad bot |
 |---|---|---|
-| **Capability** | `SendMessages` / `ReadMessages` | `SendGroupMessages` / `ReceiveGroupMessages` |
+| **Capability** | `SendMessages` / `ReadMessages` | `SendGroupMessages` / `ReceiveGroupMessages` / `ExitMlsGroup` |
 | **Event type** | `dm_received` | `mls_group_message_received` |
 | **Send method** | `agent.send_dm` | `agent.send_group_message` |
+| **Leave method** | — | `agent.exit_mls_group` |
 | **Key material** | Daemon uses Nostr signing backend (can be remote bunker). | Daemon holds local MLS keys in `vector-mls.db` per bot. |
 | **Joining** | Nothing; DMs are direct. | Bot must publish a KeyPackage and accept a Welcome. |
 | **Recipients** | One user. | The whole Squad. |
@@ -42,12 +43,13 @@ A Squad bot asks for these capabilities when it registers:
 
 - `SendGroupMessages` — lets the bot post to the Squad.
 - `ReceiveGroupMessages` — lets the bot receive decrypted Squad messages.
+- `ExitMlsGroup` — lets the bot leave a Squad by publishing a self-removal MLS proposal.
 
 The event type the bot subscribes to is:
 
 - `mls_group_message_received` — a decrypted message was posted to a Squad the bot is in.
 
-The SDK is generated from `schemas/jsonrpc.json`. After the daemon gains Squad support, the generated models and helpers will include these strings automatically. Until then, pass them as plain strings in the `capabilities` and `event_types` lists.
+These strings are generated automatically from `schemas/jsonrpc.json` and are available in the SDK as typed models and high-level helpers.
 
 ## Squad lifecycle from a bot's perspective
 
@@ -67,8 +69,9 @@ The SDK is generated from `schemas/jsonrpc.json`. After the daemon gains Squad s
 1. **Squad creation:** A human creates a Squad in the Pacto app. This deploys the on-chain NavePirata contracts and gives the Squad a unique ID.
 2. **KeyPackage:** The bot calls `agent.publish_key_package` so the daemon publishes a kind:443 KeyPackage event to the configured relays.
 3. **Welcome:** A Squad admin invites the bot. The daemon receives the Welcome inside a kind:1059 GiftWrap, processes it, and persists the group state in `vector-mls.db`.
-4. **Send:** The bot calls `agent.send_group_message(bot_id, group_id, content)` to post an encrypted message.
+4. **Send:** The bot calls `agent.send_group_message(bot_id, group_id, content)` (or `bot.send_group_message(group_id, content)`) to post an encrypted message.
 5. **Receive:** The daemon subscribes to kind:445 group messages, decrypts them, and delivers plaintext to the bot as `agent.event` notifications.
+6. **Leave:** The bot calls `agent.exit_mls_group(bot_id, group_id)` (or `bot.exit_squad(group_id)`) to publish a kind:445 self-removal MLS proposal. An admin must still commit the removal inside the MLS group before the bot is fully removed.
 
 The bot never sees the KeyPackage or Welcome bytes directly. The daemon owns them.
 
@@ -105,13 +108,13 @@ from pacto_bot_sdk import Bot
 bot = Bot(
     bot_id="snapshot-bot",
     event_types=["mls_group_message_received"],
-    capabilities=["SendGroupMessages", "ReceiveGroupMessages"],
+    capabilities=["SendGroupMessages", "ReceiveGroupMessages", "ExitMlsGroup"],
 )
 ```
 
 ### Publishing a KeyPackage on startup
 
-The high-level `Bot` class does not yet include a helper for this, so use the generated client directly:
+The high-level `Bot` class does not yet include a helper for publishing a KeyPackage, so use the generated client directly:
 
 ```python
 async def publish_key_package(bot):
@@ -134,7 +137,7 @@ async def snapshot(event, bot):
     # event.group_id is the Squad wire id
     # event.author is the sender's pubkey
     snapshot_text = await build_snapshot()
-    await send_group_message(bot, group_id=event.group_id, content=snapshot_text)
+    await bot.send_group_message(group_id=event.group_id, content=snapshot_text)
     return {"event_id": event.event_id, "action": "ack"}
 ```
 
@@ -142,7 +145,21 @@ For commands that should only work in a Squad, the `event.group_id` tells you wh
 
 ### Sending group messages
 
-The high-level `Bot` class does not yet include a `send_group_message` helper. Use the generated client:
+Use the high-level helper to post to a Squad:
+
+```python
+@bot.command("!snapshot")
+async def snapshot(event, bot):
+    snapshot_text = await build_snapshot()
+    event_id = await bot.send_group_message(
+        group_id=event.group_id,
+        content=snapshot_text,
+    )
+    bot.log(f"posted group message: {event_id}")
+    return {"event_id": event.event_id, "action": "ack"}
+```
+
+For advanced cases, call the generated client directly:
 
 ```python
 async def send_group_message(bot, group_id: str, content: str) -> str:
@@ -154,6 +171,27 @@ async def send_group_message(bot, group_id: str, content: str) -> str:
     bot.log(f"posted group message: {event_id}")
     return event_id
 ```
+
+### Leaving a Squad
+
+A bot that has the `ExitMlsGroup` capability can leave a Squad by publishing a self-removal MLS proposal:
+
+```python
+@bot.command("!leave")
+async def leave(event, bot):
+    group_id = event.group_id
+    if not group_id:
+        return bot.reply(event, "This command only works inside a Squad.")
+
+    event_id = await bot.exit_squad(group_id=group_id)
+    bot.log(f"published leave proposal: {event_id}")
+    return bot.reply(
+        event,
+        "Leave proposal published. An admin must commit the removal before I am fully removed.",
+    )
+```
+
+The helper returns the hex event id of the published kind:445 evolution event. The bot will stop receiving new group messages, but the daemon remains a member of the MLS group until an admin commits the removal proposal.
 
 ### Rate-limiting responses
 
@@ -169,8 +207,7 @@ async def snapshot(event, bot):
     now = datetime.utcnow()
     group_id = event.group_id
     if now - last_snapshot[group_id] < timedelta(minutes=1):
-        await send_group_message(
-            bot,
+        await bot.send_group_message(
             group_id=group_id,
             content="One snapshot per minute per Squad, please.",
         )
@@ -178,7 +215,7 @@ async def snapshot(event, bot):
 
     last_snapshot[group_id] = now
     snapshot_text = await build_snapshot()
-    await send_group_message(bot, group_id=group_id, content=snapshot_text)
+    await bot.send_group_message(group_id=group_id, content=snapshot_text)
     return {"event_id": event.event_id, "action": "ack"}
 ```
 
@@ -186,21 +223,28 @@ This keeps the bot honest about load and prevents the same Squad from accidental
 
 ### DM command membership verification
 
-A user can also send `!snapshot` via DM. In that case the bot must verify the user is a member of the Squad they name. The daemon provides a generic membership verification call. The exact method name will be generated from the daemon schema; for now, expect something like:
+A user can also send `!snapshot` via DM. In that case the bot must verify the user is a member of the Squad they name. Use the high-level helper or the generated client directly:
 
 ```python
-is_member = await bot.client.agent_verify_squad_membership(
-    bot_id=bot.bot_id,
-    group_id=user_specified_group_id,
-    member=event.author,  # the DM sender's pubkey
-)
+@bot.command("!snapshot")
+async def snapshot_dm(event, bot):
+    # Parse the DM to extract the Squad ID, e.g. "!snapshot <group-id>"
+    user_specified_group_id = parse_squad_id(event.content)
 
-if is_member:
+    is_member = await bot.is_squad_member(
+        group_id=user_specified_group_id,
+        member_pubkey=event.author,  # the DM sender's pubkey
+    )
+
+    if not is_member:
+        return bot.reply(event, "You are not a member of that Squad.")
+
     snapshot_text = await build_snapshot()
-    await send_group_message(bot, group_id=user_specified_group_id, content=snapshot_text)
-else:
-    # Optionally tell the user they are not a member.
-    pass
+    await bot.send_group_message(
+        group_id=user_specified_group_id,
+        content=snapshot_text,
+    )
+    return {"event_id": event.event_id, "action": "ack"}
 ```
 
 The user must include the Squad ID in the DM command because the DM itself is not tied to a Squad. The daemon performs the actual membership check against the MLS group state it holds.
@@ -221,7 +265,7 @@ await client.connect()
 result = await client.handler_register(
     bot_ids=["snapshot-bot"],
     event_types=["mls_group_message_received"],
-    capabilities=["SendGroupMessages", "ReceiveGroupMessages"],
+    capabilities=["SendGroupMessages", "ReceiveGroupMessages", "ExitMlsGroup"],
 )
 handler_id = result.handler_id
 ```
@@ -246,6 +290,20 @@ event_id = await client.agent_send_group_message(
 )
 ```
 
+### `agent.exit_mls_group`
+
+```python
+from pacto_bot_sdk._generated.models import AgentExitMlsGroupParams
+
+result = await client.agent_exit_mls_group(
+    bot_id="snapshot-bot",
+    group_id="<hex-group-id>",
+)
+leave_event_id = result.event_id
+```
+
+This publishes a kind:445 evolution event containing a self-removal MLS proposal. The bot stops receiving new group messages, but an admin must still commit the removal inside the MLS group before the bot is fully removed from the roster.
+
 ### `agent.event` shape for group messages
 
 The daemon delivers an `AgentEventParams` notification with:
@@ -265,11 +323,14 @@ Use `event_id` for deduplication. Use `group_id` to scope rate limits and to rou
 ### Membership verification
 
 ```python
-is_member = await client.agent_verify_squad_membership(
+from pacto_bot_sdk._generated.models import AgentIsSquadMemberParams
+
+result = await client.agent_is_squad_member(
     bot_id="snapshot-bot",
     group_id="<hex-group-id>",
-    member="<npub-or-hex>",
+    member_pubkey="<npub-or-hex>",
 )
+is_member = result.is_member
 ```
 
 This lets the bot verify DM-triggered commands without parsing the MLS group state itself.
@@ -283,8 +344,8 @@ from pacto_bot_sdk import Bot
 
 bot = Bot(
     bot_id="snapshot-bot",
-    event_types=["mls_group_message_received"],
-    capabilities=["SendGroupMessages", "ReceiveGroupMessages"],
+    event_types=["mls_group_message_received", "dm_received"],
+    capabilities=["SendGroupMessages", "ReceiveGroupMessages", "ExitMlsGroup"],
 )
 
 last_snapshot: dict[str, datetime] = defaultdict(lambda: datetime.min)
@@ -293,45 +354,74 @@ async def build_snapshot() -> str:
     # Read on-chain state and format a Markdown snapshot.
     return "# Governance snapshot\n\n..."
 
-async def send_group_message(bot, group_id: str, content: str) -> str:
-    return await bot.client.agent_send_group_message(
-        bot_id=bot.bot_id,
-        group_id=group_id,
-        content=content,
-    )
+
+def parse_squad_id(content: str) -> str:
+    # Expects "!snapshot <group-id>" or just "!snapshot" when inside a Squad.
+    parts = content.strip().split(None, 1)
+    return parts[1] if len(parts) > 1 else ""
+
+
+async def maybe_snapshot(group_id: str, author: str) -> str:
+    now = datetime.utcnow()
+    if now - last_snapshot[group_id] < timedelta(minutes=1):
+        return "One snapshot per minute per Squad, please."
+    last_snapshot[group_id] = now
+    return await build_snapshot()
+
 
 @bot.command("!snapshot")
 async def snapshot(event, bot):
-    now = datetime.utcnow()
     group_id = event.group_id
-    if now - last_snapshot[group_id] < timedelta(minutes=1):
-        await send_group_message(
-            bot,
-            group_id=group_id,
-            content="One snapshot per minute per Squad, please.",
-        )
-        return {"event_id": event.event_id, "action": "ack"}
-
-    last_snapshot[group_id] = now
-    snapshot_text = await build_snapshot()
-    await send_group_message(bot, group_id=group_id, content=snapshot_text)
+    if not group_id:
+        return bot.reply(event, "This command only works inside a Squad.")
+    content = await maybe_snapshot(group_id, event.author)
+    await bot.send_group_message(group_id=group_id, content=content)
     return {"event_id": event.event_id, "action": "ack"}
+
+
+@bot.command("!leave")
+async def leave(event, bot):
+    group_id = event.group_id
+    if not group_id:
+        return bot.reply(event, "This command only works inside a Squad.")
+    event_id = await bot.exit_squad(group_id=group_id)
+    bot.log(f"published leave proposal: {event_id}")
+    return bot.reply(
+        event,
+        "Leave proposal published. An admin must commit the removal before I am fully removed.",
+    )
+
+
+@bot.dm
+async def snapshot_dm(event, bot):
+    user_specified_group_id = parse_squad_id(event.content)
+    if not user_specified_group_id:
+        return bot.reply(event, "Usage: !snapshot <group-id>")
+
+    is_member = await bot.is_squad_member(
+        group_id=user_specified_group_id,
+        member_pubkey=event.author,
+    )
+    if not is_member:
+        return bot.reply(event, "You are not a member of that Squad.")
+
+    content = await maybe_snapshot(user_specified_group_id, event.author)
+    await bot.send_group_message(group_id=user_specified_group_id, content=content)
+    return {"event_id": event.event_id, "action": "ack"}
+
 
 if __name__ == "__main__":
     bot.run()
 ```
 
-For a DM-triggered version, add a `dm_received` handler that parses the user's message, extracts the Squad ID, calls `agent_verify_squad_membership`, and then posts to that Squad.
+The example uses the high-level helpers for sending, membership verification, and leaving. It also demonstrates a DM-triggered path that checks membership before posting to a Squad.
 
 ## Gaps and workarounds
 
 | Gap | Workaround |
 |---|---|
-| The high-level `Bot` class has no `send_group_message` helper. | Use `bot.client.agent_send_group_message` directly. |
-| The high-level `Bot` class has no `publish_key_package` helper. | Use `bot.client.agent_publish_key_package` directly. |
-| `ReceiveGroupMessages` and `mls_group_message_received` are not in the generated SDK until the daemon schema is updated. | Pass them as plain strings in `capabilities` and `event_types`. |
-| The SDK has no helper for Squad membership verification. | Use the generated client method once it is added to the daemon schema. |
-| There are no Squad examples in `python/examples/`. | Use the DM examples as a transport/registration template, then swap in the Squad methods and event types. |
+| The high-level `Bot` class has no helper for publishing a KeyPackage. | Use `bot.client.agent_publish_key_package` directly after the bot connects. |
+| There are no Squad examples in `python/examples/`. | Use the high-level helpers in this guide as a starting point. |
 
 After the daemon schema changes, run `cargo xtask codegen` to regenerate the Python SDK. The generated models and docstrings will then include the new methods and event types.
 

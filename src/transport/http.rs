@@ -602,6 +602,7 @@ fn is_mutating_method(method: Option<Method>) -> bool {
             | Some(Method::AgentPublishKeyPackage)
             | Some(Method::AgentCreateMlsGroup)
             | Some(Method::AgentInviteToMlsGroup)
+            | Some(Method::AgentExitMlsGroup)
     )
 }
 

@@ -262,6 +262,10 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 - Prefer deterministic, Docker-free tests; gate external-service tests behind `#[ignore]`.
 - Do not hand-edit `src/*_generated.rs` files; update `schemas/` and run `cargo xtask codegen` instead.
 - When adding new admin CLI commands, include per-command `after_help` examples and update `docs/pacto-bot-admin-llms.txt` via `cargo xtask docs`.
+- **When changing the `capabilities` description in `schemas/jsonrpc.json`:** the Python SDK generator copies that description into generated `HandlerRegisterParams` docstrings and into `python/tests/test_generator.py::HANDLER_REGISTER_PARAMS_SNAPSHOT`. Run the full Python test suite (`cd python && source .venv/bin/activate && pytest tests/`) after any schema description change that affects capabilities, and update the snapshot string.
+- **When adding a new JSON-RPC method that mutates state:** add it to the hand-written `Method` enum and `FromStr`/`all()` lists in `src/transport/protocol.rs`, and make sure it is gated as mutating in HTTP transport if it changes daemon state.
+- **When regenerating the Python SDK:** verify that generated `__all__` exports in `python/src/pacto_bot_sdk/_generated/models.py` include any new request/response models, and run the full Python test suite to catch snapshot or contract drift.
+- **Before declaring a Python-only change safe:** run `pytest tests/` inside the Python venv. Do not rely only on `make validate`, which does not exercise Python tests.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

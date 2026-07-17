@@ -28,7 +28,7 @@
               "capabilities": {
                 "type": "array",
                 "items": { "type": "string" },
-                "description": "Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, and InviteToMlsGroup."
+                "description": "Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, and ExitMlsGroup."
               }
             },
             "required": ["bot_ids", "event_types", "capabilities"]
@@ -385,6 +385,42 @@
             }
           },
           "required": ["is_member"]
+        }
+      }
+    },
+    {
+      "name": "agent.exit_mls_group",
+      "summary": "Exit a Squad by publishing a self-removal MLS proposal.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that participates in the Squad."
+              },
+              "group_id": {
+                "type": "string",
+                "description": "Hex-encoded Squad wire id."
+              }
+            },
+            "required": ["bot_id", "group_id"]
+          }
+        }
+      ],
+      "result": {
+        "name": "exit_mls_group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "event_id": {
+              "type": "string",
+              "description": "Hex id of the published kind:445 evolution event containing the leave proposal."
+            }
+          },
+          "required": ["event_id"]
         }
       }
     },

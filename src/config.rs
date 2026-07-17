@@ -263,6 +263,7 @@ const VALID_CAPABILITIES: &[&str] = &[
     "ReceiveGroupMessages",
     "CreateMlsGroup",
     "InviteToMlsGroup",
+    "ExitMlsGroup",
     "Admin",
 ];
 
@@ -272,6 +273,7 @@ const MLS_CAPABILITIES: &[&str] = &[
     "ReceiveGroupMessages",
     "CreateMlsGroup",
     "InviteToMlsGroup",
+    "ExitMlsGroup",
 ];
 
 /// Redact query-parameter values from a `bunker://` URI.

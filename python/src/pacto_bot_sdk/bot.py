@@ -499,6 +499,17 @@ class Bot:
         )
         return response.is_member
 
+    async def exit_squad(self, group_id: str) -> str:
+        """Exit the Squad *group_id* by publishing a self-removal MLS proposal.
+
+        Returns the hex event id of the published kind:445 evolution event.
+        """
+        response = await self._client.agent_exit_mls_group(
+            bot_id=self.bot_id,
+            group_id=group_id,
+        )
+        return response.event_id
+
     async def create_mls_group(
         self,
         group_name: str,
