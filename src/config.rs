@@ -1087,7 +1087,7 @@ capabilities = ["CreateMlsGroup"]
         (dir, file_path)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn tempdir_under(base: &Path) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir_in(base).unwrap();
         let path = dir.path().to_path_buf();
@@ -1100,7 +1100,7 @@ capabilities = ["CreateMlsGroup"]
         (dir, path)
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn write_config_file(path: &Path, content: &str) {
         std::fs::write(path, content).unwrap();
         {
@@ -1167,7 +1167,7 @@ mls_db_path = "vector-mls.db"
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn mls_db_path_rejects_absolute_tmp() {
         let (_dir, file_path) = restricted_tempdir();
         let data_dir = _dir.path().join("data");
@@ -1198,7 +1198,7 @@ mls_db_path = "/tmp/vector-mls.db"
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn mls_db_path_rejects_relative_tmp() {
         let (_dir, file_path) = restricted_tempdir();
         let (_data_dir_tmp, data_dir) = tempdir_under(Path::new("/tmp"));

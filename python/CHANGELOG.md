@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-17
+
 ### Fixed
 
 - `Bot` now detects stale handler registrations by JSON-RPC error code (`-32001` handler not registered, `-32008` invalid reconnect token) and falls back to a fresh `handler.register` instead of looping on `handler.reconnect`. This prevents bots from getting stuck after the daemon is recreated and loses its in-memory handler registry.
