@@ -220,7 +220,7 @@ class AgentEventParams(BaseModel):
     author: str
     # Bot identity the event is for.
     bot_id: str
-    # Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS group messages.
+    # Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS welcome and group messages.
     chat_id: str | None = None
     # Decrypted rumor content.
     content: str

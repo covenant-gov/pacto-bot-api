@@ -68,6 +68,7 @@ def bot(transport: MockTransport) -> Bot:
         transport=transport,
         event_types=["dm_received"],
         capabilities=["ReadMessages", "SendMessages"],
+        hello_message=None,
     )
 
 
@@ -1489,6 +1490,172 @@ async def test_send_group_message_prefills_bot_id():
     bot._client.agent_send_group_message.assert_awaited_once_with(
         bot_id="test-bot", group_id="0xabc", content="hello squad"
     )
+
+
+@pytest.mark.asyncio
+async def test_hello_message_adds_welcome_event_when_group_capability_present():
+    """hello_message enables mls_welcome_received when SendGroupMessages is present."""
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        capabilities=["ReadMessages", "SendMessages", "SendGroupMessages"],
+        hello_message="Hello from {bot_id}!",
+    )
+    assert bot._hello_message == "Hello from {bot_id}!"
+    assert "mls_welcome_received" in bot.event_types
+    assert "SendGroupMessages" in bot.capabilities
+
+
+@pytest.mark.asyncio
+async def test_hello_message_disabled_does_not_alter_registration():
+    """hello_message=None leaves event_types and capabilities unchanged."""
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        event_types=["dm_received"],
+        capabilities=["ReadMessages", "SendMessages"],
+        hello_message=None,
+    )
+    assert bot._hello_message is None
+    assert bot.event_types == ["dm_received"]
+    assert bot.capabilities == ["ReadMessages", "SendMessages"]
+
+
+@pytest.mark.asyncio
+async def test_hello_message_without_group_capability_warns_and_skips():
+    """hello_message without SendGroupMessages logs a warning and stays disabled."""
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        capabilities=["ReadMessages", "SendMessages"],
+        hello_message="Hello!",
+    )
+    assert "mls_welcome_received" not in bot.event_types
+    assert "mls_welcome_received" not in bot._event_handlers
+
+
+@pytest.mark.asyncio
+async def test_default_handler_sends_hello_on_squad_join():
+    """An mls_welcome_received event triggers the configured hello message."""
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        capabilities=["ReadMessages", "SendMessages", "SendGroupMessages"],
+        hello_message="Hi from {bot_id}!",
+    )
+    bot._client = AsyncMock()
+    bot._client.agent_send_group_message.return_value = "ok"
+
+    event = AgentEventParams(
+        bot_id="hello-bot",
+        event_id="e-welcome",
+        type="mls_welcome_received",
+        chat_id="group-wire-id",
+        content="welcome",
+        rumor_id="r-welcome",
+        author="npub1creator",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.agent_send_group_message.assert_awaited_once_with(
+        bot_id="hello-bot", group_id="group-wire-id", content="Hi from hello-bot!"
+    )
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-welcome"
+    )
+
+
+@pytest.mark.asyncio
+async def test_default_handler_ignores_welcome_without_chat_id():
+    """A welcome event without a chat_id logs a warning and ignores."""
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        capabilities=["ReadMessages", "SendMessages", "SendGroupMessages"],
+        hello_message="Hello!",
+    )
+    bot._client = AsyncMock()
+
+    event = AgentEventParams(
+        bot_id="hello-bot",
+        event_id="e-welcome",
+        type="mls_welcome_received",
+        chat_id=None,
+        content="welcome",
+        rumor_id="r-welcome",
+        author="npub1creator",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.agent_send_group_message.assert_not_awaited()
+    bot._client.handler_response.assert_awaited_once_with(
+        action="ignore", event_id="e-welcome"
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_squad_join_decorator_overrides_default_hello():
+    """@bot.on_squad_join replaces the default hello handler."""
+    calls: list[AgentEventParams] = []
+
+    bot = Bot(
+        "hello-bot",
+        transport=MockTransport(),
+        capabilities=["ReadMessages", "SendMessages", "SendGroupMessages"],
+        hello_message="Hello!",
+    )
+
+    @bot.on_squad_join
+    async def custom_join(event, b):
+        calls.append(event)
+        return None
+
+    assert "mls_welcome_received" in bot.event_types
+    bot._client = AsyncMock()
+
+    event = AgentEventParams(
+        bot_id="hello-bot",
+        event_id="e-welcome",
+        type="mls_welcome_received",
+        chat_id="group-wire-id",
+        content="welcome",
+        rumor_id="r-welcome",
+        author="npub1creator",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.agent_send_group_message.assert_not_awaited()
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_on_squad_join_decorator_works_without_hello_message():
+    """@bot.on_squad_join can be used even when hello_message is None."""
+    calls: list[AgentEventParams] = []
+
+    bot = Bot("hello-bot", transport=MockTransport())
+
+    @bot.on_squad_join
+    async def custom_join(event, b):
+        calls.append(event)
+        return None
+
+    assert "mls_welcome_received" in bot.event_types
+    bot._client = AsyncMock()
+
+    event = AgentEventParams(
+        bot_id="hello-bot",
+        event_id="e-welcome",
+        type="mls_welcome_received",
+        chat_id="group-wire-id",
+        content="welcome",
+        rumor_id="r-welcome",
+        author="npub1creator",
+        timestamp=1234567890,
+    )
+    await bot._handle_event(event)
+    bot._client.agent_send_group_message.assert_not_awaited()
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

@@ -290,12 +290,12 @@
               },
               "type": {
                 "type": "string",
-                "enum": ["dm_received", "mls_group_message_received"],
+                "enum": ["dm_received", "mls_welcome_received", "mls_group_message_received"],
                 "description": "Event type."
               },
               "chat_id": {
                 "type": "string",
-                "description": "Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS group messages."
+                "description": "Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS welcome and group messages."
               },
               "content": {
                 "type": "string",

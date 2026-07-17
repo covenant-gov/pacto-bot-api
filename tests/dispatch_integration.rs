@@ -1834,3 +1834,79 @@ async fn default_rate_limit_send_dm_enforces_bot_aggregate_with_two_handlers()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn mls_welcome_event_is_fanned_out_to_handlers() -> Result<(), Box<dyn std::error::Error>> {
+    let keys = test_keys();
+    let (dispatch, cm) = setup_dispatch(
+        vec![bot_config("welcome-bot", &keys, &["ReadMessages"])],
+        None,
+        None,
+    )
+    .await?;
+
+    let bot_config_for_register = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("welcome-bot").unwrap().config.clone()
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let handler_id = {
+        let mut cm = cm.write().await;
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec!["welcome-bot".to_string()],
+                vec!["mls_welcome_received".to_string()],
+                vec!["ReadMessages".to_string()],
+                &[bot_config_for_register],
+            )?
+            .handler_id
+    };
+
+    let dispatch_for_h = Arc::clone(&dispatch);
+    let handler_id_for_task = handler_id.clone();
+    let h = tokio::spawn(async move {
+        let msg = timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .map_err(|_| DaemonError::Config("timeout waiting for handler event".into()))?
+            .ok_or(DaemonError::Config("handler did not receive event".into()))?;
+        let event = parse_event_notification(&msg).ok_or(DaemonError::Config(
+            "handler received invalid event notification".into(),
+        ))?;
+        assert_eq!(event.event_id, "welcome-evt-1");
+        assert_eq!(event.event_type, EventType::MlsWelcomeReceived);
+        assert_eq!(event.chat_id, Some("squad-wire-id".to_string()));
+        dispatch_for_h
+            .handle_message(
+                JsonRpcMessage::notification(
+                    "handler.response",
+                    Some(serde_json::json!({
+                        "event_id": "welcome-evt-1",
+                        "action": "ignore",
+                    })),
+                ),
+                Some(&handler_id_for_task),
+                None,
+            )
+            .await?;
+        Ok::<(), DaemonError>(())
+    });
+
+    let welcome_event = AgentEvent {
+        bot_id: "welcome-bot".to_string(),
+        event_id: "welcome-evt-1".to_string(),
+        event_type: EventType::MlsWelcomeReceived,
+        chat_id: Some("squad-wire-id".to_string()),
+        content: "welcome".to_string(),
+        rumor_id: "rumor-welcome-1".to_string(),
+        author: keys.public_key().to_bech32()?,
+        timestamp: 42,
+    };
+    dispatch.dispatch_event(welcome_event).await?;
+
+    h.await
+        .map_err(|e| DaemonError::Config(format!("handler task panicked: {e}")))??;
+
+    Ok(())
+}

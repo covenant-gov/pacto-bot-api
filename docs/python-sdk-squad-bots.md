@@ -53,6 +53,42 @@ These strings are generated automatically from `schemas/jsonrpc.json` and are av
 
 ## Squad lifecycle from a bot's perspective
 
+For a simple overview, see `docs/bot-squad-join-flow.excalidraw` (editable),
+`docs/bot-squad-join-flow.svg` (vector), or `docs/bot-squad-join-flow.png`:
+
+![Bot squad join flow](bot-squad-join-flow.png)
+
+```
+┌─────────────┐   invite bot   ┌─────────────┐   bot joins   ┌─────────────┐
+│   You       │───────────────▶│   Pacto     │──────────────▶│   Bot       │
+│ (Squad admin)│                │   Squad     │               │   handler   │
+└─────────────┘                └─────────────┘               └─────────────┘
+                                      ▲                             │
+                                      │                             ▼
+                                      └───────────── bot says hello ──┘
+                                                  "I'm {bot_id}!"
+```
+
+```mermaid
+sequenceDiagram
+    participant Admin as Squad admin
+    participant Relay as Nostr relay
+    participant Daemon as pacto-bot-api daemon
+    participant Handler as Python bot handler
+
+    Note over Daemon: Bot is configured with<br/>SendGroupMessages capability
+    Admin->>Relay: send kind:1059 GiftWrap<br/>containing MLS Welcome
+    Relay->>Daemon: deliver GiftWrap
+    Daemon->>Daemon: decrypt kind:444 Welcome
+    Daemon->>Daemon: MLS engine accepts Welcome<br/>(bot joins Squad)
+    Daemon->>Daemon: derive Squad wire id
+    Daemon->>Handler: agent.event<br/>type: mls_welcome_received<br/>chat_id: <wire-id>
+    Handler->>Daemon: agent.send_group_message<br/>(hello message)
+    Daemon->>Daemon: encrypt MLS group message
+    Daemon->>Relay: publish kind:445 group message
+    Relay-->>Admin: bot's hello appears in Squad
+```
+
 ```
 ┌─────────────────┐     ┌────────────────────┐     ┌─────────────────┐
 │  Pacto app      │────▶│  Bot publishes     │────▶│  Admin invites  │
@@ -68,10 +104,11 @@ These strings are generated automatically from `schemas/jsonrpc.json` and are av
 
 1. **Squad creation:** A human creates a Squad in the Pacto app. This deploys the on-chain NavePirata contracts and gives the Squad a unique ID.
 2. **KeyPackage:** The bot calls `agent.publish_key_package` so the daemon publishes a kind:443 KeyPackage event to the configured relays.
-3. **Welcome:** A Squad admin invites the bot. The daemon receives the Welcome inside a kind:1059 GiftWrap, processes it, and persists the group state in `vector-mls.db`.
-4. **Send:** The bot calls `agent.send_group_message(bot_id, group_id, content)` (or `bot.send_group_message(group_id, content)`) to post an encrypted message.
-5. **Receive:** The daemon subscribes to kind:445 group messages, decrypts them, and delivers plaintext to the bot as `agent.event` notifications.
-6. **Leave:** The bot calls `agent.exit_mls_group(bot_id, group_id)` (or `bot.exit_squad(group_id)`) to publish a kind:445 self-removal MLS proposal. An admin must still commit the removal inside the MLS group before the bot is fully removed.
+3. **Welcome:** A Squad admin invites the bot. The daemon receives the Welcome inside a kind:1059 GiftWrap, processes it, and persists the group state in `vector-mls.db`. The bot is now a member.
+4. **Welcome fan-out:** The daemon sends an `agent.event` with `type: "mls_welcome_received"` and `chat_id` set to the Squad wire id to any handler that subscribed to it. This is the hook bots use to announce themselves.
+5. **Send:** The bot calls `agent.send_group_message(bot_id, group_id, content)` (or `bot.send_group_message(group_id, content)`) to post an encrypted message.
+6. **Receive:** The daemon subscribes to kind:445 group messages, decrypts them, and delivers plaintext to the bot as `agent.event` notifications.
+7. **Leave:** The bot calls `agent.exit_mls_group(bot_id, group_id)` (or `bot.exit_squad(group_id)`) to publish a kind:445 self-removal MLS proposal. An admin must still commit the removal inside the MLS group before the bot is fully removed.
 
 The bot never sees the KeyPackage or Welcome bytes directly. The daemon owns them.
 
@@ -111,6 +148,65 @@ bot = Bot(
     capabilities=["SendGroupMessages", "ReceiveGroupMessages", "ExitMlsGroup"],
 )
 ```
+
+### Announcing on join
+
+When the daemon accepts a Welcome, it fans out an `agent.event` with `type: "mls_welcome_received"` to any handler that subscribed to that event type. The `chat_id` field contains the Squad wire id, so the bot can immediately post a message to the group.
+
+The `Bot` class supports two ways to react to this event:
+
+#### Simple auto-hello message
+
+Set `hello_message` when constructing the bot. This is the easiest way to announce arrival.
+
+```python
+bot = Bot(
+    bot_id="snapshot-bot",
+    event_types=["mls_group_message_received"],
+    capabilities=[
+        "SendGroupMessages",
+        "ReceiveGroupMessages",
+        "ExitMlsGroup",
+    ],
+    hello_message="Hello! I'm {bot_id} and I'm ready to post snapshots.",
+)
+```
+
+Requirements:
+
+- The daemon bot config must grant `SendGroupMessages`.
+- The SDK only enables auto-hello when `SendGroupMessages` is in `capabilities`. If you set `hello_message` without it, the SDK logs a warning and disables the auto-hello.
+- The message is formatted with `str.format`. Only `{bot_id}` is supported; it is replaced with the bot's identity. Other placeholders will raise a formatting error and the hello will be skipped.
+- Set `hello_message=None` to disable the feature.
+
+When a welcome event arrives, the SDK calls:
+
+```python
+await bot.send_group_message(event.chat_id, formatted_message)
+```
+
+and then returns `handler_response(action="ignore")` so the event is acknowledged.
+
+#### Custom handler with `@bot.on_squad_join`
+
+For custom behavior, use the decorator. It adds `mls_welcome_received` to the handler's subscribed event types and replaces the built-in auto-hello.
+
+```python
+@bot.on_squad_join
+async def announce(event, bot):
+    await bot.send_group_message(
+        event.chat_id,
+        "Custom arrival message from {bot.bot_id}",
+    )
+    return bot.ignore(event)
+```
+
+Use this when you need to:
+
+- Read the welcome event metadata (e.g., the inviter's pubkey in `event.author`).
+- Conditionally send different greetings based on the Squad.
+- Perform side effects (logging, metrics) on join.
+- Combine the greeting with a follow-up action like publishing a KeyPackage or starting a background task.
 
 ### Publishing a KeyPackage on startup
 
@@ -421,7 +517,6 @@ The example uses the high-level helpers for sending, membership verification, an
 | Gap | Workaround |
 |---|---|
 | The high-level `Bot` class has no helper for publishing a KeyPackage. | Use `bot.client.agent_publish_key_package` directly after the bot connects. |
-| There are no Squad examples in `python/examples/`. | Use the high-level helpers in this guide as a starting point. |
 
 After the daemon schema changes, run `cargo xtask codegen` to regenerate the Python SDK. The generated models and docstrings will then include the new methods and event types.
 
@@ -449,6 +544,7 @@ For unit tests, use the `PactoClient` directly with a mock transport or a test d
 ## Troubleshooting
 
 - **Bot never receives group messages:** Check that the bot registered with `ReceiveGroupMessages` and `event_types=["mls_group_message_received"]`. Verify the bot accepted the Welcome (`pacto-bot-admin status` should show the bot as healthy).
+- **Bot does not announce itself on join:** Verify that `hello_message` is set and that `SendGroupMessages` is in both the daemon bot config and the SDK `capabilities`. Without `SendGroupMessages` the SDK disables auto-hello and logs a warning.
 - **Bot cannot send:** Check that the bot has the `SendGroupMessages` capability and that the Welcome was accepted (the bot must be a group member before it can send).
 - **KeyPackage not found:** Make sure the daemon published the KeyPackage after the bot started. The bot must call `agent.publish_key_package` before an admin can invite it.
 - **Rate-limit message is posted too often:** Ensure the rate-limit window is tracked per `group_id`, not per `event_id` or per user.
