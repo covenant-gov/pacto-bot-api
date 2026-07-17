@@ -7,18 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-17
+
 ### Added
 
 - New `ExitMlsGroup` capability and `agent.exit_mls_group` JSON-RPC method let a bot publish a self-removal MLS proposal to leave a Squad. Requires an MLS engine (`mls_db_path`) and the `ExitMlsGroup` capability.
 - Python SDK gains `bot.exit_squad(group_id)` high-level helper, which calls `agent.exit_mls_group` and returns the published evolution event id.
+- The daemon now accepts MLS `Welcome` messages on its own behalf and skips handler fan-out for those messages, so a bot that joins a Squad does not receive the daemon's own welcome.
 
 ### Changed
 
-### Removed
+- Bumped `tower-http` from `0.6.11` to `0.7.0`.
+- Bumped `toml` from `0.8.23` to `1.1.3` (spec 1.1.0 compliant).
 
 ### Fixed
 
-### Security
+- `send_group_message` now resolves the wire group id to the MLS group id before dispatching, fixing group-message delivery for newly created Squads.
+- Python SDK `Bot` reconnects now fall back to a fresh `handler.register` when the daemon rejects a stale reconnect token, preventing a bot from getting stuck after the daemon is recreated.
+
+## [0.7.0] - 2026-07-09
 
 ### Added
 
@@ -128,6 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--http` flag for scaffolded bots that call external HTTP APIs.
 - `manifest.json` contract harness for scaffolded projects.
 - `parse_command` export, `reply_on_error` helper, and optional HTTP dependencies in the Python SDK.
+- Generated scaffold config uses environment-variable placeholders (`${PACTO_RELAY_URL:-...}`, `${PACTO_BUNKER_URI:-...}`, `${PACTO_DATA_DIR:-...}`, `${PACTO_SOCKET_PATH:-...}`) so the same `pacto-bot-api.toml` works inside Docker Compose and on the host.
+- Scaffolded bot containers connect to the daemon via a shared Docker volume (`pacto-socket`) instead of mounting the host socket, eliminating UID/GID permission mismatches.
+- Generated README and AGENTS docs updated to describe the new default stack, internal/external relay options, and the `PACTO_RELAY_URL` environment variable.
+- Python SDK Unix-transport error messages now reference the default Docker Compose workflow instead of the removed `bot-only` profile.
 
 ### Changed
 
@@ -253,7 +264,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.4.1...v0.5.0

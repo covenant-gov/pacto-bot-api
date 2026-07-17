@@ -326,7 +326,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Bump pacto-bot-api version strings across the repository."
     )
-    parser.add_argument("daemon_version", help="New daemon version (e.g. 0.7.0)")
+    parser.add_argument("daemon_version", help="New daemon version (e.g. 0.8.0)")
     parser.add_argument(
         "--sdk-version",
         default=None,

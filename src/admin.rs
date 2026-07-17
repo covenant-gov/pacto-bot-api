@@ -4170,6 +4170,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn daemon_lock_detected_by_live_pid_and_lock() -> Result<(), DaemonError> {
         let dir = tempfile::tempdir().map_err(DaemonError::Io)?;
         assert!(!is_daemon_lock_held(dir.path()));
