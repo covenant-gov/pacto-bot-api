@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Daemon now accepts MLS Welcome messages on behalf of a bot, joins the Squad, and records the hex-encoded group wire id in `AgentEvent.chat_id`. These bookkeeping events are not fanned out to handlers.
+- New `ExitMlsGroup` capability and `agent.exit_mls_group` JSON-RPC method let a bot publish a self-removal MLS proposal to leave a Squad. Requires an MLS engine (`mls_db_path`) and the `ExitMlsGroup` capability.
+- Python SDK gains `bot.exit_squad(group_id)` high-level helper, which calls `agent.exit_mls_group` and returns the published evolution event id.
 
 ### Changed
 

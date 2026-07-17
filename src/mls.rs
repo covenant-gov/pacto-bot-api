@@ -182,6 +182,10 @@ enum MlsCommand {
         key_package: Event,
         tx: oneshot::Sender<Result<(UnsignedEvent, Event), MlsError>>,
     },
+    LeaveGroup {
+        wire_id: String,
+        tx: oneshot::Sender<Result<Event, MlsError>>,
+    },
     ResolveWireId {
         wire_id: String,
         tx: oneshot::Sender<Result<Vec<u8>, MlsError>>,
@@ -464,6 +468,28 @@ impl MlsEngineHandle {
                                             MlsError::Engine("missing welcome rumor".into())
                                         })?;
                                     Ok((welcome_rumor, update.evolution_event))
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::LeaveGroup { wire_id, tx } => {
+                        let result: Result<Event, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let group = groups
+                                        .iter()
+                                        .find(|g| {
+                                            hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                        })
+                                        .ok_or(MlsError::GroupNotFound)?;
+
+                                    let update = engine.leave_group(&group.mls_group_id)?;
+                                    Ok(update.evolution_event)
                                 })()
                             }))
                             .unwrap_or_else(|e| {
@@ -784,6 +810,22 @@ impl MlsEngineHandle {
             .send(MlsCommand::IsGroupMember {
                 wire_id: wire_id.to_string(),
                 member: *member,
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Leave an existing MLS group identified by its wire id.
+    ///
+    /// Returns the signed kind:445 evolution event containing the leave
+    /// proposal. The caller is responsible for publishing it to relays.
+    pub async fn leave_group(&self, wire_id: &str) -> Result<Event, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::LeaveGroup {
+                wire_id: wire_id.to_string(),
                 tx,
             })
             .await
@@ -1160,6 +1202,47 @@ mod tests {
         let result = engine
             .add_member(&wire_id, keys.public_key(), key_package)
             .await;
+
+        assert!(matches!(result, Err(MlsError::GroupNotFound)));
+    }
+
+    #[tokio::test]
+    async fn leave_group_returns_evolution_event() {
+        let temp = test_tempdir();
+        let creator_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let key_package = build_key_package(&engine, &recipient_keys).await;
+        let (wire_id, _) = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                key_package,
+                "test-group".to_string(),
+                vec![],
+            )
+            .await
+            .expect("create_group failed");
+
+        let evolution_event = engine
+            .leave_group(&wire_id)
+            .await
+            .expect("leave_group failed");
+
+        assert!(!evolution_event.content.is_empty());
+        assert_eq!(evolution_event.kind, Kind::MlsGroupMessage);
+    }
+
+    #[tokio::test]
+    async fn leave_group_unknown_wire_id_returns_group_not_found() {
+        let temp = test_tempdir();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let wire_id = "a".repeat(64);
+        let result = engine.leave_group(&wire_id).await;
 
         assert!(matches!(result, Err(MlsError::GroupNotFound)));
     }

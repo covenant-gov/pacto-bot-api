@@ -296,6 +296,8 @@ pub enum Method {
     AgentRateLimited,
     #[serde(rename = "agent.is_squad_member")]
     AgentIsSquadMember,
+    #[serde(rename = "agent.exit_mls_group")]
+    AgentExitMlsGroup,
     #[serde(rename = "agent.send_group_message")]
     AgentSendGroupMessage,
     #[serde(rename = "agent.publish_key_package")]
@@ -333,6 +335,7 @@ impl Method {
             Method::AgentVersion,
             Method::AgentRateLimited,
             Method::AgentIsSquadMember,
+            Method::AgentExitMlsGroup,
             Method::AgentSendGroupMessage,
             Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
@@ -366,6 +369,7 @@ impl FromStr for Method {
             "agent.version" => Ok(Self::AgentVersion),
             "agent.rate_limited" => Ok(Self::AgentRateLimited),
             "agent.is_squad_member" => Ok(Self::AgentIsSquadMember),
+            "agent.exit_mls_group" => Ok(Self::AgentExitMlsGroup),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
@@ -635,6 +639,25 @@ pub struct AgentIsSquadMemberResponse {
     pub is_member: bool,
 }
 
+/// Typed payload for the `agent.exit_mls_group` JSON-RPC method.
+///
+/// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
+/// `agent.exit_mls_group` method: all fields are required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentExitMlsGroupParams {
+    /// Bot identity that participates in the Squad.
+    pub bot_id: String,
+    /// Hex-encoded Squad wire id (MLS nostr_group_id).
+    pub group_id: String,
+}
+
+/// Typed payload returned by the `agent.exit_mls_group` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentExitMlsGroupResponse {
+    /// Hex id of the published kind:445 evolution event containing the leave proposal.
+    pub event_id: String,
+}
+
 /// Typed payload returned by the `agent.version` JSON-RPC method.
 ///
 /// Matches `schemas/version.json`: the result contains the daemon's Cargo
@@ -671,6 +694,7 @@ mod tests {
             "system.health",
             "agent.rate_limited",
             "agent.is_squad_member",
+            "agent.exit_mls_group",
             "agent.send_group_message",
             "agent.publish_key_package",
             "admin.send_test_dm",

@@ -1506,6 +1506,20 @@ async def test_is_squad_member_prefills_bot_id():
 
 
 @pytest.mark.asyncio
+async def test_exit_squad_prefills_bot_id_and_returns_event_id():
+    """bot.exit_squad calls agent_exit_mls_group with bot_id."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_exit_mls_group.return_value = AsyncMock(event_id="event-id-hex")
+
+    result = await bot.exit_squad("0xabc")
+    assert result == "event-id-hex"
+    bot._client.agent_exit_mls_group.assert_awaited_once_with(
+        bot_id="test-bot", group_id="0xabc"
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_mls_group_prefills_bot_id():
     """bot.create_mls_group calls agent_create_mls_group with bot_id."""
     bot = Bot("test-bot", transport=MockTransport())

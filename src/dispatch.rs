@@ -23,9 +23,9 @@ use crate::mls::MlsEngineHandle;
 use crate::nostr::NostrClient;
 use crate::signer::{Signer, SignerBackend};
 use crate::transport::protocol::{
-    AdminSendTestDmResponse, AgentIsSquadMemberResponse, AgentListHandlersEntry,
-    AgentListHandlersResponse, AgentUnregisterHandlerResponse, AgentVersionResponse,
-    CreateMlsGroupParams, HandlerReconnectParams, HandlerReconnectResponse,
+    AdminSendTestDmResponse, AgentExitMlsGroupResponse, AgentIsSquadMemberResponse,
+    AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
+    AgentVersionResponse, CreateMlsGroupParams, HandlerReconnectParams, HandlerReconnectResponse,
     HandlerRegisterResponse, HandlerUnregisterResponse, InviteToMlsGroupParams, JsonRpcMessage,
     Method, MetricsResponse, MlsGroupResponse, parse_method,
 };
@@ -888,6 +888,7 @@ impl Dispatch {
                     .await
             }
             Method::AgentIsSquadMember => self.handle_is_squad_member(handler_id, params).await,
+            Method::AgentExitMlsGroup => self.handle_exit_mls_group(handler_id, params).await,
             Method::AgentEvent | Method::AgentStatus | Method::AgentRateLimited => {
                 Err(DaemonError::MethodNotFound)
             }
@@ -2035,6 +2036,61 @@ impl Dispatch {
                     "failed to check squad membership: {e}"
                 ))),
             })
+    }
+
+    async fn handle_exit_mls_group(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.exit_mls_group missing params".into()))?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.exit_mls_group missing bot_id".into()))?;
+        let group_id = params
+            .get("group_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.exit_mls_group missing group_id".into()))?;
+
+        let event_id = self
+            .handle_exit_mls_group_inner(bot_id, group_id, handler_id)
+            .await?;
+        Ok(Some(serde_json::to_value(AgentExitMlsGroupResponse {
+            event_id: event_id.to_hex(),
+        })?))
+    }
+
+    async fn handle_exit_mls_group_inner(
+        &self,
+        bot_id: &str,
+        group_id: &str,
+        handler_id: Option<&str>,
+    ) -> Result<EventId, DaemonError> {
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "ExitMlsGroup")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let mls_engine = bot
+            .mls
+            .as_ref()
+            .ok_or_else(|| DaemonError::MlsEngineNotConfigured)?;
+        let evolution_event = mls_engine.leave_group(group_id).await?;
+        let event_id = evolution_event.id;
+        cm.nostr_client
+            .send_evolution_event(&evolution_event)
+            .await?;
+        Ok(event_id)
     }
 
     /// Spawn a background task that removes disconnected handlers that have
@@ -3486,6 +3542,149 @@ mod tests {
             .await
             .expect("welcome gift-wrap should be published");
         assert_eq!(gift_wrap_count(&events), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authorized_exit_mls_group_returns_event_id_and_publishes_evolution() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin", "ExitMlsGroup"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id =
+            register_handler(&dispatch, &["mls-bot"], &["Admin", "ExitMlsGroup"]).await;
+
+        let key_package = build_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        // Create the group so the bot is a member.
+        let create_req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        let create_resp = dispatch
+            .handle_message(create_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = create_resp else {
+            panic!("expected response");
+        };
+        let result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        let wire_id = result.wire_id;
+        assert_eq!(wire_id.len(), 64);
+
+        // Wait for the welcome gift-wrap before exiting.
+        relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("welcome gift-wrap should be published");
+
+        let exit_req = JsonRpcMessage::request(
+            3.into(),
+            "agent.exit_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_id": wire_id,
+            })),
+        );
+        let exit_resp = dispatch
+            .handle_message(exit_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = exit_resp else {
+            panic!("expected response");
+        };
+        let result: AgentExitMlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert_eq!(result.event_id.len(), 64);
+
+        let events = relay
+            .wait_for_event(|e| e.kind == Kind::MlsGroupMessage, Duration::from_secs(5))
+            .await
+            .expect("evolution event should be published");
+        let evolution_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == Kind::MlsGroupMessage)
+            .collect();
+        assert_eq!(evolution_events.len(), 1);
+        assert_eq!(evolution_events[0].id.to_hex(), result.event_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_exit_mls_group_without_capability_returns_unauthorized() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let keys = test_keys();
+        let recipient_keys = nostr::Keys::generate();
+        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
+        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+            vec![bot_config_with_mls(
+                "mls-bot",
+                &keys,
+                &["Admin"],
+                "vector-mls.db",
+            )],
+            &relay.url(),
+        )
+        .await;
+
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let key_package = build_key_package_event(&recipient_keys).await;
+        relay.inject_event(key_package).await;
+
+        let create_req = JsonRpcMessage::request(
+            2.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_name": "test-group",
+                "recipient": recipient_npub,
+            })),
+        );
+        dispatch
+            .handle_message(create_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+
+        relay
+            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("welcome gift-wrap should be published");
+
+        let exit_req = JsonRpcMessage::request(
+            3.into(),
+            "agent.exit_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            })),
+        );
+        let exit_resp = dispatch
+            .handle_message(exit_req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = exit_resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32006);
     }
 
     #[tokio::test(flavor = "multi_thread")]

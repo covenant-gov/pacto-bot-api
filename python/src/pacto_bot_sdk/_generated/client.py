@@ -228,6 +228,25 @@ class PactoClient:
         }
         await self.transport.write_frame(frame)
 
+    async def agent_exit_mls_group(self, bot_id: str, group_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentExitMlsGroupResponse:
+        """
+        Call JSON-RPC method `agent.exit_mls_group`.
+
+        Exit a Squad by publishing a self-removal MLS proposal.
+
+        Example:
+
+            >>> result = await client.agent_exit_mls_group(...)
+            >>> isinstance(result, AgentExitMlsGroupResponse)
+
+        jsonrpc_method: ``"agent.exit_mls_group"``
+        """
+        params = models.AgentExitMlsGroupParams(bot_id=bot_id, group_id=group_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.exit_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AgentExitMlsGroupResponse.model_validate(result)
+
     async def agent_invite_to_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentInviteToMlsGroupResponse:
         """
         Call JSON-RPC method `agent.invite_to_mls_group`.

@@ -199,6 +199,26 @@ Use `parse_command(event.content)` to split a message into `command`, `args`, an
 - `bot.client` — access the low-level `PactoClient` for advanced use.
 - `bot.is_degraded` — `True` when the circuit breaker is open and the bot is not dispatching.
 
+### Squad (MLS group) helpers
+
+Bots that join Pacto Squads need `mls_db_path` configured in the daemon and the
+appropriate MLS capabilities. Register with `SendGroupMessages`,
+`ReceiveGroupMessages`, and `ExitMlsGroup` as needed:
+
+```python
+bot = Bot(
+    bot_id="squad-bot",
+    event_types=["mls_group_message_received"],
+    capabilities=["SendGroupMessages", "ReceiveGroupMessages", "ExitMlsGroup"],
+)
+```
+
+Available helpers:
+
+- `await bot.send_group_message(group_id, content)` — send an encrypted message to the Squad.
+- `await bot.is_squad_member(group_id, member_pubkey)` — check whether a pubkey is a Squad member.
+- `await bot.exit_squad(group_id)` — publish a self-removal MLS proposal to leave the Squad. Returns the hex event id of the published kind:445 evolution event. The actual removal must be committed by a Squad admin.
+
 ### Reconnection resilience
 
 `Bot` retries the initial registration and all runtime reconnects with exponential

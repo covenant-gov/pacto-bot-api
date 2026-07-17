@@ -28,6 +28,7 @@ fn new_help_lists_backends_and_capabilities() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("ReadMessages"));
     assert!(stdout.contains("SendMessages"));
     assert!(stdout.contains("ManageProfile"));
+    assert!(stdout.contains("ExitMlsGroup"));
     assert!(stdout.contains("Examples:"));
     Ok(())
 }
