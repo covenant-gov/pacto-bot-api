@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Daemon now fans out `mls_welcome_received` events to handlers that subscribe to them, enabling bots to react when they join a Squad.
+- Python SDK `Bot` gains an opt-in squad join greeting via `hello_message="..."`. When the bot is invited to a Squad and has the `SendGroupMessages` capability, it automatically sends the configured message to the group. Use `{bot_id}` in the message to include the bot's identity.
+- Python SDK `@bot.on_squad_join` decorator for custom handling of `mls_welcome_received` events; this overrides the built-in `hello_message` auto-response and adds the event type to the handler subscription.
+
+### Changed
+
+- `schemas/jsonrpc.json` now lists `mls_welcome_received` as a valid `agent.event` type and clarifies that `chat_id` contains the Squad wire id for both welcome and group messages.
+
 ## [0.8.0] - 2026-07-17
 
 ### Added

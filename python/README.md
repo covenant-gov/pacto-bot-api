@@ -182,6 +182,7 @@ sanitize content — scrub user input before calling it.
 - `@bot.hears("token")` — register a handler for messages whose first token matches *token*.
 - `@bot.event("type")` — register a handler for `agent.event` notifications of *type*.
 - `@bot.dm` — shorthand for `@bot.event("dm_received")`.
+- `@bot.on_squad_join` — shorthand for `@bot.event("mls_welcome_received")` and overrides the built-in auto-hello.
 - `@bot.default` — fallback handler for unrecognized commands.
 - `@bot.status` — callback for `agent.status` notifications.
 - `@bot.rate_limited` — callback for `agent.rate_limited` notifications.
@@ -218,6 +219,75 @@ Available helpers:
 - `await bot.send_group_message(group_id, content)` — send an encrypted message to the Squad.
 - `await bot.is_squad_member(group_id, member_pubkey)` — check whether a pubkey is a Squad member.
 - `await bot.exit_squad(group_id)` — publish a self-removal MLS proposal to leave the Squad. Returns the hex event id of the published kind:445 evolution event. The actual removal must be committed by a Squad admin.
+
+#### Automatic hello on squad join
+
+When the daemon accepts an MLS Welcome on behalf of the bot, it fans out an
+`agent.event` with `type: "mls_welcome_received"`. The `chat_id` field is the
+Squad wire id, so the bot can post back to the same group immediately.
+
+For a simple overview, see `docs/bot-squad-join-flow.excalidraw` (editable),
+`docs/bot-squad-join-flow.svg` (vector), or `docs/bot-squad-join-flow.png`:
+
+![Bot squad join flow](../docs/bot-squad-join-flow.png)
+
+```
+┌─────────────┐   invite bot   ┌─────────────┐   bot joins   ┌─────────────┐
+│   You       │───────────────▶│   Pacto     │──────────────▶│   Bot       │
+│ (Squad admin)│                │   Squad     │               │   handler   │
+└─────────────┘                └─────────────┘               └─────────────┘
+                                      ▲                             │
+                                      │                             ▼
+                                      └───────────── bot says hello ──┘
+                                                  "I'm {bot_id}!"
+```
+
+```mermaid
+sequenceDiagram
+    participant Admin as Squad admin
+    participant Relay as Nostr relay
+    participant Daemon as pacto-bot-api daemon
+    participant Handler as Python bot handler
+
+    Note over Daemon: Bot configured with SendGroupMessages
+    Admin->>Relay: kind:1059 GiftWrap (MLS Welcome)
+    Relay->>Daemon: deliver GiftWrap
+    Daemon->>Daemon: decrypt & accept Welcome
+    Daemon->>Handler: agent.event: mls_welcome_received
+    Handler->>Daemon: agent.send_group_message
+    Daemon->>Relay: kind:445 group message
+```
+
+Set `hello_message` to enable the automatic greeting:
+
+```python
+bot = Bot(
+    bot_id="squad-bot",
+    capabilities=["ReadMessages", "SendMessages", "SendGroupMessages"],
+    hello_message="Hello! I'm {bot_id} and I've joined this squad.",
+)
+```
+
+Requirements:
+
+- The bot config must grant `SendGroupMessages`.
+- The `hello_message` string is formatted with `str.format`, so `{bot_id}` is
+  replaced with the bot's id. Other placeholders are not supported.
+- Set `hello_message=None` to disable the auto-hello.
+- The SDK only enables auto-hello when `SendGroupMessages` is in `capabilities`.
+  If you set `hello_message` without it, the SDK logs a warning and disables
+  the greeting.
+
+For custom behavior, use `@bot.on_squad_join`. It registers a handler for
+`mls_welcome_received` and also adds that event type to the handler's
+subscription list:
+
+```python
+@bot.on_squad_join
+async def announce(event, bot):
+    await bot.send_group_message(event.chat_id, "Custom arrival message")
+    return bot.ignore(event)
+```
 
 ### Reconnection resilience
 
@@ -334,8 +404,13 @@ Incoming notifications are validated into `AgentEventParams` and `AgentStatusPar
 
 Common capabilities a bot can request:
 
-- `ReadMessages` — receive `dm_received` events.
+- `ReadMessages` — receive `dm_received` and `mls_welcome_received` events.
 - `SendMessages` — reply or send DMs via `agent.send_dm`.
+- `SendGroupMessages` — send messages to Squads via `agent.send_group_message`.
+- `ReceiveGroupMessages` — receive `mls_group_message_received` events.
+- `CreateMlsGroup` — create new Squads via `agent.create_mls_group`.
+- `InviteToMlsGroup` — invite members to existing Squads via `agent.invite_to_mls_group`.
+- `ExitMlsGroup` — leave a Squad via `agent.exit_mls_group`.
 
 Request only the capabilities your bot needs.
 

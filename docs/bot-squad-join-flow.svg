@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="480" viewBox="0 0 960 480">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1e1e1e"/>
+    </marker>
+    <style>
+      .box { fill: #ffffff; stroke: #1e1e1e; stroke-width: 2; rx: 8; ry: 8; }
+      .box-squad { fill: #e7f5ff; }
+      .box-bot { fill: #d0fff4; }
+      .text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 16px; fill: #1e1e1e; text-anchor: middle; }
+      .text-small { font-size: 14px; fill: #495057; }
+      .text-arrow1 { fill: #1971c2; }
+      .text-arrow2 { fill: #087f5b; }
+      .text-arrow3 { fill: #e8590c; }
+      .note { font-size: 16px; fill: #495057; text-anchor: start; }
+    </style>
+  </defs>
+
+  <!-- You box -->
+  <rect class="box" x="80" y="80" width="200" height="100"/>
+  <text class="text" x="180" y="120">You</text>
+  <text class="text" x="180" y="145">(Squad admin)</text>
+
+  <!-- Squad box -->
+  <rect class="box box-squad" x="380" y="80" width="200" height="100"/>
+  <text class="text" x="480" y="120">Pacto Squad</text>
+  <text class="text" x="480" y="145">(MLS group)</text>
+
+  <!-- Bot box -->
+  <rect class="box box-bot" x="680" y="80" width="200" height="100"/>
+  <text class="text" x="780" y="120">Bot handler</text>
+  <text class="text" x="780" y="145">(Python SDK)</text>
+
+  <!-- Arrow 1: You -> Squad -->
+  <line x1="280" y1="130" x2="380" y2="130" stroke="#1971c2" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text class="text-small text-arrow1" x="330" y="110">1. Invite bot</text>
+
+  <!-- Arrow 2: Squad -> Bot -->
+  <line x1="580" y1="130" x2="680" y2="130" stroke="#087f5b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text class="text-small text-arrow2" x="630" y="110">2. Bot joins</text>
+
+  <!-- Arrow 3: Bot -> Squad -->
+  <line x1="780" y1="180" x2="580" y2="260" stroke="#e8590c" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <text class="text-small text-arrow3" x="680" y="250">3. Bot says hello</text>
+  <text class="text-small text-arrow3" x="680" y="270">"I'm {bot_id}!"</text>
+
+  <!-- Note -->
+  <text class="note" x="120" y="340">You invite the bot → it joins the Squad → it automatically announces itself.</text>
+  <text class="note" x="120" y="370">No manual hello needed. The message is customizable in the bot's code.</text>
+</svg>

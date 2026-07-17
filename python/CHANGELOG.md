@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Bot(..., hello_message="...")` enables an automatic greeting when the bot joins a Pacto Squad. The message is sent to the Squad via `send_group_message` using the Squad wire id from the `mls_welcome_received` event. Requires the `SendGroupMessages` capability. Use `{bot_id}` in the message string to include the bot's identity.
+- `@bot.on_squad_join` decorator for custom `mls_welcome_received` handling; it overrides the built-in auto-hello and adds the event type to the handler subscription.
+
 ## [0.5.0] - 2026-07-17
 
 ### Fixed

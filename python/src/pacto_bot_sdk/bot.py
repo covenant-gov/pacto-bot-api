@@ -51,6 +51,12 @@ class Bot:
         if __name__ == "__main__":
             bot.run()
 
+    By default, the bot does not announce itself when joining a Squad. Set
+    ``hello_message`` to enable a short automatic message on
+    ``mls_welcome_received`` events. The bot must also have the
+    ``SendGroupMessages`` capability. For full control, use
+    ``@bot.on_squad_join`` to provide a custom handler.
+
     Transport settings are resolved with the same precedence as the hand-written
     seed SDK: explicit constructor argument → CLI flag → environment variable →
     default.
@@ -76,6 +82,7 @@ class Bot:
         circuit_cooling_off_seconds: float = 60.0,
         degraded_log_interval: float = 60.0,
         log_level: str | None = None,
+        hello_message: str | None = None,
     ) -> None:
         self.bot_id = bot_id
         self.event_types = list(event_types or ["dm_received"])
@@ -83,6 +90,7 @@ class Bot:
         self.reply_on_error = reply_on_error
         self.error_message = error_message
         self.auto_acknowledge = auto_acknowledge
+        self._hello_message = hello_message
 
         # Logger is created first so every later step can emit diagnostics.
         self._logger = Logger(bot_id, log_level)
@@ -114,6 +122,19 @@ class Bot:
         self._default_handler: CommandHandler | None = None
         self._status_handler: StatusHandler | None = None
         self._rate_limited_handler: RateLimitedHandler | None = None
+
+        if self._hello_message is not None:
+            if "SendGroupMessages" in self.capabilities:
+                if "mls_welcome_received" not in self.event_types:
+                    self.event_types.append("mls_welcome_received")
+                self._event_handlers.setdefault(
+                    "mls_welcome_received", self._default_squad_join_handler
+                )
+            else:
+                self._logger.warn(
+                    "hello_message is set but SendGroupMessages capability is missing; "
+                    "squad join auto-hello is disabled"
+                )
 
         self._own_pubkeys: dict[str, str] | None = None
         self._decorator_state_lock = asyncio.Lock()
@@ -279,6 +300,18 @@ class Bot:
     def dm(self, handler: CommandHandler) -> CommandHandler:
         """Shorthand for ``@bot.event(\"dm_received\")``."""
         self._event_handlers["dm_received"] = handler
+        return handler
+
+    def on_squad_join(self, handler: CommandHandler) -> CommandHandler:
+        """Register a callback for MLS squad join (welcome) events.
+
+        This overrides the built-in auto-hello message. Registering this
+        decorator also adds ``mls_welcome_received`` to the handler's subscribed
+        event types so the daemon delivers welcome events.
+        """
+        if "mls_welcome_received" not in self.event_types:
+            self.event_types.append("mls_welcome_received")
+        self._event_handlers["mls_welcome_received"] = handler
         return handler
 
     def hears(self, token: str) -> Callable[[CommandHandler], CommandHandler]:
@@ -489,6 +522,26 @@ class Bot:
             group_id=group_id,
             content=content,
         )
+
+    async def _default_squad_join_handler(
+        self, event: AgentEventParams, bot: "Bot"
+    ) -> dict[str, Any] | None:
+        """Send the configured auto-hello message when joining a Squad."""
+        if not event.chat_id:
+            self._logger.warn(
+                "mls_welcome_received event has no chat_id; cannot send hello"
+            )
+            return self.ignore(event)
+        try:
+            content = self._hello_message.format(bot_id=self.bot_id)
+        except Exception as exc:
+            self._logger.error(f"failed to format hello_message: {exc}")
+            return self.ignore(event)
+        try:
+            await self.send_group_message(event.chat_id, content)
+        except PactoClientError as exc:
+            self._logger.error(f"failed to send squad hello: {exc}")
+        return self.ignore(event)
 
     async def is_squad_member(self, group_id: str, member_pubkey: str) -> bool:
         """Check whether *member_pubkey* is a member of the Squad *group_id*."""
