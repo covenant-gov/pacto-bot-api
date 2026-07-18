@@ -884,7 +884,11 @@ impl NostrClient {
             let wire_id = mls
                 .process_welcome_and_return_wire_id(event.id, rumor.clone())
                 .await
-                .map_err(|e| DaemonError::Nostr(format!("failed to process MLS welcome: {e}")))?;
+                .map_err(|e| {
+                    DaemonError::Nostr(format!(
+                        "failed to accept MLS welcome for bot {bot_id}: {e}"
+                    ))
+                })?;
             Some(wire_id)
         } else {
             None

@@ -116,6 +116,44 @@ async fn decrypt_event_accepts_welcome_and_returns_wire_id()
 }
 
 #[tokio::test]
+async fn decrypt_event_welcome_is_idempotent_on_replay() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, client, mls, _relay, _dir) = setup_nostr_client_with_bot().await?;
+    let bot_pubkey = keys.public_key();
+
+    let key_package = mls
+        .publish_key_package(&bot_pubkey, vec![])
+        .await
+        .expect("publish key package");
+    let unsigned_kp = nostr::UnsignedEvent::new(
+        bot_pubkey,
+        nostr::Timestamp::now(),
+        nostr::Kind::MlsKeyPackage,
+        key_package.1,
+        key_package.0,
+    );
+    let key_package_event = unsigned_kp.sign(&keys).await?;
+
+    let peer = MockMlsPeer::new();
+    let (_group_result, welcome_rumor) = peer.create_group_with(&key_package_event);
+    let gift_wrap = gift_wrap_welcome(&peer.keys, &bot_pubkey, welcome_rumor).await;
+
+    let first = client.decrypt_event(&gift_wrap).await?;
+    let second = client.decrypt_event(&gift_wrap).await?;
+
+    assert_eq!(first.bot_id, "welcome-bot");
+    assert_eq!(first.event_type, EventType::MlsWelcomeReceived);
+    assert_eq!(second.event_type, EventType::MlsWelcomeReceived);
+    assert_eq!(
+        first.chat_id, second.chat_id,
+        "replayed welcome should return the same wire id"
+    );
+    let wire_id = first.chat_id.expect("wire id present");
+    assert_eq!(wire_id.len(), 64, "wire id should be 64 hex characters");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn decrypt_event_dm_without_mls_engine_still_works() -> Result<(), Box<dyn std::error::Error>>
 {
     let client = NostrClient::new(vec![]).await?;
