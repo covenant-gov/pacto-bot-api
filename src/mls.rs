@@ -37,8 +37,9 @@ pub enum MlsError {
     #[error("MLS group not found")]
     GroupNotFound,
 
-    /// The engine has not been initialized (no accepted Welcome yet).
-    #[error("MLS engine not initialized")]
+    /// The MLS engine has no group state for this bot — no accepted welcome
+    /// and no pending welcome were found.
+    #[error("no MLS group or pending welcome")]
     NotInitialized,
 
     /// The group is permanently unusable and must be re-created.
@@ -308,10 +309,18 @@ impl MlsEngineHandle {
                                 (|| {
                                     engine.process_welcome(&event_id, &welcome_rumor)?;
 
+                                    // Idempotency: if this welcome was already processed,
+                                    // there may be no pending welcome but the group already
+                                    // exists. Accept only when a pending welcome is present,
+                                    // otherwise fall through to the existing group lookup.
                                     let welcomes = engine.get_pending_welcomes()?;
-                                    let welcome =
-                                        welcomes.first().ok_or(MlsError::NotInitialized)?;
-                                    engine.accept_welcome(welcome)?;
+                                    if let Some(welcome) = welcomes.first() {
+                                        engine.accept_welcome(welcome)?;
+                                    } else {
+                                        tracing::debug!(
+                                            "no pending welcome after process_welcome; using existing group if present"
+                                        );
+                                    }
 
                                     let groups = engine.get_groups()?;
                                     let group = groups.first().ok_or(MlsError::NotInitialized)?;
@@ -374,9 +383,13 @@ impl MlsEngineHandle {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
                                     let welcomes = engine.get_pending_welcomes()?;
-                                    let welcome =
-                                        welcomes.first().ok_or(MlsError::NotInitialized)?;
-                                    engine.accept_welcome(welcome)?;
+                                    if let Some(welcome) = welcomes.first() {
+                                        engine.accept_welcome(welcome)?;
+                                    } else {
+                                        tracing::debug!(
+                                            "no pending welcome to accept; using existing group if present"
+                                        );
+                                    }
 
                                     // Get the group info for the accepted group
                                     let groups = engine.get_groups()?;

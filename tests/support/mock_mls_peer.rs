@@ -182,7 +182,7 @@ impl MockMlsPeer {
             .engine
             .add_members(
                 &group_result.group.mls_group_id,
-                &[new_member_key_package_event.clone()],
+                std::slice::from_ref(new_member_key_package_event),
             )
             .expect("add member");
         self.engine

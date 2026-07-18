@@ -1403,8 +1403,8 @@ mod tests {
             relay: "wss://relay.example".to_string(),
             invited_bots: vec![],
         };
-        db.insert_mls_group(&other_bot).expect(
-            "same wire_id for a different bot should be allowed");
+        db.insert_mls_group(&other_bot)
+            .expect("same wire_id for a different bot should be allowed");
 
         // But the same bot cannot reuse the wire_id under a different group name.
         let mut dup = row.clone();

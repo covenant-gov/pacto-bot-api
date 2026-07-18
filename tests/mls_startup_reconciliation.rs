@@ -180,9 +180,14 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
     // Bot-a is the first member: the peer creates the group with it.
     let (peer_result, wire_id) = {
         let cm = Arc::new(RwLock::new(
-            ClientManager::new(dir.path(), config.clone(), NostrClient::new(vec![]).await.unwrap(), &db)
-                .await
-                .expect("client manager initializes"),
+            ClientManager::new(
+                dir.path(),
+                config.clone(),
+                NostrClient::new(vec![]).await.unwrap(),
+                &db,
+            )
+            .await
+            .expect("client manager initializes"),
         ));
         let cm_guard = cm.read().await;
         let bot_a = cm_guard.get_bot_by_id("bot-a").expect("bot-a exists");
@@ -206,10 +211,12 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
 
         let (result, welcome_rumor) = peer.create_group_with(&bot_a_key_package_event);
         let signed_welcome = peer.sign(welcome_rumor).await;
-        mls_a.process_welcome(wrapper_event_id, signed_welcome)
+        mls_a
+            .process_welcome(wrapper_event_id, signed_welcome)
             .await
             .expect("bot-a processes welcome");
-        mls_a.accept_pending_welcome()
+        mls_a
+            .accept_pending_welcome()
             .await
             .expect("bot-a accepts pending welcome");
         let wire_id = hex::encode(result.group.nostr_group_id.as_slice());
@@ -220,9 +227,14 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
     // Bot-b joins the same Squad by having the peer add it to bot-a's group.
     {
         let cm = Arc::new(RwLock::new(
-            ClientManager::new(dir.path(), config.clone(), NostrClient::new(vec![]).await.unwrap(), &db)
-                .await
-                .expect("client manager initializes for bot-b"),
+            ClientManager::new(
+                dir.path(),
+                config.clone(),
+                NostrClient::new(vec![]).await.unwrap(),
+                &db,
+            )
+            .await
+            .expect("client manager initializes for bot-b"),
         ));
         let cm_guard = cm.read().await;
         let bot_b = cm_guard.get_bot_by_id("bot-b").expect("bot-b exists");
@@ -244,12 +256,15 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
             unsigned.sign(&bot_b_keys).await.unwrap()
         };
 
-        let (_evolution, welcome_rumor) = peer.add_member_to_group(&peer_result, &bot_b_key_package_event);
+        let (_evolution, welcome_rumor) =
+            peer.add_member_to_group(&peer_result, &bot_b_key_package_event);
         let signed_welcome = peer.sign(welcome_rumor).await;
-        mls_b.process_welcome(wrapper_event_id, signed_welcome.clone())
+        mls_b
+            .process_welcome(wrapper_event_id, signed_welcome.clone())
             .await
             .expect("bot-b processes welcome");
-        mls_b.accept_pending_welcome()
+        mls_b
+            .accept_pending_welcome()
             .await
             .expect("bot-b accepts pending welcome");
         signed_welcome
