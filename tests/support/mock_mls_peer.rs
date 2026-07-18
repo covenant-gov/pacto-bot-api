@@ -164,6 +164,38 @@ impl MockMlsPeer {
         (result, welcome_rumor)
     }
 
+    /// Add a member to an existing group created by this peer.
+    ///
+    /// Returns the signed group evolution event and the unsigned welcome rumor
+    /// for the new member.
+    pub fn add_member_to_group(
+        &self,
+        group_result: &mdk_core::groups::GroupResult,
+        new_member_key_package_event: &Event,
+    ) -> (nostr::Event, nostr::UnsignedEvent) {
+        let _kp = self
+            .engine
+            .parse_key_package(new_member_key_package_event)
+            .expect("parse new member key package");
+
+        let update = self
+            .engine
+            .add_members(
+                &group_result.group.mls_group_id,
+                &[new_member_key_package_event.clone()],
+            )
+            .expect("add member");
+        self.engine
+            .merge_pending_commit(&group_result.group.mls_group_id)
+            .expect("merge pending commit");
+
+        let welcome_rumor = update
+            .welcome_rumors
+            .and_then(|v| v.into_iter().next())
+            .expect("welcome rumor for new member");
+        (update.evolution_event, welcome_rumor)
+    }
+
     /// Create and sign a kind:445 MLS group message in the first known group.
     ///
     /// The returned event is signed by an ephemeral key derived from the group

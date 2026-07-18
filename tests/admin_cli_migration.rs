@@ -15,7 +15,8 @@ fn assert_mls_table_schema(
     table: &str,
     expected_columns: &[&str],
     expected_pk: &[&str],
-    unique_column: Option<&str>,
+    unique_first_col: Option<&str>,
+    unique_second_col: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let columns: Vec<(String, i32, bool)> = stmt
@@ -69,7 +70,13 @@ fn assert_mls_table_schema(
         "{table} primary key index missing"
     );
 
-    if let Some(unique_col) = unique_column {
+    if let (Some(first), Some(second)) = (unique_first_col, unique_second_col) {
+        let composite_index: Vec<String> = vec![first.to_string(), second.to_string()];
+        assert!(
+            unique_indexes.contains(&composite_index),
+            "{table}.({first}, {second}) unique index missing"
+        );
+    } else if let Some(unique_col) = unique_first_col {
         let unique_col_index: Vec<String> = vec![unique_col.to_string()];
         assert!(
             unique_indexes.contains(&unique_col_index),
@@ -94,6 +101,7 @@ fn assert_mls_tables_in_schema(path: &std::path::Path) -> Result<(), Box<dyn Err
             "invited_bots",
         ],
         &["bot_id", "group_name"],
+        Some("bot_id"),
         Some("wire_id"),
     )?;
     assert_mls_table_schema(
@@ -101,6 +109,7 @@ fn assert_mls_tables_in_schema(path: &std::path::Path) -> Result<(), Box<dyn Err
         "mls_group_members",
         &["bot_id", "group_name", "member_npub"],
         &["bot_id", "group_name", "member_npub"],
+        None,
         None,
     )?;
 

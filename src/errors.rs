@@ -57,6 +57,9 @@ pub enum DaemonError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
+    #[error("migration error: {0}")]
+    Migration(#[from] refinery::Error),
+
     #[error("json-rpc error: {0}")]
     JsonRpc(#[from] JsonRpcError),
 
@@ -162,7 +165,7 @@ impl DaemonError {
             DaemonError::FrameTooLarge | DaemonError::Json(_) | DaemonError::Io(_) => -32600,
             DaemonError::TokenGeneration(_) => -32603,
             DaemonError::Config(_) | DaemonError::Toml(_) => -32602,
-            DaemonError::Sqlite(_) | DaemonError::Mls(_) => -32603,
+            DaemonError::Sqlite(_) | DaemonError::Mls(_) | DaemonError::Migration(_) => -32603,
         }
     }
 }

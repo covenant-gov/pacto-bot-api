@@ -1,6 +1,7 @@
 use crate::errors::DaemonError;
 use crate::handlers::HandlerRef;
 use chrono::{DateTime, Utc};
+use refinery::embed_migrations;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use secrecy::{ExposeSecret, SecretString};
 use std::fs::OpenOptions;
@@ -61,55 +62,24 @@ impl Database {
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;",
         )?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.run_migrations()?;
         Ok(db)
     }
 
-    /// Run idempotent migrations to create required tables.
-    pub fn run_migrations(&self) -> Result<(), DaemonError> {
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS cursors (
-                bot_id TEXT PRIMARY KEY,
-                npub TEXT NOT NULL,
-                last_event_id TEXT,
-                updated_at INTEGER
+    /// Run database migrations to set up or upgrade the schema.
+    pub fn run_migrations(&mut self) -> Result<(), DaemonError> {
+        embed_migrations!("migrations");
+        let report = migrations::runner()
+            .set_migration_table_name("_refinery_schema_history_pacto_bot_api")
+            .run(&mut self.conn)?;
+        for migration in report.applied_migrations() {
+            tracing::info!(
+                "Applied migration: {} (version: {})",
+                migration.name(),
+                migration.version()
             );
-            CREATE TABLE IF NOT EXISTS handlers (
-                handler_id TEXT PRIMARY KEY,
-                bot_ids TEXT NOT NULL,
-                event_types TEXT NOT NULL,
-                capabilities TEXT NOT NULL,
-                reconnect_token TEXT NOT NULL,
-                registered_at INTEGER
-            );
-            CREATE TABLE IF NOT EXISTS event_trace (
-                bot_id TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                author TEXT NOT NULL,
-                content_preview TEXT NOT NULL,
-                action TEXT NOT NULL,
-                reply_event_id TEXT,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_event_trace_bot_created
-                ON event_trace (bot_id, created_at DESC);
-            CREATE TABLE IF NOT EXISTS mls_groups (
-                bot_id TEXT NOT NULL,
-                group_name TEXT NOT NULL,
-                wire_id TEXT NOT NULL UNIQUE,
-                creator_npub TEXT NOT NULL,
-                relay TEXT NOT NULL,
-                invited_bots TEXT NOT NULL,
-                PRIMARY KEY (bot_id, group_name)
-            );
-            CREATE TABLE IF NOT EXISTS mls_group_members (
-                bot_id TEXT NOT NULL,
-                group_name TEXT NOT NULL,
-                member_npub TEXT NOT NULL,
-                PRIMARY KEY (bot_id, group_name, member_npub)
-            );",
-        )?;
+        }
         Ok(())
     }
 
@@ -379,7 +349,7 @@ impl Database {
 
     /// Insert a new MLS group row.
     ///
-    /// Fails on duplicate `(bot_id, group_name)` or duplicate `wire_id`.
+    /// Fails on duplicate `(bot_id, group_name)` or duplicate `(bot_id, wire_id)`.
     pub fn insert_mls_group(&self, row: &MlsGroupRow) -> Result<(), DaemonError> {
         let invited_bots = serde_json::to_string(&row.invited_bots)?;
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
@@ -846,7 +816,7 @@ mod tests {
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;",
         )?;
-        let db = Database { conn };
+        let mut db = Database { conn };
         db.run_migrations()?;
         Ok(db)
     }
@@ -957,14 +927,17 @@ mod tests {
             .iter()
             .map(|s| (*s).to_string())
             .collect();
-        let wire_id_index: Vec<String> = ["wire_id"].iter().map(|s| (*s).to_string()).collect();
+        let bot_id_wire_id_index: Vec<String> = ["bot_id", "wire_id"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
         assert!(
             unique_indexes.contains(&pk_index),
             "mls_groups primary key index missing"
         );
         assert!(
-            unique_indexes.contains(&wire_id_index),
-            "mls_groups wire_id unique index missing"
+            unique_indexes.contains(&bot_id_wire_id_index),
+            "mls_groups (bot_id, wire_id) unique index missing"
         );
 
         Ok(())
@@ -1057,7 +1030,7 @@ mod tests {
 
     #[test]
     fn migrations_are_idempotent() -> Result<(), DaemonError> {
-        let db = in_memory_db()?;
+        let mut db = in_memory_db()?;
         db.run_migrations()?;
         db.run_migrations()?;
         // If migrations were not idempotent, the second call would error.
@@ -1409,7 +1382,7 @@ mod tests {
     }
 
     #[test]
-    fn mls_group_insert_fails_on_duplicate_wire_id() {
+    fn mls_group_insert_allows_same_wire_id_across_bots() {
         let db = in_memory_db().unwrap();
         let row = MlsGroupRow {
             bot_id: "bot-1".to_string(),
@@ -1421,11 +1394,24 @@ mod tests {
         };
         db.insert_mls_group(&row).unwrap();
 
+        // The same Squad wire id in a different bot's engine must succeed.
+        let other_bot = MlsGroupRow {
+            bot_id: "bot-2".to_string(),
+            group_name: "group-a".to_string(),
+            wire_id: "wire-id-1".to_string(),
+            creator_npub: "npub-creator".to_string(),
+            relay: "wss://relay.example".to_string(),
+            invited_bots: vec![],
+        };
+        db.insert_mls_group(&other_bot).expect(
+            "same wire_id for a different bot should be allowed");
+
+        // But the same bot cannot reuse the wire_id under a different group name.
         let mut dup = row.clone();
         dup.group_name = "group-b".to_string();
         assert!(
             db.insert_mls_group(&dup).is_err(),
-            "duplicate wire_id should fail"
+            "duplicate (bot_id, wire_id) should fail"
         );
     }
 

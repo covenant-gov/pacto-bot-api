@@ -18,6 +18,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY build.rs build.rs
 COPY xtask xtask
 COPY schemas schemas
+COPY migrations migrations
 COPY python/pyproject.toml python/pyproject.toml
 COPY src src
 
