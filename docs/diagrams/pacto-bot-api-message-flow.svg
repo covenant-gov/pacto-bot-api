@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1270" height="625" viewBox="0 0 1270 625">
+<rect width="100%" height="100%" fill="#fff8e1"/>
+<rect x="60" y="280" width="180" height="100" rx="16" fill="#ffccbc" stroke="#5d4037" stroke-width="2"/>
+<text x="150.0" y="336.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-13.5">Castaway</tspan>
+<tspan x="150.0" dy="22.5">(Nostr user)</tspan>
+</text>
+<rect x="340" y="280" width="180" height="100" rx="16" fill="#b3e5fc" stroke="#0277bd" stroke-width="2"/>
+<text x="430.0" y="336.0" font-family="sans-serif" font-size="18" fill="#0277bd" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-2.25">Relay Island</tspan>
+</text>
+<rect x="620" y="240" width="260" height="180" rx="16" fill="#d7ccc8" stroke="#5d4037" stroke-width="2"/>
+<text x="750.0" y="336.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-47.25">Flagship Daemon</tspan>
+<tspan x="750.0" dy="22.5"></tspan>
+<tspan x="750.0" dy="22.5">• decrypts bottle</tspan>
+<tspan x="750.0" dy="22.5">• routes to ship</tspan>
+<tspan x="750.0" dy="22.5">• encrypts reply</tspan>
+</text>
+<rect x="960" y="280" width="180" height="100" rx="16" fill="#c8e6c9" stroke="#5d4037" stroke-width="2"/>
+<text x="1050.0" y="336.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-13.5">Handler Ship</tspan>
+<tspan x="1050.0" dy="22.5">(echo-bot)</tspan>
+</text>
+<line x1="240" y1="330" x2="340" y2="330" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="230.0" y="305.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+DM bottle
+</text>
+<line x1="520" y1="330" x2="620" y2="330" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="510.0" y="305.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+kind:1059
+</text>
+<line x1="880" y1="330" x2="960" y2="330" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="860.0" y="305.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+agent.event
+</text>
+<line x1="960" y1="360" x2="880" y2="360" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="860.0" y="335.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+agent.send_dm
+</text>
+<line x1="620" y1="360" x2="520" y2="360" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="510.0" y="335.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+encrypted reply
+</text>
+<line x1="340" y1="360" x2="240" y2="360" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="230.0" y="335.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+reply bottle
+</text>
+<text x="480" y="70.66666666666667" font-family="sans-serif" font-size="32" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+A Message Voyage: From Castaway to Reply
+</text>
+<text x="80" y="546.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+Every DM is a sealed bottle: relay carries it, daemon opens it, handler writes the reply, daemon reseals it.
+</text>
+
+<defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#5d4037"/>
+    </marker>
+</defs>
+</svg>

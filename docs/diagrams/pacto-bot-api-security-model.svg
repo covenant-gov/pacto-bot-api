@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="645" viewBox="0 0 1280 645">
+<rect width="100%" height="100%" fill="#fff8e1"/>
+<rect x="60" y="220" width="240" height="160" rx="16" fill="#d7ccc8" stroke="#5d4037" stroke-width="2"/>
+<text x="180.0" y="306.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-58.5">Flagship Daemon</tspan>
+<tspan x="180.0" dy="22.5"></tspan>
+<tspan x="180.0" dy="22.5">• Never holds nsec</tspan>
+<tspan x="180.0" dy="22.5">• Never logs secrets</tspan>
+<tspan x="180.0" dy="22.5">• Enforces permits</tspan>
+<tspan x="180.0" dy="22.5">• Locks config 0o600</tspan>
+</text>
+<rect x="460" y="170" width="280" height="140" rx="16" fill="#ffe0b2" stroke="#ef6c00" stroke-width="2"/>
+<text x="600.0" y="246.0" font-family="sans-serif" font-size="18" fill="#ef6c00" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-47.25">Vault Island</tspan>
+<tspan x="600.0" dy="22.5">(NIP-46 bunker)</tspan>
+<tspan x="600.0" dy="22.5"></tspan>
+<tspan x="600.0" dy="22.5">Holds the real key</tspan>
+<tspan x="600.0" dy="22.5">Signs on request</tspan>
+</text>
+<rect x="460" y="380" width="280" height="140" rx="16" fill="#ffe0b2" stroke="#ef6c00" stroke-width="2"/>
+<text x="600.0" y="456.0" font-family="sans-serif" font-size="18" fill="#ef6c00" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-47.25">Locked Chest</tspan>
+<tspan x="600.0" dy="22.5">(dev-only nsec)</tspan>
+<tspan x="600.0" dy="22.5"></tspan>
+<tspan x="600.0" dy="22.5">Convenient but risky</tspan>
+<tspan x="600.0" dy="22.5">Use vault in production</tspan>
+</text>
+<rect x="880" y="220" width="240" height="160" rx="16" fill="#b3e5fc" stroke="#0277bd" stroke-width="2"/>
+<text x="1000.0" y="306.0" font-family="sans-serif" font-size="18" fill="#0277bd" text-anchor="middle" dominant-baseline="middle">
+<tspan dy="-47.25">HTTP Boarding</tspan>
+<tspan x="1000.0" dy="22.5">Password</tspan>
+<tspan x="1000.0" dy="22.5"></tspan>
+<tspan x="1000.0" dy="22.5">X-Pacto-Bot-Secret</tspan>
+<tspan x="1000.0" dy="22.5">Unix socket 0o600</tspan>
+</text>
+<line x1="300" y1="300" x2="460" y2="240" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="320.0" y="245.33333333333334" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+ask to sign
+</text>
+<line x1="460" y1="310" x2="300" y2="350" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="320.0" y="305.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+signature only
+</text>
+<line x1="740" y1="300" x2="880" y2="300" stroke="#5d4037" stroke-width="2" marker-end="url(#arrowhead)"/>
+<text x="750.0" y="275.3333333333333" font-family="sans-serif" font-size="16" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+transport gate
+</text>
+<text x="460" y="70.66666666666667" font-family="sans-serif" font-size="32" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+Security Model: Who Holds the Treasure
+</text>
+<text x="60" y="566.0" font-family="sans-serif" font-size="18" fill="#5d4037" text-anchor="start" dominant-baseline="middle">
+The flagship never digs up buried treasure. It asks the vault, and it boards every visitor with a password.
+</text>
+
+<defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#5d4037"/>
+    </marker>
+</defs>
+</svg>
