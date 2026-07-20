@@ -7,8 +7,8 @@ set -euo pipefail
 #   ./scripts/prep-release.sh <daemon-version> [--sdk-version <version>] [--contract-version <version>]
 #
 # Examples:
-#   ./scripts/prep-release.sh 0.8.0
-#   ./scripts/prep-release.sh 0.8.0 --sdk-version 0.5.0 --contract-version 0.8.0
+#   ./scripts/prep-release.sh 0.8.1
+#   ./scripts/prep-release.sh 0.8.1 --sdk-version 0.5.1 --contract-version 0.8.1
 
 usage() {
   cat <<'EOF' >&2
