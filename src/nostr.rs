@@ -75,7 +75,14 @@ fn parse_mention_envelope(plaintext: &str) -> (String, Vec<String>) {
             envelope.body,
             envelope.mentions.into_iter().map(|m| m.npub).collect(),
         ),
-        Err(_) => (plaintext.to_string(), Vec::new()),
+        Err(e) => {
+            debug!(
+                error = %e,
+                plaintext_len = plaintext.len(),
+                "failed to parse mention envelope; treating as legacy content"
+            );
+            (plaintext.to_string(), Vec::new())
+        }
     }
 }
 
@@ -1913,5 +1920,78 @@ mod tests {
             !err_msg.contains(&nsec),
             "welcome error must not contain signer nsec"
         );
+    }
+
+    #[test]
+    fn parse_mention_envelope_valid() {
+        let plaintext =
+            r#"{"body":"@Joke Bot /help","mentions":[{"npub":"npub1joke","alias":"Joke Bot"}]}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "@Joke Bot /help");
+        assert_eq!(mentions, vec!["npub1joke"]);
+    }
+
+    #[test]
+    fn parse_mention_envelope_legacy_plaintext() {
+        let plaintext = "!snapshot";
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "!snapshot");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_invalid_json() {
+        let plaintext = "{not json";
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "{not json");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_missing_body_falls_back() {
+        let plaintext = r#"{"mentions":[{"npub":"npub1joke"}]}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, plaintext);
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_missing_mentions_falls_back() {
+        let plaintext = r#"{"body":"hello"}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, plaintext);
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_missing_npub_falls_back() {
+        let plaintext = r#"{"body":"hello","mentions":[{"alias":"Joke Bot"}]}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, plaintext);
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_empty_mentions() {
+        let plaintext = r#"{"body":"hello","mentions":[]}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "hello");
+        assert!(mentions.is_empty());
+    }
+
+    #[test]
+    fn parse_mention_envelope_ignores_alias_and_extra_fields() {
+        let plaintext = r#"{"body":"hi","mentions":[{"npub":"npub1a","alias":"A"},{"npub":"npub1b"}],"extra":true}"#;
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "hi");
+        assert_eq!(mentions, vec!["npub1a", "npub1b"]);
+    }
+
+    #[test]
+    fn parse_mention_envelope_unicode_and_escapes() {
+        let plaintext = "{\"body\":\"@Joke Bot \\u263A\",\"mentions\":[{\"npub\":\"npub1joke\"}]}";
+        let (content, mentions) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "@Joke Bot ☺");
+        assert_eq!(mentions, vec!["npub1joke"]);
     }
 }
