@@ -1089,31 +1089,204 @@ async fn mentioned_bot_receives_is_mentioned_true() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn legacy_message_has_default_mention_metadata() -> Result<(), Box<dyn std::error::Error>> {
-    let (keys, dispatch, cm, client, relay, _dir) =
-        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
-    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
-    let (_, mut rx) = register_handler(
+async fn joke_bot_mention_reaches_only_target() -> Result<(), Box<dyn std::error::Error>> {
+    let bot_ids = ["joke-bot", "snapshot-bot"];
+    let (keys, dispatch, cm, client, relay, _dir) = setup_multi_bot_mls_dispatch(&bot_ids).await?;
+    let (peer, _wire_id) = multi_bot_peer_group_setup(&keys, &cm).await?;
+
+    let (handler_id_joke, mut rx_joke) = register_handler_for_bot(
         &dispatch,
+        "joke-bot",
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+    let (handler_id_snapshot, mut rx_snapshot) = register_handler_for_bot(
+        &dispatch,
+        "snapshot-bot",
         &["mls_group_message_received"],
         &["ReceiveGroupMessages"],
     )
     .await?;
 
-    let message_event = peer.create_group_message("!snapshot").await;
-    relay.inject_event(message_event).await;
+    let joke_npub = keys[0].public_key().to_bech32()?;
+    let envelope = serde_json::json!({
+        "body": "@Joke Bot /help",
+        "mentions": [{"npub": joke_npub, "alias": "Joke Bot"}],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
 
     let stream = client.receive_events();
-    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+    let consumer = tokio::spawn(consume_stream(dispatch.clone(), stream));
+    relay.inject_event(message_event).await;
 
-    let msg = next_message(&mut rx)
-        .await
-        .ok_or("no agent.event notification")?;
-    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
-    assert_eq!(event.content, "!snapshot");
-    assert!(!event.is_mentioned);
-    assert!(event.mentioned_bot_ids.is_empty());
-    assert!(event.mentions.is_empty());
+    let mut joke_event: Option<AgentEvent> = None;
+    let mut snapshot_event: Option<AgentEvent> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while joke_event.is_none() || snapshot_event.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("timeout waiting for both bots to receive event".into());
+        }
+        tokio::select! {
+            Some(msg) = rx_joke.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_joke),
+                        None,
+                    )
+                    .await?;
+                joke_event = Some(event);
+            }
+            Some(msg) = rx_snapshot.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_snapshot),
+                        None,
+                    )
+                    .await?;
+                snapshot_event = Some(event);
+            }
+            _ = tokio::time::sleep(remaining) => {
+                return Err("timeout waiting for both bots to receive event".into());
+            }
+        }
+    }
+
+    let joke_event = joke_event.unwrap();
+    let snapshot_event = snapshot_event.unwrap();
+
+    assert_eq!(joke_event.bot_id, "joke-bot");
+    assert!(joke_event.is_mentioned);
+    assert_eq!(joke_event.mentioned_bot_ids, vec!["joke-bot"]);
+    assert_eq!(joke_event.content, "@Joke Bot /help");
+
+    assert_eq!(snapshot_event.bot_id, "snapshot-bot");
+    assert!(!snapshot_event.is_mentioned);
+    assert_eq!(snapshot_event.mentioned_bot_ids, vec!["joke-bot"]);
+    assert_eq!(snapshot_event.content, "@Joke Bot /help");
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn envelope_with_empty_mentions_marks_all_bots_not_mentioned()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bot_ids = ["bot-a", "bot-b"];
+    let (keys, dispatch, cm, client, relay, _dir) = setup_multi_bot_mls_dispatch(&bot_ids).await?;
+    let (peer, _wire_id) = multi_bot_peer_group_setup(&keys, &cm).await?;
+
+    let (handler_id_a, mut rx_a) = register_handler_for_bot(
+        &dispatch,
+        "bot-a",
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+    let (handler_id_b, mut rx_b) = register_handler_for_bot(
+        &dispatch,
+        "bot-b",
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let envelope = serde_json::json!({
+        "body": "just a regular message",
+        "mentions": [],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch.clone(), stream));
+    relay.inject_event(message_event).await;
+
+    let mut event_a: Option<AgentEvent> = None;
+    let mut event_b: Option<AgentEvent> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while event_a.is_none() || event_b.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("timeout waiting for both bots to receive event".into());
+        }
+        tokio::select! {
+            Some(msg) = rx_a.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_a),
+                        None,
+                    )
+                    .await?;
+                event_a = Some(event);
+            }
+            Some(msg) = rx_b.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_b),
+                        None,
+                    )
+                    .await?;
+                event_b = Some(event);
+            }
+            _ = tokio::time::sleep(remaining) => {
+                return Err("timeout waiting for both bots to receive event".into());
+            }
+        }
+    }
+
+    let event_a = event_a.unwrap();
+    let event_b = event_b.unwrap();
+
+    assert_eq!(event_a.bot_id, "bot-a");
+    assert!(!event_a.is_mentioned);
+    assert!(event_a.mentioned_bot_ids.is_empty());
+    assert!(event_a.mentions.is_empty());
+    assert_eq!(event_a.content, "just a regular message");
+
+    assert_eq!(event_b.bot_id, "bot-b");
+    assert!(!event_b.is_mentioned);
+    assert!(event_b.mentioned_bot_ids.is_empty());
+    assert!(event_b.mentions.is_empty());
+    assert_eq!(event_b.content, "just a regular message");
 
     consumer.abort();
     let _ = consumer.await;

@@ -1963,6 +1963,73 @@ async def test_throttle_and_lock_stack():
     assert bot._client.handler_response.await_count == 2
 
 
+@pytest.mark.asyncio
+async def test_require_mention_gates_squad_help_command(
+    transport: MockTransport,
+) -> None:
+    """U6: bare /help is ignored; the same /help command fires when is_mentioned."""
+    bot = Bot("joke-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.command("/help")
+    async def help_command(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Here is the help.")
+
+    task = await _start_registered_bot(bot, transport)
+
+    # Bare /help without mention is ignored.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "joke-bot",
+            "event_id": "e-help-bare",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/help",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert responses[0]["params"]["event_id"] == "e-help-bare"
+    assert len(calls) == 0
+
+    # The same /help command with is_mentioned=True triggers the handler.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "joke-bot",
+            "event_id": "e-help-mentioned",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/help",
+            "rumor_id": "r-2",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": True,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 2
+    assert responses[1]["params"]["action"] == "reply"
+    assert responses[1]["params"]["content"] == "Here is the help."
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
 # ---------------------------------------------------------------------------
 # Unknown notification types (U8)
 # ---------------------------------------------------------------------------
