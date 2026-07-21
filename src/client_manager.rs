@@ -249,6 +249,7 @@ mod tests {
     fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
         BotConfig {
             id: id.into(),
+            display_name: Some(format!("{} Display", id)),
             npub: keys.public_key().to_bech32().unwrap(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
@@ -486,6 +487,7 @@ mod tests {
             daemon: GlobalDaemonConfig::default(),
             bots: vec![BotConfig {
                 id: "bad-bot".into(),
+                display_name: Some("bad-bot Display".to_string()),
                 npub: "not-a-valid-npub".into(),
                 signing: SigningConfig::Nsec {
                     nsec: SecretString::new(

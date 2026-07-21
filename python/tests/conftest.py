@@ -220,12 +220,14 @@ def _write_config(
     data_dir = short_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     socket_path = data_dir / "pacto-bot-api.sock"
+    display_name = bot_id.replace("-", " ").title()
     config = f"""[daemon]
 data_dir = {str(data_dir)!r}
 socket_path = {str(socket_path)!r}
 
 [[bots]]
 id = {bot_id!r}
+display_name = {display_name!r}
 npub = "{bot_keys['npub']}"
 signing = {{ backend = "nsec", nsec = "{bot_keys['nsec']}" }}
 relays = [{relay_url!r}]

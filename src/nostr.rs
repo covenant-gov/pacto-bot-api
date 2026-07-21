@@ -917,6 +917,7 @@ impl NostrClient {
             rumor_id,
             author: seal_event.pubkey.to_hex(),
             timestamp: rumor.created_at.as_u64(),
+            ..Default::default()
         })
     }
 
@@ -1018,6 +1019,7 @@ impl NostrClient {
                 rumor_id: event.id.to_hex(),
                 author: decrypted.author,
                 timestamp: decrypted.timestamp,
+                ..Default::default()
             }))
         } else {
             Ok(None)

@@ -203,6 +203,7 @@ socket_path = "~/.local/share/pacto-bot-api/pacto-bot-api.sock"
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1..."
 signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat"]

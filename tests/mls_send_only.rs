@@ -21,6 +21,7 @@ use tokio::sync::RwLock;
 fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
     BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
@@ -134,6 +135,7 @@ async fn daemon_bot_joins_mls_group_and_sends_message() {
         rumor_id: wrapper_event_id.to_hex(),
         author: peer.public_key().to_hex(),
         timestamp: nostr::Timestamp::now().as_u64(),
+        ..Default::default()
     };
     dispatch
         .dispatch_event(event)

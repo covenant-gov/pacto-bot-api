@@ -72,6 +72,7 @@ pub fn generate_nsec_bot(id: &str) -> Result<(BotConfig, String), Box<dyn Error>
     let npub = keys.public_key().to_bech32()?;
     let bot = BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(nsec.clone().into()),
@@ -103,6 +104,7 @@ pub fn generate_bunker_bot(id: &str, match_npub: bool) -> Result<BotConfig, Box<
     );
     Ok(BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub,
         signing: SigningConfig::BunkerLocal {
             uri: SecretString::new(uri.into()),
@@ -137,6 +139,7 @@ pub fn generate_bunker_bot_with_keys(
     );
     let bot = BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub,
         signing: SigningConfig::BunkerLocal {
             uri: SecretString::new(uri.into()),
@@ -176,6 +179,9 @@ pub fn make_config(
     for bot in bots {
         content.push_str("[[bots]]\n");
         content.push_str(&format!("id = {:?}\n", bot.id));
+        if let Some(display_name) = &bot.display_name {
+            content.push_str(&format!("display_name = {:?}\n", display_name));
+        }
         content.push_str(&format!("npub = {:?}\n", bot.npub));
         match &bot.signing {
             SigningConfig::Nsec { nsec } => {

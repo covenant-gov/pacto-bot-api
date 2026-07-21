@@ -89,9 +89,11 @@
       "summary": "The daemon manages multiple bot identities via a `ClientManager`. Each bot is a separate Nostr identity with its own npub, MLS device leaf, and capability set. The `ClientManager` maintains a bidir...",
       "tests": [
         "tests/integration_test.rs",
+        "tests/agent_event.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
+        "tests/agent_event.rs",
         "tests/integration_test.rs",
         "tests/multi_bot.rs"
       ],
@@ -109,10 +111,12 @@
         "tests/admin_cli_bunker.rs",
         "tests/secret_redaction.rs",
         "tests/daemon_startup.rs",
+        "tests/agent_event.rs",
         "tests/mls_group.rs"
       ],
       "parsed_tests": [
         "tests/admin_cli_bunker.rs",
+        "tests/agent_event.rs",
         "tests/daemon_startup.rs",
         "tests/mls_group.rs"
       ],
@@ -131,9 +135,11 @@
         "tests/admin_cli_migration.rs",
         "tests/daemon_startup.rs",
         "tests/cli_args.rs",
+        "tests/agent_event.rs",
         "tests/mls_group.rs"
       ],
       "parsed_tests": [
+        "tests/agent_event.rs",
         "tests/cli_args.rs",
         "tests/daemon_startup.rs",
         "tests/mls_group.rs"
@@ -219,10 +225,12 @@
       "tests": [
         "tests/nostr_client.rs",
         "tests/integration_test.rs",
+        "tests/agent_event.rs",
         "tests/mls_group.rs",
         "tests/multi_bot.rs"
       ],
       "parsed_tests": [
+        "tests/agent_event.rs",
         "tests/integration_test.rs",
         "tests/mls_group.rs",
         "tests/multi_bot.rs",

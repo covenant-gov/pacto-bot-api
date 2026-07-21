@@ -51,6 +51,7 @@ async fn setup_dispatch_with_capabilities(
     let keys = nostr::Keys::generate();
     let bot = BotConfig {
         id: "echo-bot".to_string(),
+        display_name: Some("echo-bot Display".to_string()),
         npub: keys.public_key().to_bech32()?,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32()?.into()),

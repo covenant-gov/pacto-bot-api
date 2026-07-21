@@ -50,8 +50,7 @@ pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?rel
 
 # Create a bot and scaffold a Python handler project in one command
 pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo"#,
-        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
-- Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.",
+        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode.",
     );
 
     render_command(

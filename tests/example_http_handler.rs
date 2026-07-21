@@ -64,6 +64,7 @@ async fn http_handler_example_registers_and_receives_notifications()
             rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
             author: "npub1author".into(),
             timestamp: 1,
+            ..Default::default()
         })
         .await?;
 
@@ -109,6 +110,7 @@ async fn start_http_daemon(
     let bot_keys = nostr::Keys::generate();
     let bot_config = BotConfig {
         id: "example-bot".into(),
+        display_name: Some("example-bot Display".to_string()),
         npub: bot_keys.public_key().to_bech32()?,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(bot_keys.secret_key().to_bech32()?.into()),

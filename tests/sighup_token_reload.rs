@@ -85,6 +85,7 @@ async fn write_config(data_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
          http_bind = \"127.0.0.1:0\"\n\n\
          [[bots]]\n\
          id = \"reload-bot\"\n\
+         display_name = \"Reload Bot\"\n\
          npub = {:?}\n\
          signing = {{ backend = \"nsec\", nsec = {:?} }}\n\
          relays = [\"wss://127.0.0.1:65535\"]\n\

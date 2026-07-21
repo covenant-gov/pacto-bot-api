@@ -226,6 +226,12 @@ class AgentEventParams(BaseModel):
     content: str
     # Hex id of the enclosing gift-wrap event.
     event_id: str
+    # Whether the receiving bot's npub appears in `mentions`.
+    is_mentioned: bool | None = None
+    # Configured `bot_id` values whose npubs appear in `mentions`.
+    mentioned_bot_ids: list[str] | None = None
+    # Target npubs from the mention envelope; empty for DMs and legacy squad messages.
+    mentions: list[str] | None = None
     # Hex id of the decrypted rumor.
     rumor_id: str
     # Unix timestamp of the rumor.

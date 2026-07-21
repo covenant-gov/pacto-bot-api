@@ -122,6 +122,7 @@ mod tests {
         let npub = keys.public_key().to_bech32().unwrap();
         BotConfig {
             id: "test-bot".into(),
+            display_name: Some("Test Bot Display".to_string()),
             npub,
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new(nsec.into()),

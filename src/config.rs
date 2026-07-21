@@ -354,13 +354,39 @@ pub fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
 }
 
 fn validate_bots(bots: &mut [BotConfig], data_dir: &Path) -> Result<(), DaemonError> {
-    let mut seen = HashSet::new();
-    for bot in bots {
+    let mut seen_ids = HashSet::new();
+    for bot in &mut *bots {
         validate_bot_id(&bot.id)?;
-        if !seen.insert(bot.id.clone()) {
+        if !seen_ids.insert(bot.id.clone()) {
             return Err(DaemonError::Config(format!("duplicate bot_id: {}", bot.id)));
         }
+    }
 
+    // Validate display_name presence, non-empty value, and uniqueness.
+    // Display names are compared case-insensitively so that "Joke Bot" and
+    // "joke bot" are treated as the same alias; this prevents ambiguous
+    // alias-to-npub resolution in the UI.
+    let mut seen_display_names = HashSet::new();
+    for bot in &mut *bots {
+        let display_name = bot.display_name.as_ref().ok_or_else(|| {
+            DaemonError::Config(format!("bot {}: display_name is required", bot.id))
+        })?;
+        if display_name.trim().is_empty() {
+            return Err(DaemonError::Config(format!(
+                "bot {}: display_name must be non-empty",
+                bot.id
+            )));
+        }
+        let normalized = display_name.to_lowercase();
+        if !seen_display_names.insert(normalized) {
+            return Err(DaemonError::Config(format!(
+                "duplicate display_name: {}",
+                display_name
+            )));
+        }
+    }
+
+    for bot in &mut *bots {
         for cap in &bot.capabilities {
             if !VALID_CAPABILITIES.contains(&cap.as_str()) {
                 return Err(DaemonError::Config(format!(
@@ -655,6 +681,7 @@ data_dir = "/tmp/pacto"
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1echobot"
 signing = { backend = "nsec", nsec = "nsec1deadbeef" }
 relays = ["wss://relay.example.com"]
@@ -665,6 +692,7 @@ capabilities = ["ReadMessages", "SendMessages"]
         let config = DaemonConfig::load(&path).unwrap();
         assert_eq!(config.bots.len(), 1);
         assert_eq!(config.bots[0].id, "echo-bot");
+        assert_eq!(config.bots[0].display_name.as_deref(), Some("Echo Bot"));
         assert_eq!(config.bots[0].npub, "npub1echobot");
         assert!(matches!(config.bots[0].signing, SigningConfig::Nsec { .. }));
     }
@@ -675,6 +703,7 @@ capabilities = ["ReadMessages", "SendMessages"]
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1echo"
 signing = { backend = "nsec", nsec = "nsec1echo" }
 relays = ["wss://relay.example.com"]
@@ -682,6 +711,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 
 [[bots]]
 id = "welcome-bot"
+display_name = "Welcome Bot"
 npub = "npub1welcome"
 signing = { backend = "bunker_local", uri = "bunker://abcd1234@127.0.0.1:4848" }
 relays = ["wss://relay.example.com"]
@@ -689,6 +719,7 @@ capabilities = ["ReadMessages"]
 
 [[bots]]
 id = "treasury-bot"
+display_name = "Treasury Bot"
 npub = "npub1treasury"
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=wss://relay.nsec.app" }
 relays = ["wss://relay.example.com"]
@@ -707,11 +738,13 @@ capabilities = ["ReadMessages", "SendMessages"]
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot Two"
 npub = "npub1b"
 signing = { backend = "nsec", nsec = "nsec1b" }
 "#,
@@ -722,11 +755,108 @@ signing = { backend = "nsec", nsec = "nsec1b" }
     }
 
     #[test]
+    fn missing_display_name_error() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("display_name is required"), "{msg}");
+    }
+
+    #[test]
+    fn empty_display_name_error() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+display_name = ""
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("display_name must be non-empty"), "{msg}");
+    }
+
+    #[test]
+    fn whitespace_only_display_name_error() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+display_name = "   "
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("display_name must be non-empty"), "{msg}");
+    }
+
+    #[test]
+    fn duplicate_display_name_error() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+display_name = "Echo Bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+
+[[bots]]
+id = "echo-bot-2"
+display_name = "Echo Bot"
+npub = "npub1b"
+signing = { backend = "nsec", nsec = "nsec1b" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate display_name"), "{msg}");
+    }
+
+    #[test]
+    fn duplicate_display_name_case_insensitive_error() {
+        let (_dir, _file, path) = write_config(
+            r#"
+[[bots]]
+id = "echo-bot"
+display_name = "Echo Bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+
+[[bots]]
+id = "echo-bot-2"
+display_name = "echo bot"
+npub = "npub1b"
+signing = { backend = "nsec", nsec = "nsec1b" }
+"#,
+        );
+
+        let err = DaemonConfig::load(&path).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate display_name"), "{msg}");
+    }
+
+    #[test]
     fn missing_required_field_npub() {
         let (_dir, _file, path) = write_config(
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
         );
@@ -741,6 +871,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec" }
 "#,
@@ -759,6 +890,7 @@ signing = { backend = "nsec" }
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "${PACTO_TEST_NSEC}" }
 "#,
@@ -783,6 +915,7 @@ data_dir = "~/pacto-test"
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -798,6 +931,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             r#"
 [[bots]]
 id = "bad-bot"
+display_name = "Bad Bot"
 npub = "npub1a"
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay.nsec.app" }
 "#,
@@ -825,6 +959,7 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
             r#"
 [[bots]]
 id = "bad-bot"
+display_name = "Bad Bot"
 npub = "npub1a"
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay.nsec.app&secret=topsecret" }
 "#,
@@ -853,6 +988,7 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
             r#"
 [[bots]]
 id = "bad-bot"
+display_name = "Bad Bot"
 npub = "npub1a"
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay1.nsec.app&relay=wss://relay2.nsec.app" }
 "#,
@@ -880,6 +1016,7 @@ signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=ws://relay
             r#"
 [[bots]]
 id = "good-bot"
+display_name = "Good Bot"
 npub = "npub1a"
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678?relay=wss://relay1.nsec.app&relay=wss://relay2.nsec.app" }
 relays = ["wss://relay.example.com"]
@@ -929,6 +1066,7 @@ capabilities = ["ReadMessages"]
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -946,6 +1084,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             br#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -977,6 +1116,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -1008,6 +1148,7 @@ handler_reap_interval_secs = 0
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -1027,6 +1168,7 @@ handler_stale_timeout_secs = 0
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,
@@ -1043,6 +1185,7 @@ signing = { backend = "nsec", nsec = "nsec1a" }
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 capabilities = ["SendGroupMessages"]
@@ -1060,6 +1203,7 @@ capabilities = ["SendGroupMessages"]
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 capabilities = ["CreateMlsGroup"]
@@ -1125,6 +1269,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 capabilities = ["SendGroupMessages"]
@@ -1181,6 +1326,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 mls_db_path = "/tmp/vector-mls.db"
@@ -1211,6 +1357,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 mls_db_path = "vector-mls.db"
@@ -1241,6 +1388,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 mls_db_path = "vector-mls.db"
@@ -1279,6 +1427,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 mls_db_path = "vector-mls.db"
@@ -1317,6 +1466,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "mls-bot"
+display_name = "Mls Bot"
 npub = "npub1a"
 signing = {{ backend = "nsec", nsec = "nsec1a" }}
 mls_db_path = "../vector-mls.db"
@@ -1411,6 +1561,7 @@ data_dir = "/tmp/pacto"
 
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 capabilities = ["ReadMessages", "SendMessages"]
@@ -1429,6 +1580,7 @@ capabilities = ["ReadMessages", "SendMessages"]
             r#"
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1a"
 signing = { backend = "nsec", nsec = "nsec1a" }
 "#,

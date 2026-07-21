@@ -243,6 +243,7 @@ async fn bunker_remote_publish_profile_mock() -> Result<(), Box<dyn Error>> {
 
     let bot = BotConfig {
         id: "remote-profile-bot".to_string(),
+        display_name: Some("remote-profile-bot Display".to_string()),
         npub: keys.public_key().to_bech32()?,
         signing: SigningConfig::BunkerRemote {
             uri: SecretString::new(bunker.uri(&relay.url()).into()),
@@ -302,6 +303,7 @@ async fn bunker_remote_publish_profile_and_dm() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
     let bot = pacto_bot_api::config::BotConfig {
         id: "remote-bot".to_string(),
+        display_name: Some("remote-bot Display".to_string()),
         npub: std::env::var("PACTO_DEV_ENV_BOT_NPUB").unwrap_or_else(|_| "npub1remote".into()),
         signing: pacto_bot_api::config::SigningConfig::BunkerRemote {
             uri: pacto_bot_api::secrecy::SecretString::new(bunker_uri.into()),

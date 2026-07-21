@@ -737,6 +737,7 @@ async fn http_dm_round_trip_registers_replies_and_publishes_gift_wrap()
             rumor_id: rumor_id.into(),
             author: sender_npub.clone(),
             timestamp: 1,
+            ..Default::default()
         })
         .await?;
 
@@ -835,6 +836,7 @@ async fn http_dm_round_trip_via_handler_response() -> Result<(), Box<dyn std::er
             rumor_id: rumor_id.into(),
             author: sender_npub.clone(),
             timestamp: 1,
+            ..Default::default()
         };
         async move { dispatch.dispatch_event(event).await }
     });
@@ -1199,6 +1201,7 @@ async fn start_dispatch_server_with_capabilities(
     let bot_keys = nostr::Keys::generate();
     let bot_config = BotConfig {
         id: "echo-bot".into(),
+        display_name: Some("echo-bot Display".to_string()),
         npub: bot_keys.public_key().to_bech32()?,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(bot_keys.secret_key().to_bech32()?.into()),

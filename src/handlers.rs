@@ -374,6 +374,7 @@ mod tests {
     fn dummy_bot(id: &str, capabilities: &[&str]) -> BotConfig {
         BotConfig {
             id: id.to_string(),
+            display_name: Some(format!("{} Display", id)),
             npub: format!("npub1{id}"),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1dummy".to_string().into()),
@@ -398,6 +399,9 @@ mod tests {
             event_type: EventType::DmReceived,
             chat_id: None,
             content: "hello".to_string(),
+            mentions: Vec::new(),
+            is_mentioned: false,
+            mentioned_bot_ids: Vec::new(),
             rumor_id: "rumor1".to_string(),
             author: "npub1sender".to_string(),
             timestamp: 1,
@@ -952,6 +956,7 @@ mod tests {
         let keys = nostr::Keys::generate();
         let bot_config = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: keys.public_key().to_bech32().unwrap(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),

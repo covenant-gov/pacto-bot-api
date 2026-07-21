@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bot identities in `pacto-bot-api.toml` now require a unique `display_name` for deterministic alias-to-npub resolution. The daemon rejects configs with missing, empty, or duplicate display names at load time.
+
 ## [0.8.1] - 2026-07-20
 
 ### Added

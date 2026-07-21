@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Incoming event types a handler may receive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
+    #[default]
     DmReceived,
     MlsWelcomeReceived,
     MlsGroupMessageReceived,
@@ -21,7 +22,7 @@ impl EventType {
 }
 
 /// Notification sent from daemon to handler when an event arrives for a bot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentEvent {
     pub bot_id: String,
     pub event_id: String,
@@ -29,6 +30,12 @@ pub struct AgentEvent {
     pub event_type: EventType,
     pub chat_id: Option<String>,
     pub content: String,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub is_mentioned: bool,
+    #[serde(default)]
+    pub mentioned_bot_ids: Vec<String>,
     pub rumor_id: String,
     pub author: String,
     pub timestamp: u64,
