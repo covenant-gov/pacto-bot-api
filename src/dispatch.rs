@@ -519,25 +519,24 @@ impl Dispatch {
     }
 
     /// Dispatch an outgoing agent event to all matching handlers.
-    pub async fn dispatch_event(&self, event: AgentEvent) -> Result<(), DaemonError> {
+    pub async fn dispatch_event(&self, mut event: AgentEvent) -> Result<(), DaemonError> {
         self.diagnostics.record_event_received().await;
 
-        let (mut handlers, npub, bot_config) = {
+        let (mut handlers, bot_config, npub_to_bot_id) = {
             let cm = self.client_manager.read().await;
             let bot = cm
                 .get_bot_by_id(&event.bot_id)
                 .ok_or_else(|| DaemonError::UnknownBot(event.bot_id.clone()))?;
             let handlers = cm.handler_registry.find(&event.bot_id, event.event_type);
-            let npub = bot.npub().to_string();
             let bot_config = bot.config.clone();
-            // Authorization check for MLS group messages is now handled in the helper
-            (handlers, npub, bot_config)
+            let npub_to_bot_id = cm.npub_to_bot_id_map();
+            (handlers, bot_config, npub_to_bot_id)
         };
 
         // Process MLS group message events with dedicated helper
         if event.event_type == EventType::MlsGroupMessageReceived
             && !self
-                .process_mls_group_message(&event, &mut handlers, &bot_config)
+                .process_mls_group_message(&mut event, &mut handlers, &bot_config, &npub_to_bot_id)
                 .await?
         {
             return Ok(());
@@ -722,9 +721,11 @@ impl Dispatch {
                 .map_err(|_| DaemonError::Config("event timestamp out of range".into()))?;
             {
                 let mut last_cursor = self.last_cursor.lock().await;
-                last_cursor.insert(event.bot_id.clone(), (npub.clone(), cursor));
+                last_cursor.insert(event.bot_id.clone(), (bot_config.npub.clone(), cursor));
             }
-            self.db.save_cursor(&event.bot_id, &npub, cursor).await?;
+            self.db
+                .save_cursor(&event.bot_id, &bot_config.npub, cursor)
+                .await?;
         }
 
         Ok(())
@@ -2152,18 +2153,21 @@ impl Dispatch {
     /// Returns true if processing should continue, false if the event should be dropped.
     async fn process_mls_group_message(
         &self,
-        event: &AgentEvent,
+        event: &mut AgentEvent,
         handlers: &mut Vec<HandlerRef>,
         bot_config: &BotConfig,
+        npub_to_bot_id: &HashMap<String, String>,
     ) -> Result<bool, DaemonError> {
         // Authorization check - filter handlers that are authorized for ReceiveGroupMessages
         handlers.retain(|h| h.is_authorized(&event.bot_id, "ReceiveGroupMessages"));
 
-        // Deduplication check
+        // Deduplication check. The key includes bot_id because the same group
+        // message wrapper is legitimately fanned out to every bot in the Squad.
         let event_id = event.event_id.clone();
         let window = Duration::from_secs(bot_config.dedup_window());
+        let dedup_key = format!("{}:{}", event.bot_id, event_id);
         let mut cache = self.mls_dedup_cache.lock().await;
-        if cache.is_duplicate(&event_id, window) {
+        if cache.is_duplicate(&dedup_key, window) {
             debug!(
                 bot_id = %event.bot_id,
                 event_id = %event_id,
@@ -2195,6 +2199,21 @@ impl Dispatch {
             }
             return Ok(false);
         }
+
+        // Compute per-bot mention metadata. All bots still receive the message,
+        // but each knows whether it was addressed and which configured bots were
+        // mentioned overall.
+        let mut mentioned_bot_ids = Vec::new();
+        let mut seen = HashSet::new();
+        for npub in &event.mentions {
+            if let Some(bot_id) = npub_to_bot_id.get(npub)
+                && seen.insert(bot_id.clone())
+            {
+                mentioned_bot_ids.push(bot_id.clone());
+            }
+        }
+        event.is_mentioned = event.mentions.contains(&bot_config.npub);
+        event.mentioned_bot_ids = mentioned_bot_ids;
 
         Ok(true)
     }
@@ -2307,6 +2326,30 @@ mod tests {
         };
         let result: HandlerRegisterResponse = serde_json::from_value(result.unwrap()).unwrap();
         result.handler_id
+    }
+
+    async fn register_live_handler(
+        cm: &Arc<RwLock<ClientManager>>,
+        bot_id: &str,
+        event_types: &[&str],
+        capabilities: &[&str],
+    ) -> mpsc::Receiver<JsonRpcMessage> {
+        let (tx, rx) = mpsc::channel(1);
+        let bot_config_for_register = {
+            let cm = cm.read().await;
+            cm.get_bot_by_id(bot_id).unwrap().config.clone()
+        };
+        let mut cm = cm.write().await;
+        cm.handler_registry
+            .register(
+                ConnectionHandle::new(tx),
+                vec![bot_id.to_string()],
+                event_types.iter().map(|s| s.to_string()).collect(),
+                capabilities.iter().map(|s| s.to_string()).collect(),
+                &[bot_config_for_register],
+            )
+            .unwrap();
+        rx
     }
 
     async fn build_key_package_event(recipient_keys: &nostr::Keys) -> nostr::Event {
@@ -2932,6 +2975,223 @@ mod tests {
                 .map
                 .contains_key(&handler_id)
         );
+    }
+
+    #[tokio::test]
+    async fn mls_group_message_mentioned_bot_receives_is_mentioned_true() {
+        let keys = test_keys();
+        let (dispatch, cm) = dispatch_with_bots(vec![bot_config(
+            "echo-bot",
+            &keys,
+            &["ReceiveGroupMessages"],
+        )])
+        .await;
+
+        let mut rx = register_live_handler(
+            &cm,
+            "echo-bot",
+            &["mls_group_message_received"],
+            &["ReceiveGroupMessages"],
+        )
+        .await;
+
+        let npub = keys.public_key().to_bech32().unwrap();
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-mention-1".into(),
+            event_type: EventType::MlsGroupMessageReceived,
+            chat_id: Some("group-1".into()),
+            content: "@Echo Bot /help".into(),
+            mentions: vec![npub.clone()],
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        dispatch.dispatch_event(event).await.unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        let agent_event: AgentEvent = match msg {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert_eq!(agent_event.bot_id, "echo-bot");
+        assert!(agent_event.is_mentioned);
+        assert_eq!(agent_event.mentioned_bot_ids, vec!["echo-bot"]);
+    }
+
+    #[tokio::test]
+    async fn mls_group_message_non_mentioned_bot_receives_is_mentioned_false() {
+        let keys_a = test_keys();
+        let keys_b = test_keys();
+        let npub_b = keys_b.public_key().to_bech32().unwrap();
+        let (dispatch, cm) = dispatch_with_bots(vec![
+            bot_config("bot-a", &keys_a, &["ReceiveGroupMessages"]),
+            bot_config("bot-b", &keys_b, &["ReceiveGroupMessages"]),
+        ])
+        .await;
+
+        let mut rx_a = register_live_handler(
+            &cm,
+            "bot-a",
+            &["mls_group_message_received"],
+            &["ReceiveGroupMessages"],
+        )
+        .await;
+
+        let event = AgentEvent {
+            bot_id: "bot-a".into(),
+            event_id: "evt-mention-2".into(),
+            event_type: EventType::MlsGroupMessageReceived,
+            chat_id: Some("group-1".into()),
+            content: "@Bot B /help".into(),
+            mentions: vec![npub_b.clone()],
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        dispatch.dispatch_event(event).await.unwrap();
+
+        let msg = rx_a.recv().await.unwrap();
+        let agent_event: AgentEvent = match msg {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert_eq!(agent_event.bot_id, "bot-a");
+        assert!(!agent_event.is_mentioned);
+        assert_eq!(agent_event.mentioned_bot_ids, vec!["bot-b"]);
+    }
+
+    #[tokio::test]
+    async fn mls_group_message_multiple_mentions_preserves_order_and_dedupes() {
+        let keys_a = test_keys();
+        let keys_b = test_keys();
+        let npub_a = keys_a.public_key().to_bech32().unwrap();
+        let npub_b = keys_b.public_key().to_bech32().unwrap();
+        let (dispatch, cm) = dispatch_with_bots(vec![
+            bot_config("bot-a", &keys_a, &["ReceiveGroupMessages"]),
+            bot_config("bot-b", &keys_b, &["ReceiveGroupMessages"]),
+        ])
+        .await;
+
+        let mut rx_a = register_live_handler(
+            &cm,
+            "bot-a",
+            &["mls_group_message_received"],
+            &["ReceiveGroupMessages"],
+        )
+        .await;
+
+        let event = AgentEvent {
+            bot_id: "bot-a".into(),
+            event_id: "evt-mention-3".into(),
+            event_type: EventType::MlsGroupMessageReceived,
+            chat_id: Some("group-1".into()),
+            content: "hello".into(),
+            mentions: vec![npub_b.clone(), npub_a.clone(), npub_b.clone()],
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        dispatch.dispatch_event(event).await.unwrap();
+
+        let msg = rx_a.recv().await.unwrap();
+        let agent_event: AgentEvent = match msg {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert!(agent_event.is_mentioned);
+        assert_eq!(agent_event.mentioned_bot_ids, vec!["bot-b", "bot-a"]);
+    }
+
+    #[tokio::test]
+    async fn mls_group_message_unknown_npub_ignored() {
+        let keys = test_keys();
+        let (dispatch, cm) = dispatch_with_bots(vec![bot_config(
+            "echo-bot",
+            &keys,
+            &["ReceiveGroupMessages"],
+        )])
+        .await;
+
+        let mut rx = register_live_handler(
+            &cm,
+            "echo-bot",
+            &["mls_group_message_received"],
+            &["ReceiveGroupMessages"],
+        )
+        .await;
+
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-mention-4".into(),
+            event_type: EventType::MlsGroupMessageReceived,
+            chat_id: Some("group-1".into()),
+            content: "hello".into(),
+            mentions: vec!["npub1unknown".into()],
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        dispatch.dispatch_event(event).await.unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        let agent_event: AgentEvent = match msg {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert!(!agent_event.is_mentioned);
+        assert!(agent_event.mentioned_bot_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dm_received_keeps_default_mention_metadata() {
+        let keys = test_keys();
+        let (dispatch, cm) =
+            dispatch_with_bots(vec![bot_config("echo-bot", &keys, &["ReadMessages"])]).await;
+
+        let mut rx =
+            register_live_handler(&cm, "echo-bot", &["dm_received"], &["ReadMessages"]).await;
+
+        let event = AgentEvent {
+            bot_id: "echo-bot".into(),
+            event_id: "evt-dm-1".into(),
+            event_type: EventType::DmReceived,
+            chat_id: None,
+            content: "hello".into(),
+            rumor_id: "0000000000000000000000000000000000000000000000000000000000000001".into(),
+            author: "npub1author".into(),
+            timestamp: 1,
+            ..Default::default()
+        };
+
+        dispatch.dispatch_event(event).await.unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        let agent_event: AgentEvent = match msg {
+            JsonRpcMessage::Notification { params, .. } => {
+                serde_json::from_value(params.unwrap_or(Value::Null)).unwrap()
+            }
+            other => panic!("expected agent.event notification, got {other:?}"),
+        };
+        assert!(!agent_event.is_mentioned);
+        assert!(agent_event.mentioned_bot_ids.is_empty());
+        assert!(agent_event.mentions.is_empty());
     }
 
     #[tokio::test]

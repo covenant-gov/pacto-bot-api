@@ -800,10 +800,11 @@ impl NostrClient {
                                         )
                                         .await
                                         {
-                                            Ok(Some(agent_event)) => {
-                                                let _ = tx.send(Ok(agent_event));
+                                            Ok(agent_events) => {
+                                                for agent_event in agent_events {
+                                                    let _ = tx.send(Ok(agent_event));
+                                                }
                                             }
-                                            Ok(None) => {}
                                             Err(e) => {
                                                 let _ = tx.send(Err(e));
                                             }
@@ -948,17 +949,16 @@ impl NostrClient {
         })
     }
 
-    /// Decrypt a kind:445 MLS group message wrapper and produce an
-    /// [`AgentEvent`] for application messages.
-    ///
-    /// Protocol-only messages (proposals, commits, etc.) return `Ok(None)` so
-    /// they do not fan out to handlers. Skip-own and membership checks are
-    /// intentionally stubbed here and will be implemented in U3.
+    /// Decrypt a kind:445 MLS group message wrapper and produce one
+    /// [`AgentEvent`] per configured bot that is a member of the group and did
+    /// not publish the message itself. Application messages are enriched with
+    /// the parsed mention envelope; protocol-only messages (proposals, commits,
+    /// etc.) return an empty vector so they do not fan out to handlers.
     async fn process_group_message(
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
         mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
-    ) -> Result<Option<AgentEvent>, DaemonError> {
+    ) -> Result<Vec<AgentEvent>, DaemonError> {
         info!(
             event_id = %event.id.to_hex(),
             kind = %event.kind.as_u16(),
@@ -972,8 +972,8 @@ impl NostrClient {
         }
 
         // Group messages are addressed to a Squad, not to a specific bot, so
-        // we identify the recipient by finding a bot that is a member of the
-        // group identified by the h tag.
+        // identify every configured bot that is a member of the group identified
+        // by the h tag.
         let group_id = event
             .tags
             .iter()
@@ -982,7 +982,7 @@ impl NostrClient {
             .map(|s| s.to_string())
             .ok_or_else(|| DaemonError::Nostr("group message missing h tag".into()))?;
 
-        let mut recipient: Option<PublicKey> = None;
+        let mut recipients = Vec::new();
         debug!(
             "looking for group_id={} among {} engines",
             group_id,
@@ -992,8 +992,7 @@ impl NostrClient {
             match mls.has_group_with_wire_id(&group_id).await {
                 Ok(true) => {
                     debug!("found engine for pubkey={} with group {}", pubkey, group_id);
-                    recipient = Some(*pubkey);
-                    break;
+                    recipients.push(*pubkey);
                 }
                 Ok(false) => {
                     debug!(
@@ -1010,49 +1009,80 @@ impl NostrClient {
             }
         }
 
-        let recipient = recipient.ok_or_else(|| {
-            DaemonError::Nostr("group message not addressed to a bot with an MLS engine".into())
-        })?;
-
-        let (bot_id, signer) = signers
-            .get(&recipient)
-            .ok_or_else(|| DaemonError::Nostr(format!("no signer registered for {recipient}")))?;
-        let (_mls_bot_id, mls) = mls_engines.get(&recipient).ok_or_else(|| {
-            DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
-        })?;
-
-        // U3: skip own events.
-        if event.pubkey == signer.public_key() {
-            debug!(
-                event_id = %event.id.to_hex(),
-                bot_id = %bot_id,
-                "skipping own group message"
-            );
-            return Ok(None);
+        if recipients.is_empty() {
+            return Err(DaemonError::Nostr(
+                "group message not addressed to a bot with an MLS engine".into(),
+            ));
         }
 
-        let decrypted = mls
+        // Decrypt the message once with the first member's engine to get the
+        // plaintext. The content is identical for every member.
+        let first_recipient = recipients[0];
+        let first_mls = mls_engines
+            .get(&first_recipient)
+            .ok_or_else(|| DaemonError::Nostr("first recipient engine missing".into()))?
+            .1
+            .clone();
+        let decrypted = first_mls
             .decrypt_group_message(event)
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt group message: {e}")))?;
 
-        if let Some(decrypted) = decrypted {
-            let (content, mentions) = parse_mention_envelope(&decrypted.content);
-            Ok(Some(AgentEvent {
+        let decrypted = match decrypted {
+            Some(d) => d,
+            None => return Ok(vec![]),
+        };
+
+        let (content, mentions) = parse_mention_envelope(&decrypted.content);
+
+        let mut agent_events = Vec::new();
+        for recipient in &recipients {
+            let (bot_id, signer) = signers.get(recipient).ok_or_else(|| {
+                DaemonError::Nostr(format!("no signer registered for {recipient}"))
+            })?;
+            let (_mls_bot_id, mls) = mls_engines.get(recipient).ok_or_else(|| {
+                DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
+            })?;
+
+            // Skip-own check is per bot: a bot should not receive messages it
+            // published itself.
+            if event.pubkey == signer.public_key() {
+                debug!(
+                    event_id = %event.id.to_hex(),
+                    bot_id = %bot_id,
+                    "skipping own group message"
+                );
+                continue;
+            }
+
+            // Advance each recipient's engine state so subsequent messages can be
+            // decrypted. The first recipient already processed the message above.
+            if *recipient != first_recipient
+                && let Err(e) = mls.decrypt_group_message(event).await
+            {
+                debug!(
+                    bot_id = %bot_id,
+                    error = %e,
+                    "failed to advance engine state for group message; skipping recipient"
+                );
+                continue;
+            }
+
+            agent_events.push(AgentEvent {
                 bot_id: bot_id.clone(),
-                event_id: decrypted.event_id,
+                event_id: decrypted.event_id.clone(),
                 event_type: EventType::MlsGroupMessageReceived,
-                chat_id: Some(decrypted.group_id),
-                content,
-                mentions,
+                chat_id: Some(decrypted.group_id.clone()),
+                content: content.clone(),
+                mentions: mentions.clone(),
                 rumor_id: event.id.to_hex(),
-                author: decrypted.author,
+                author: decrypted.author.clone(),
                 timestamp: decrypted.timestamp,
                 ..Default::default()
-            }))
-        } else {
-            Ok(None)
+            });
         }
+
+        Ok(agent_events)
     }
 }
 

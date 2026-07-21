@@ -144,6 +144,14 @@ impl ClientManager {
         self.bots.get_mut(npub)
     }
 
+    /// Build a map from configured bot npub to bot_id.
+    pub fn npub_to_bot_id_map(&self) -> HashMap<String, String> {
+        self.bots
+            .values()
+            .map(|bot| (bot.npub().to_string(), bot.bot_id().to_string()))
+            .collect()
+    }
+
     /// Mutable lookup by daemon-local identifier.
     pub fn get_bot_by_id_mut(&mut self, bot_id: &str) -> Option<&mut BotState> {
         self.bot_id_to_pubkey

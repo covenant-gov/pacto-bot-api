@@ -19,6 +19,7 @@ use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::events::{AgentEvent, EventType};
 use pacto_bot_api::handlers::ConnectionHandle;
+use pacto_bot_api::mls::MlsEngineHandle;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::signer::Signer;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
@@ -99,6 +100,175 @@ async fn setup_mls_dispatch(
     Ok((keys, dispatch, cm, client, relay, dir))
 }
 
+async fn register_handler_for_bot(
+    dispatch: &Dispatch,
+    bot_id: &str,
+    event_types: &[&str],
+    capabilities: &[&str],
+) -> Result<(String, mpsc::Receiver<JsonRpcMessage>), Box<dyn std::error::Error>> {
+    let (tx, rx) = mpsc::channel(16);
+    let connection = ConnectionHandle::new(tx);
+    let response = dispatch
+        .handle_message(
+            JsonRpcMessage::request(
+                1.into(),
+                "handler.register",
+                Some(serde_json::json!({
+                    "bot_ids": [bot_id],
+                    "event_types": event_types,
+                    "capabilities": capabilities,
+                })),
+            ),
+            None,
+            Some(connection),
+        )
+        .await?;
+    let handler_id = response
+        .and_then(|r| match r {
+            JsonRpcMessage::Response { result, .. } => result,
+            _ => None,
+        })
+        .and_then(|v| {
+            v.get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .ok_or("handler.register did not return handler_id")?;
+    Ok((handler_id, rx))
+}
+
+async fn setup_multi_bot_mls_dispatch(
+    bot_ids: &[&str],
+) -> Result<
+    (
+        Vec<Keys>,
+        Arc<Dispatch>,
+        Arc<RwLock<ClientManager>>,
+        NostrClient,
+        MockRelay,
+        tempfile::TempDir,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let keys: Vec<Keys> = bot_ids.iter().map(|_| Keys::generate()).collect();
+    let bots: Vec<BotConfig> = keys
+        .iter()
+        .zip(bot_ids.iter())
+        .map(|(k, id)| bot_config(id, k, &["ReceiveGroupMessages", "SendGroupMessages"]))
+        .collect();
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots,
+    };
+    let dir = common::tempdir()?;
+    let relay = MockRelay::start().await?;
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let db = Db::open(dir.path().join("test.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm.clone(), db.clone(), Diagnostics::new()));
+
+    {
+        let cm_guard = cm.read().await;
+        for id in bot_ids {
+            let bot = cm_guard.get_bot_by_id(id).expect("bot exists");
+            let signer = bot.signer.clone();
+            let pubkey = bot.signer.public_key();
+            cm_guard
+                .nostr_client
+                .add_signer(pubkey, id.to_string(), Arc::new(signer))
+                .await;
+            if let Some(mls) = bot.mls.clone() {
+                cm_guard
+                    .nostr_client
+                    .add_mls_engine(pubkey, id.to_string(), mls)
+                    .await;
+            }
+        }
+    }
+
+    {
+        let mut cm_guard = cm.write().await;
+        cm_guard.subscribe_bots(&db).await?;
+    }
+
+    relay.wait_for_subscription(Duration::from_secs(5)).await?;
+
+    let client = cm.read().await.nostr_client.clone();
+    Ok((keys, dispatch, cm, client, relay, dir))
+}
+
+async fn multi_bot_peer_group_setup(
+    keys: &[Keys],
+    cm: &RwLock<ClientManager>,
+) -> Result<(MockMlsPeer, String), Box<dyn std::error::Error>> {
+    let mut bot_mls: Vec<MlsEngineHandle> = {
+        let cm_guard = cm.read().await;
+        cm_guard
+            .bot_ids()
+            .map(|id| {
+                cm_guard
+                    .get_bot_by_id(id)
+                    .expect("bot exists")
+                    .mls
+                    .clone()
+                    .expect("mls enabled")
+            })
+            .collect()
+    };
+
+    let peer = MockMlsPeer::new();
+
+    // Create key package events for all configured bots.
+    let mut bot_key_package_events = Vec::new();
+    for (i, mls) in bot_mls.iter().enumerate() {
+        let bot_keys = &keys[i];
+        let daemon_pubkey = bot_keys.public_key();
+        let bot_key_package = mls
+            .publish_key_package(&daemon_pubkey, vec![])
+            .await
+            .expect("publish key package");
+        let unsigned = nostr::UnsignedEvent::new(
+            daemon_pubkey,
+            nostr::Timestamp::now(),
+            nostr::Kind::MlsKeyPackage,
+            bot_key_package.1,
+            bot_key_package.0,
+        );
+        let signed = unsigned.sign(bot_keys).await?;
+        bot_key_package_events.push(signed);
+    }
+
+    // Create group with the first bot as the initial member.
+    let (group_result, welcome1_rumor) = peer.create_group_with(&bot_key_package_events[0]);
+
+    let wrapper_event_id = nostr::EventId::all_zeros();
+    bot_mls[0]
+        .process_welcome(wrapper_event_id, peer.sign(welcome1_rumor).await)
+        .await?;
+    let group_info = bot_mls[0].accept_pending_welcome().await?;
+    let wire_id = hex::encode(group_info.nostr_group_id);
+
+    // Add each remaining bot to the group and advance the group state on all
+    // existing daemon members so everyone can decrypt subsequent messages.
+    for i in 1..bot_mls.len() {
+        let (evolution_event, welcome_i_rumor) =
+            peer.add_member_to_group(&group_result, &bot_key_package_events[i]);
+
+        for existing_mls in bot_mls.iter_mut().take(i) {
+            existing_mls.decrypt_group_message(&evolution_event).await?;
+        }
+
+        bot_mls[i]
+            .process_welcome(wrapper_event_id, peer.sign(welcome_i_rumor).await)
+            .await?;
+        bot_mls[i].accept_pending_welcome().await?;
+    }
+
+    Ok((peer, wire_id))
+}
+
 async fn peer_group_setup(
     keys: &Keys,
     cm: &RwLock<ClientManager>,
@@ -143,35 +313,7 @@ async fn register_handler(
     event_types: &[&str],
     capabilities: &[&str],
 ) -> Result<(String, mpsc::Receiver<JsonRpcMessage>), Box<dyn std::error::Error>> {
-    let (tx, rx) = mpsc::channel(16);
-    let connection = ConnectionHandle::new(tx);
-    let response = dispatch
-        .handle_message(
-            JsonRpcMessage::request(
-                1.into(),
-                "handler.register",
-                Some(serde_json::json!({
-                    "bot_ids": ["mls-bot"],
-                    "event_types": event_types,
-                    "capabilities": capabilities,
-                })),
-            ),
-            None,
-            Some(connection),
-        )
-        .await?;
-    let handler_id = response
-        .and_then(|r| match r {
-            JsonRpcMessage::Response { result, .. } => result,
-            _ => None,
-        })
-        .and_then(|v| {
-            v.get("handler_id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .ok_or("handler.register did not return handler_id")?;
-    Ok((handler_id, rx))
+    register_handler_for_bot(dispatch, "mls-bot", event_types, capabilities).await
 }
 
 fn parse_agent_event(msg: &JsonRpcMessage) -> Option<AgentEvent> {
@@ -799,6 +941,179 @@ async fn envelope_is_parsed_before_deduplication_gate() -> Result<(), Box<dyn st
         result.is_err(),
         "duplicate envelope event should be deduplicated"
     );
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn multi_bot_mention_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    let bot_ids = ["bot-a", "bot-b"];
+    let (keys, dispatch, cm, client, relay, _dir) = setup_multi_bot_mls_dispatch(&bot_ids).await?;
+    let (peer, _wire_id) = multi_bot_peer_group_setup(&keys, &cm).await?;
+
+    let (handler_id_a, mut rx_a) = register_handler_for_bot(
+        &dispatch,
+        "bot-a",
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+    let (handler_id_b, mut rx_b) = register_handler_for_bot(
+        &dispatch,
+        "bot-b",
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let npub_b = keys[1].public_key().to_bech32()?;
+    let envelope = serde_json::json!({
+        "body": "@bot-b hi",
+        "mentions": [{"npub": npub_b, "alias": "bot-b"}],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch.clone(), stream));
+    relay.inject_event(message_event).await;
+
+    let mut event_a: Option<AgentEvent> = None;
+    let mut event_b: Option<AgentEvent> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while event_a.is_none() || event_b.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err("timeout waiting for both bots to receive event".into());
+        }
+        tokio::select! {
+            Some(msg) = rx_a.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_a),
+                        None,
+                    )
+                    .await?;
+                event_a = Some(event);
+            }
+            Some(msg) = rx_b.recv() => {
+                let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+                dispatch
+                    .handle_message(
+                        JsonRpcMessage::request(
+                            1.into(),
+                            "handler.response",
+                            Some(serde_json::json!({
+                                "event_id": event.event_id,
+                                "action": "ack",
+                            })),
+                        ),
+                        Some(&handler_id_b),
+                        None,
+                    )
+                    .await?;
+                event_b = Some(event);
+            }
+            _ = tokio::time::sleep(remaining) => {
+                return Err("timeout waiting for both bots to receive event".into());
+            }
+        }
+    }
+
+    let event_a = event_a.unwrap();
+    let event_b = event_b.unwrap();
+
+    assert_eq!(event_a.bot_id, "bot-a");
+    assert!(!event_a.is_mentioned);
+    assert_eq!(event_a.mentioned_bot_ids, vec!["bot-b"]);
+    assert_eq!(event_a.content, "@bot-b hi");
+
+    assert_eq!(event_b.bot_id, "bot-b");
+    assert!(event_b.is_mentioned);
+    assert_eq!(event_b.mentioned_bot_ids, vec!["bot-b"]);
+    assert_eq!(event_b.content, "@bot-b hi");
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn mentioned_bot_receives_is_mentioned_true() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let bot_npub = keys.public_key().to_bech32()?;
+    let envelope = serde_json::json!({
+        "body": "@mls-bot /help",
+        "mentions": [{"npub": bot_npub, "alias": "mls-bot"}],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.bot_id, "mls-bot");
+    assert_eq!(event.content, "@mls-bot /help");
+    assert!(event.is_mentioned);
+    assert_eq!(event.mentioned_bot_ids, vec!["mls-bot"]);
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_message_has_default_mention_metadata() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let message_event = peer.create_group_message("!snapshot").await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, "!snapshot");
+    assert!(!event.is_mentioned);
+    assert!(event.mentioned_bot_ids.is_empty());
+    assert!(event.mentions.is_empty());
 
     consumer.abort();
     let _ = consumer.await;
