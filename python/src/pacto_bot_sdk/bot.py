@@ -76,6 +76,7 @@ class Bot:
         reply_on_error: bool = True,
         error_message: str = "Sorry, I couldn't process that.",
         auto_acknowledge: bool = True,
+        require_mention: bool = True,
         retry_initial_backoff: float = 1.0,
         retry_max_backoff: float = 30.0,
         retry_jitter_ratio: float = 0.2,
@@ -92,6 +93,7 @@ class Bot:
         self.reply_on_error = reply_on_error
         self.error_message = error_message
         self.auto_acknowledge = auto_acknowledge
+        self._require_mention = require_mention
         self._hello_message = hello_message
         self._version = version if version is not None else "unknown"
 
@@ -120,14 +122,18 @@ class Bot:
         self._client = PactoClient(self._transport)
 
         self._commands: dict[str, CommandHandler] = {}
+        self._command_require_mention: dict[str, bool] = {}
         self._event_handlers: dict[str, CommandHandler] = {}
         self._hears: dict[str, CommandHandler] = {}
+        self._hears_require_mention: dict[str, bool] = {}
         self._default_handler: CommandHandler | None = None
         self._status_handler: StatusHandler | None = None
         self._rate_limited_handler: RateLimitedHandler | None = None
 
         self._commands["version"] = self._version_handler
         self._commands["info"] = self._version_handler
+        self._command_require_mention["version"] = self._require_mention
+        self._command_require_mention["info"] = self._require_mention
 
         if self._hello_message is not None:
             if "SendGroupMessages" in self.capabilities:
@@ -275,12 +281,21 @@ class Bot:
     # Decorators
     # -----------------------------------------------------------------------
 
-    def command(self, name: str) -> Callable[[CommandHandler], CommandHandler]:
-        """Register an async callback for *name* (with or without leading ``/``)."""
+    def command(
+        self, name: str, *, require_mention: bool | None = None
+    ) -> Callable[[CommandHandler], CommandHandler]:
+        """Register an async callback for *name* (with or without leading ``/``).
+
+        In Squad channels, the handler only fires when the bot is mentioned
+        unless ``require_mention`` is set to ``False``. When omitted, the
+        constructor's ``require_mention`` default is used.
+        """
         key = name.lstrip("/")
+        gated = self._require_mention if require_mention is None else require_mention
 
         def decorator(handler: CommandHandler) -> CommandHandler:
             self._commands[key] = handler
+            self._command_require_mention[key] = gated
             return handler
 
         return decorator
@@ -326,11 +341,20 @@ class Bot:
         self._event_handlers["mls_welcome_received"] = handler
         return handler
 
-    def hears(self, token: str) -> Callable[[CommandHandler], CommandHandler]:
-        """Register an async callback for messages whose first token matches *token*."""
+    def hears(
+        self, token: str, *, require_mention: bool | None = None
+    ) -> Callable[[CommandHandler], CommandHandler]:
+        """Register an async callback for messages whose first token matches *token*.
+
+        In Squad channels, the handler only fires when the bot is mentioned
+        unless ``require_mention`` is set to ``False``. When omitted, the
+        constructor's ``require_mention`` default is used.
+        """
+        gated = self._require_mention if require_mention is None else require_mention
 
         def decorator(handler: CommandHandler) -> CommandHandler:
             self._hears[token] = handler
+            self._hears_require_mention[token] = gated
             return handler
 
         return decorator
@@ -972,6 +996,7 @@ class Bot:
 
         handler: CommandHandler | None = None
         label: str | None = None
+        require_mention: bool | None = None
 
         if event.type in self._event_handlers:
             handler = self._event_handlers[event.type]
@@ -984,6 +1009,9 @@ class Bot:
             if first_token in self._hears:
                 handler = self._hears[first_token]
                 label = f"hears:{first_token}"
+                require_mention = self._hears_require_mention.get(
+                    first_token, self._require_mention
+                )
             else:
                 parsed = parse_command(event.content)
                 if parsed is None:
@@ -1000,13 +1028,31 @@ class Bot:
                     label = "default"
                 else:
                     command = parsed["command"]
-                    handler = self._commands.get(command) or self._default_handler
-                    label = f"command:{command}"
+                    handler = self._commands.get(command)
+                    if handler is not None:
+                        label = f"command:{command}"
+                        require_mention = self._command_require_mention.get(
+                            command, self._require_mention
+                        )
+                    else:
+                        handler = self._default_handler
+                        label = "default"
 
         if handler is None:
             await self._client.handler_response(
                 action="ignore", event_id=event.event_id
             )
+            return
+
+        if (
+            event.type == "mls_group_message_received"
+            and require_mention is True
+            and not event.is_mentioned
+        ):
+            self._logger.info(
+                f"ignoring gated {label} for {event.event_id}: not mentioned"
+            )
+            await self._send_handler_response(self.ignore(event))
             return
 
         await self._invoke_handler(event, handler, label)

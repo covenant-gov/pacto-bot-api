@@ -2078,3 +2078,483 @@ async def test_reply_content_validates_max_bytes() -> None:
     )
     with pytest.raises(ValueError, match="reply content exceeds 8192 bytes"):
         bot.reply(event, "x" * 8193)
+
+
+# ---------------------------------------------------------------------------
+# Mention gating (U5)
+# ---------------------------------------------------------------------------
+
+
+async def _start_registered_bot(bot: Bot, transport: MockTransport) -> asyncio.Task[None]:
+    """Start *bot* and complete the initial handler.register handshake."""
+    task = asyncio.create_task(bot._run(["--transport", "mock"]))
+    await asyncio.sleep(0.05)
+    for frame in transport.frames:
+        if frame.get("method") == "handler.register":
+            transport.inject({
+                "jsonrpc": "2.0",
+                "id": frame["id"],
+                "result": {
+                    "handler_id": "h-1",
+                    "reconnect_token": "rt-1",
+                    "registered_events": list(bot.event_types),
+                },
+            })
+            break
+    await asyncio.sleep(0.05)
+    return task
+
+
+def test_require_mention_constructor_default_is_true():
+    """The Bot constructor defaults to mention-gated squad handlers."""
+    bot = Bot("test-bot", transport=MockTransport())
+    assert bot._require_mention is True
+
+
+@pytest.mark.asyncio
+async def test_command_gated_by_default_ignores_bare_squad_command(
+    transport: MockTransport,
+) -> None:
+    """A bare squad command does not fire when the bot is not mentioned."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.command("/hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-1",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert responses[0]["params"]["event_id"] == "e-1"
+    assert len(calls) == 0
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_command_gated_by_default_fires_when_mentioned(
+    transport: MockTransport,
+) -> None:
+    """A squad command fires when the bot is explicitly mentioned."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.command("/hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-2",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": True,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert responses[0]["params"]["content"] == "Hi!"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_command_require_mention_false_overrides_default(
+    transport: MockTransport,
+) -> None:
+    """A decorator with require_mention=False fires on an unmentioned squad command."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.command("/hello", require_mention=False)
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-3",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert responses[0]["params"]["content"] == "Hi!"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_command_require_mention_true_overrides_constructor_false(
+    transport: MockTransport,
+) -> None:
+    """A decorator with require_mention=True gates even when the default is False."""
+    bot = Bot("test-bot", transport=transport, require_mention=False)
+    calls: list[Any] = []
+
+    @bot.command("/hello", require_mention=True)
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+
+    # Unmentioned event should be ignored because the decorator opts in to gating.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-4a",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert responses[0]["params"]["event_id"] == "e-4a"
+    assert len(calls) == 0
+
+    # Mentioned event should fire.
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-4b",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": True,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 2
+    assert responses[1]["params"]["action"] == "reply"
+    assert responses[1]["params"]["content"] == "Hi!"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_dm_received_routes_regardless_of_require_mention(
+    transport: MockTransport,
+) -> None:
+    """DM commands always route, ignoring the squad mention gate."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.command("/hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-5",
+            "type": "dm_received",
+            "chat_id": "npub1chat",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert responses[0]["params"]["content"] == "Hi!"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_hears_gated_by_default_ignores_bare_squad_token(
+    transport: MockTransport,
+) -> None:
+    """A bare squad hears token does not fire when the bot is not mentioned."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.hears("hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-6",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "hello world",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert responses[0]["params"]["event_id"] == "e-6"
+    assert len(calls) == 0
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_hears_require_mention_false_overrides_default(
+    transport: MockTransport,
+) -> None:
+    """A hears decorator with require_mention=False fires on an unmentioned squad message."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.hears("hello", require_mention=False)
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-7",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "hello world",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert responses[0]["params"]["content"] == "Hi!"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_gated_non_mention_sends_ignore_even_when_auto_acknowledge_disabled(
+    transport: MockTransport,
+) -> None:
+    """Mention gating emits ignore independently of auto_acknowledge."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        require_mention=True,
+        auto_acknowledge=False,
+    )
+    calls: list[Any] = []
+
+    @bot.command("/hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-8",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert len(calls) == 0
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_default_handler_not_gated_in_squads(
+    transport: MockTransport,
+) -> None:
+    """The default handler is not subject to squad mention gating."""
+    bot = Bot("test-bot", transport=transport, require_mention=True)
+    calls: list[Any] = []
+
+    @bot.default
+    async def fallback(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        calls.append(event)
+        return b.ignore(event)
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-9",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "not a slash command",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": False,
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "ignore"
+    assert len(calls) == 1
+
+    bot._request_shutdown()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_mention_metadata_reaches_squad_handler(
+    transport: MockTransport,
+) -> None:
+    """Generated AgentEventParams carries and exposes the new mention fields."""
+    bot = Bot(
+        "test-bot",
+        transport=transport,
+        event_types=["dm_received", "mls_group_message_received"],
+    )
+    captured: list[tuple[bool | None, list[str] | None, list[str] | None]] = []
+
+    @bot.command("/hello")
+    async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
+        captured.append((event.is_mentioned, event.mentioned_bot_ids, event.mentions))
+        return b.reply(event, "Hi!")
+
+    task = await _start_registered_bot(bot, transport)
+    transport.inject({
+        "jsonrpc": "2.0",
+        "method": "agent.event",
+        "params": {
+            "bot_id": "test-bot",
+            "event_id": "e-10",
+            "type": "mls_group_message_received",
+            "chat_id": "group-1",
+            "content": "/hello",
+            "rumor_id": "r-1",
+            "author": "npub1author",
+            "timestamp": 1234567890,
+            "is_mentioned": True,
+            "mentioned_bot_ids": ["test-bot", "other-bot"],
+            "mentions": ["npub1test", "npub1other"],
+        },
+    })
+    await asyncio.sleep(0.05)
+
+    responses = [f for f in transport.frames if f.get("method") == "handler.response"]
+    assert len(responses) == 1
+    assert responses[0]["params"]["action"] == "reply"
+    assert len(captured) == 1
+    is_mentioned, mentioned_bot_ids, mentions = captured[0]
+    assert is_mentioned is True
+    assert mentioned_bot_ids == ["test-bot", "other-bot"]
+    assert mentions == ["npub1test", "npub1other"]
+
+    bot._request_shutdown()
+    await task
+
