@@ -17,6 +17,7 @@ use nostr::{
     Timestamp, ToBech32, UnsignedEvent,
 };
 use nostr_sdk::{Client, RelayPoolNotification};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
@@ -49,6 +50,32 @@ impl std::fmt::Debug for NostrClient {
         f.debug_struct("NostrClient")
             .field("client", &self.client)
             .finish_non_exhaustive()
+    }
+}
+
+/// Parsed mention envelope shape produced by the Pacto app for squad messages.
+#[derive(Debug, Deserialize)]
+struct MentionEnvelope {
+    body: String,
+    mentions: Vec<MentionEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MentionEntry {
+    npub: String,
+}
+
+/// Attempt to parse the decrypted MLS group message content as a structured
+/// `{ body, mentions }` envelope. On success, return the body and the list of
+/// target npubs. On any parse failure or shape mismatch, return the raw
+/// plaintext as the body and an empty mention list.
+fn parse_mention_envelope(plaintext: &str) -> (String, Vec<String>) {
+    match serde_json::from_str::<MentionEnvelope>(plaintext) {
+        Ok(envelope) => (
+            envelope.body,
+            envelope.mentions.into_iter().map(|m| m.npub).collect(),
+        ),
+        Err(_) => (plaintext.to_string(), Vec::new()),
     }
 }
 
@@ -1010,12 +1037,14 @@ impl NostrClient {
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt group message: {e}")))?;
 
         if let Some(decrypted) = decrypted {
+            let (content, mentions) = parse_mention_envelope(&decrypted.content);
             Ok(Some(AgentEvent {
                 bot_id: bot_id.clone(),
                 event_id: decrypted.event_id,
                 event_type: EventType::MlsGroupMessageReceived,
                 chat_id: Some(decrypted.group_id),
-                content: decrypted.content,
+                content,
+                mentions,
                 rumor_id: event.id.to_hex(),
                 author: decrypted.author,
                 timestamp: decrypted.timestamp,

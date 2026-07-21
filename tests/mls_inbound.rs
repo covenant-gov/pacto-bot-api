@@ -593,3 +593,215 @@ async fn malformed_group_message_is_dropped() -> Result<(), Box<dyn std::error::
     relay.stop().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn valid_envelope_is_parsed_into_content_and_mentions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let target = Keys::generate();
+    let target_npub = target.public_key().to_bech32()?;
+    let envelope = serde_json::json!({
+        "body": "@Joke Bot /help",
+        "mentions": [{"npub": target_npub, "alias": "Joke Bot"}],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
+    let expected_group_id = support::mock_mls_peer::group_wire_id(&message_event);
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.bot_id, "mls-bot");
+    assert_eq!(event.event_type, EventType::MlsGroupMessageReceived);
+    assert_eq!(event.content, "@Joke Bot /help");
+    assert_eq!(event.chat_id, expected_group_id);
+    assert_eq!(event.mentions, vec![target_npub]);
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn legacy_plaintext_message_is_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let message_event = peer.create_group_message("!snapshot").await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, "!snapshot");
+    assert!(event.mentions.is_empty());
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn json_without_envelope_shape_is_treated_as_legacy() -> Result<(), Box<dyn std::error::Error>>
+{
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let raw = r#"{"foo":"bar"}"#;
+    let message_event = peer.create_group_message(raw).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, raw);
+    assert!(event.mentions.is_empty());
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn envelope_missing_npub_falls_back_to_legacy() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let raw = r#"{"body":"hi","mentions":[{"alias":"Joke Bot"}]}"#;
+    let message_event = peer.create_group_message(raw).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, raw);
+    assert!(event.mentions.is_empty());
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_json_is_treated_as_legacy() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let raw = "not valid json {";
+    let message_event = peer.create_group_message(raw).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, raw);
+    assert!(event.mentions.is_empty());
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn envelope_is_parsed_before_deduplication_gate() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let target = Keys::generate();
+    let target_npub = target.public_key().to_bech32()?;
+    let envelope = serde_json::json!({
+        "body": "@Joke Bot /help",
+        "mentions": [{"npub": target_npub, "alias": "Joke Bot"}],
+    });
+    let message_event = peer.create_group_message(&envelope.to_string()).await;
+    relay.inject_event(message_event.clone()).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg1 = next_message(&mut rx).await.ok_or("no first agent.event")?;
+    let event = parse_agent_event(&msg1).ok_or("not an agent.event")?;
+    assert_eq!(event.content, "@Joke Bot /help");
+    assert_eq!(event.mentions, vec![target_npub]);
+
+    let result = timeout(Duration::from_secs(2), rx.recv()).await;
+    assert!(
+        result.is_err(),
+        "duplicate envelope event should be deduplicated"
+    );
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
