@@ -328,11 +328,12 @@ fn parse_bunker_relays(uri: &str) -> Result<Vec<String>, DaemonError> {
     Ok(relays)
 }
 
-/// Validate that `bot_id` is a safe, single directory name.
+/// Validate that `bot_id` is a safe slug.
 ///
-/// Rejects empty values, names that are too long, whitespace, path
-/// separators, and the parent-directory component `..` so that the id can be
-/// joined onto a data directory without escaping it.
+/// Enforces lowercase alphanumeric, hyphen, and underscore only; the id must
+/// start and end with alphanumeric and be 64 characters or fewer. This keeps
+/// bot ids usable as directory names, log labels, and config keys while still
+/// being human-readable.
 pub fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
     if bot_id.is_empty() {
         return Err(DaemonError::Config("bot_id must not be empty".into()));
@@ -342,13 +343,45 @@ pub fn validate_bot_id(bot_id: &str) -> Result<(), DaemonError> {
             "bot_id must be 64 characters or fewer".into(),
         ));
     }
-    if bot_id.contains(|c: char| c.is_whitespace() || c == '/' || c == '\\') {
+    let first = bot_id.as_bytes()[0];
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
+        return Err(DaemonError::Config(format!(
+            "bot_id '{bot_id}' must start with a lowercase letter or digit"
+        )));
+    }
+    let last = bot_id.as_bytes()[bot_id.len() - 1];
+    if !(last.is_ascii_lowercase() || last.is_ascii_digit()) {
+        return Err(DaemonError::Config(format!(
+            "bot_id '{bot_id}' must end with a lowercase letter or digit"
+        )));
+    }
+    if bot_id
+        .chars()
+        .any(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-' && c != '_')
+    {
+        return Err(DaemonError::Config(format!(
+            "bot_id '{bot_id}' must be a slug: lowercase letters, digits, hyphens, and underscores only",
+        )));
+    }
+    Ok(())
+}
+
+/// Light validation for a profile picture URL.
+///
+/// Rejects obviously invalid values; this is not a full URL parser, but it
+/// catches the common mistakes of leaving the field empty, forgetting a
+/// scheme, or using a non-HTTP scheme.
+fn validate_picture_url(url: &str) -> Result<(), DaemonError> {
+    if url.is_empty() {
         return Err(DaemonError::Config(
-            "bot_id must not contain whitespace, '/', or '\\'".into(),
+            "picture URL must not be empty when configured".into(),
         ));
     }
-    if bot_id == ".." {
-        return Err(DaemonError::Config("bot_id must not be '..'".into()));
+    let lower = url.to_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(DaemonError::Config(format!(
+            "picture URL must start with http:// or https://, got: {url}"
+        )));
     }
     Ok(())
 }
@@ -412,6 +445,11 @@ fn validate_bots(bots: &mut [BotConfig], data_dir: &Path) -> Result<(), DaemonEr
         if bot.mls_db_path.is_some() {
             let canonical = validate_mls_db_path(bot, data_dir)?;
             bot.mls_db_path = Some(canonical);
+        }
+
+        if let Some(picture) = &bot.picture {
+            validate_picture_url(picture)
+                .map_err(|e| DaemonError::Config(format!("bot {}: {}", bot.id, e)))?;
         }
 
         match &bot.signing {
@@ -1624,6 +1662,16 @@ signing = { backend = "nsec", nsec = "nsec1a" }
         assert!(validate_bot_id("echo-bot").is_ok());
         assert!(validate_bot_id("a").is_ok());
         assert!(validate_bot_id("bot_42").is_ok());
+        assert!(validate_bot_id("a".repeat(64).as_str()).is_ok());
+    }
+
+    #[test]
+    fn validate_bot_id_rejects_non_slug_characters() {
+        assert!(validate_bot_id("EchoBot").is_err());
+        assert!(validate_bot_id("-bot").is_err());
+        assert!(validate_bot_id("bot-").is_err());
+        assert!(validate_bot_id("bot.id").is_err());
+        assert!(validate_bot_id("bot@id").is_err());
     }
 
     #[test]

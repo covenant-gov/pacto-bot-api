@@ -273,7 +273,7 @@
     },
     {
       "name": "agent.event",
-      "summary": "Notification of an incoming event for a registered bot.",
+      "summary": "Notification of an incoming event for a registered bot. For squad messages, the daemon forwards the parsed mention envelope and computed mention metadata (is_mentioned, mentioned_bot_ids, mentions) alongside the message content.",
       "params": [
         {
           "name": "params",

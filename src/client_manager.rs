@@ -486,7 +486,10 @@ mod tests {
             .unwrap_err()
         });
         assert!(matches!(err, DaemonError::Config(_)));
-        assert!(err.to_string().contains("bot_id must not be '..'"));
+        assert!(
+            err.to_string()
+                .contains("must start with a lowercase letter or digit")
+        );
     }
 
     #[test]

@@ -289,6 +289,49 @@ async def announce(event, bot):
     return bot.ignore(event)
 ```
 
+#### Mentions and command gating in squads
+
+When a Pacto Squad message is sent with bot mentions (e.g. `@Joke Bot /help`),
+the daemon enriches `mls_group_message_received` events with mention metadata:
+
+- `event.mentions` — target npubs from the mention envelope.
+- `event.is_mentioned` — `true` when the receiving bot's npub is in `mentions`.
+- `event.mentioned_bot_ids` — `bot_id` values whose npubs were mentioned, which
+  may include other bots in the squad.
+
+By default, the SDK gates `@bot.command` and `@bot.hears` so they only fire when
+`event.is_mentioned` is `true`. This prevents a bot from responding to every
+`/help` posted in a busy squad. Opt out per-decorator or bot-wide:
+
+```python
+bot = Bot(
+    bot_id="squad-bot",
+    event_types=["mls_group_message_received"],
+    capabilities=["SendGroupMessages", "ReceiveGroupMessages"],
+    require_mention=False,  # default for every decorator
+)
+
+@bot.command("/help")
+async def help(event, bot):
+    return bot.reply(event, "Available commands: /help, /status")
+
+
+@bot.hears("status", require_mention=False)
+async def status(event, bot):
+    return bot.reply(event, f"{bot.bot_id} is up")
+```
+
+Requirements:
+
+- The daemon must know the bot's `display_name` so the Pacto app can resolve the
+  `@Display Name` alias to the bot's npub. The daemon rejects duplicate
+  `display_name` values across bots.
+- The bot must subscribe to `mls_group_message_received` (and have
+  `ReceiveGroupMessages`) to receive squad messages.
+- Legacy plaintext squad messages fall back to `content = full text` with empty
+  `mentions`, `is_mentioned = false`, and `mentioned_bot_ids = []`, so existing
+  handlers continue to work.
+
 ### Reconnection resilience
 
 `Bot` retries the initial registration and all runtime reconnects with exponential
