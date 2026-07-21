@@ -262,6 +262,9 @@ Example config:
 [[bots]]
 id = "echo-bot"
 npub = "npub1..."
+display_name = "Echo Bot"
+about = "A friendly echo bot"
+picture = "https://example.com/echo-bot.png"
 signing = { backend = "nsec", nsec = "<NSEC>" }
 relays = ["ws://localhost:7000"]
 capabilities = ["ReadMessages", "SendMessages", "SendGroupMessages"]
@@ -269,12 +272,22 @@ capabilities = ["ReadMessages", "SendMessages", "SendGroupMessages"]
 [[bots]]
 id = "secure-bot"
 npub = "npub1..."
+display_name = "Secure Bot"
 signing = { backend = "bunker_remote", uri = "<BUNKER_URI>" }
 relays = ["wss://relay.example.com"]
 capabilities = ["ReadMessages", "SendGroupMessages"]
 ```
 
-Signing backends:
+Bot identity fields:
+
+- `id` — required, unique daemon-local slug. Lowercase letters, digits, hyphens, and underscores only.
+- `npub` — required, the bot's Nostr public key.
+- `display_name` — required, unique human-readable name used as the @mention alias in squad channels.
+- `about` — optional, description text published in the bot's kind:0 profile.
+- `picture` — optional, HTTPS URL for the bot's kind:0 profile picture.
+- `signing` — required, see below.
+- `relays` — optional, relay URLs for this bot.
+- `capabilities` — optional, capability strings granted to handlers.
 
 - `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.
 - `bunker_local` — NIP-46 bunker on the same machine.
@@ -314,6 +327,22 @@ The daemon forwards decrypted DMs as `agent.event` notifications:
 ```
 
 Handlers must declare capabilities at registration. The daemon rejects calls that exceed those capabilities.
+
+### Bot mentions in squad channels
+
+When a Pacto Squad message uses the `{body, mentions}` envelope, the daemon enriches `mls_group_message_received` events before fan-out:
+
+- `mentions` — target npubs from the mention envelope.
+- `is_mentioned` — `true` when the receiving bot's own npub is in `mentions`.
+- `mentioned_bot_ids` — configured `bot_id` values whose npubs appear in `mentions` (may include bots other than the receiver).
+
+Example `agent.event` for a squad message:
+
+```json
+{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"joke-bot","type":"mls_group_message_received","content":"@Joke Bot /help","author":"<npub>","rumor_id":"<id>","event_id":"<id>","chat_id":"<group-id>","mentions":["<joke-bot-npub>"],"is_mentioned":true,"mentioned_bot_ids":["joke-bot"]}}
+```
+
+All bots in the squad still receive the message (hybrid dispatch), but the Python SDK gates `@bot.command` and `@bot.hears` by default so they only fire when `is_mentioned` is `true`. Opt out with `require_mention=False` on the decorator or bot constructor. Legacy plaintext messages fall back to `content = full text` and empty mention metadata.
 
 ## When to use which
 

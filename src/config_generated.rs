@@ -32,15 +32,15 @@ pub struct DaemonConfigGenerated {
 /// Per-bot identity configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BotConfigGenerated {
-    /// Description text for the bot profile
+    /// Description text published in the bot's kind:0 profile
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<String>,
     /// capabilities
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
-    /// Human-readable display name for the bot profile
+    /// Human-readable display name for the bot profile; used as the @mention alias in squad channels. Must be unique among bots.
     pub display_name: String,
-    /// id
+    /// Daemon-local bot identifier. Must be a slug: lowercase letters, digits, hyphens, and underscores only. Maximum 64 characters.
     pub id: String,
     /// Path to the per-bot MLS SQLite database
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -53,7 +53,7 @@ pub struct BotConfigGenerated {
     pub mls_key_package_freshness_secs: Option<u64>,
     /// npub
     pub npub: String,
-    /// URL to the bot's profile picture
+    /// URL to the bot's profile picture (http:// or https://)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub picture: Option<String>,
     /// relays

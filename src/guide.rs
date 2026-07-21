@@ -207,6 +207,9 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("[[bots]]\n");
     out.push_str("id = \"echo-bot\"\n");
     out.push_str("npub = \"npub1...\"\n");
+    out.push_str("display_name = \"Echo Bot\"\n");
+    out.push_str("about = \"A friendly echo bot\"\n");
+    out.push_str("picture = \"https://example.com/echo-bot.png\"\n");
     out.push_str("signing = { backend = \"nsec\", nsec = \"<NSEC>\" }\n");
     out.push_str("relays = [\"ws://localhost:7000\"]\n");
     out.push_str("capabilities = [\"ReadMessages\", \"SendMessages\", \"SendGroupMessages\"]\n");
@@ -214,11 +217,20 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("[[bots]]\n");
     out.push_str("id = \"secure-bot\"\n");
     out.push_str("npub = \"npub1...\"\n");
+    out.push_str("display_name = \"Secure Bot\"\n");
     out.push_str("signing = { backend = \"bunker_remote\", uri = \"<BUNKER_URI>\" }\n");
     out.push_str("relays = [\"wss://relay.example.com\"]\n");
     out.push_str("capabilities = [\"ReadMessages\", \"SendGroupMessages\"]\n");
     out.push_str("```\n\n");
-    out.push_str("Signing backends:\n\n");
+    out.push_str("Bot identity fields:\n\n");
+    out.push_str("- `id` — required, unique daemon-local slug. Lowercase letters, digits, hyphens, and underscores only.\n");
+    out.push_str("- `npub` — required, the bot's Nostr public key.\n");
+    out.push_str("- `display_name` — required, unique human-readable name used as the @mention alias in squad channels.\n");
+    out.push_str("- `about` — optional, description text published in the bot's kind:0 profile.\n");
+    out.push_str("- `picture` — optional, HTTPS URL for the bot's kind:0 profile picture.\n");
+    out.push_str("- `signing` — required, see below.\n");
+    out.push_str("- `relays` — optional, relay URLs for this bot.\n");
+    out.push_str("- `capabilities` — optional, capability strings granted to handlers.\n\n");
     out.push_str("- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.\n");
     out.push_str("- `bunker_local` — NIP-46 bunker on the same machine.\n");
     out.push_str("- `bunker_remote` — production NIP-46 bunker reachable over `wss://`.\n\n");
@@ -252,6 +264,17 @@ fn render_handler_jsonrpc(out: &mut String) {
     out.push_str("\n```\n\n");
 
     out.push_str("Handlers must declare capabilities at registration. The daemon rejects calls that exceed those capabilities.\n\n");
+
+    out.push_str("### Bot mentions in squad channels\n\n");
+    out.push_str("When a Pacto Squad message uses the `{body, mentions}` envelope, the daemon enriches `mls_group_message_received` events before fan-out:\n\n");
+    out.push_str("- `mentions` — target npubs from the mention envelope.\n");
+    out.push_str("- `is_mentioned` — `true` when the receiving bot's own npub is in `mentions`.\n");
+    out.push_str("- `mentioned_bot_ids` — configured `bot_id` values whose npubs appear in `mentions` (may include bots other than the receiver).\n\n");
+    out.push_str("Example `agent.event` for a squad message:\n\n");
+    out.push_str("```json\n");
+    out.push_str(r#"{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"joke-bot","type":"mls_group_message_received","content":"@Joke Bot /help","author":"<npub>","rumor_id":"<id>","event_id":"<id>","chat_id":"<group-id>","mentions":["<joke-bot-npub>"],"is_mentioned":true,"mentioned_bot_ids":["joke-bot"]}}"#);
+    out.push_str("\n```\n\n");
+    out.push_str("All bots in the squad still receive the message (hybrid dispatch), but the Python SDK gates `@bot.command` and `@bot.hears` by default so they only fire when `is_mentioned` is `true`. Opt out with `require_mention=False` on the decorator or bot constructor. Legacy plaintext messages fall back to `content = full text` and empty mention metadata.\n\n");
 }
 
 fn render_when_to_use(out: &mut String) {
@@ -280,6 +303,24 @@ mod tests {
         assert!(guide.contains("## Daemon configuration"));
         assert!(guide.contains("## Handler JSON-RPC basics"));
         assert!(guide.contains("## When to use which"));
+    }
+
+    #[test]
+    fn guide_documents_bot_mention_metadata() {
+        let guide = render_llm_guide();
+        assert!(guide.contains("is_mentioned"));
+        assert!(guide.contains("mentioned_bot_ids"));
+        assert!(guide.contains("mentions"));
+        assert!(guide.contains("require_mention"));
+        assert!(guide.contains("mls_group_message_received"));
+    }
+
+    #[test]
+    fn guide_documents_profile_config_fields() {
+        let guide = render_llm_guide();
+        assert!(guide.contains("display_name"));
+        assert!(guide.contains("about"));
+        assert!(guide.contains("picture"));
     }
 
     #[test]

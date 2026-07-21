@@ -207,7 +207,7 @@ class AgentEventParams(BaseModel):
     """
     Model for JSON-RPC method `agent.event`.
 
-    Notification of an incoming event for a registered bot.
+    Notification of an incoming event for a registered bot. For squad messages, the daemon forwards the parsed mention envelope and computed mention metadata (is_mentioned, mentioned_bot_ids, mentions) alongside the message content.
 
     Example:
 

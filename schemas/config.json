@@ -20,14 +20,14 @@
       "items": {
         "type": "object",
         "properties": {
-          "id": { "type": "string" },
+          "id": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$", "description": "Daemon-local bot identifier. Must be a slug: lowercase letters, digits, hyphens, and underscores only. Maximum 64 characters." },
           "npub": { "type": "string" },
           "signing": { "type": "object" },
           "relays": { "type": "array", "items": { "type": "string" } },
           "capabilities": { "type": "array", "items": { "type": "string" } },
-          "display_name": { "type": "string", "description": "Human-readable display name for the bot profile" },
-          "about": { "type": "string", "description": "Description text for the bot profile" },
-          "picture": { "type": "string", "description": "URL to the bot's profile picture" },
+          "display_name": { "type": "string", "description": "Human-readable display name for the bot profile; used as the @mention alias in squad channels. Must be unique among bots." },
+          "about": { "type": "string", "description": "Description text published in the bot's kind:0 profile" },
+          "picture": { "type": "string", "format": "uri", "description": "URL to the bot's profile picture (http:// or https://)" },
           "mls_db_path": { "type": "string", "description": "Path to the per-bot MLS SQLite database" },
           "mls_key_package_freshness_secs": { "type": "integer", "minimum": 0, "description": "Freshness window in seconds for MLS KeyPackage events" },
           "mls_dedup_window_secs": { "type": "integer", "minimum": 0, "description": "Time window in seconds for MLS group-message deduplication" }
