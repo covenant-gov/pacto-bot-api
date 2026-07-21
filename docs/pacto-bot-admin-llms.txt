@@ -42,8 +42,7 @@ Notes:
 - `--language` — handler language (default: `python`).
 - `--commands` — slash-command stubs to generate.
 - `--no-tests` — skip pytest files when using `--scaffold`.
-- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
-- Optional profile fields (`display_name`, `about`, `picture`) are collected only in interactive mode.
+- In interactive mode, the wizard asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode.
 
 ### `scaffold`
 

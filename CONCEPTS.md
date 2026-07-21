@@ -153,3 +153,7 @@ Recurring review feedback is captured in `docs/solutions/` (searchable by `tags`
 | **kind:445** | Nostr event kind for MLS group messages. |
 | **Squad** | An MLS group chat in the Pacto ecosystem. |
 | **Squad wire ID** | The Nostr event `h` tag value that identifies a Squad on the wire. |
+| **Bot mention** | An `@alias` mention in a Squad message whose canonical target is a bot's npub. The daemon uses the target npub to mark the event as addressed to that bot. |
+| **Mention envelope** | The JSON structure `{ body, mentions }` carried inside an encrypted MLS group message. `mentions` is an array of `{ npub, alias }` objects. |
+| **is_mentioned** | Event metadata on `mls_group_message_received` that is `true` when the receiving bot's npub appears in the message's mention envelope. |
+| **mentioned_bot_ids** | Event metadata on `mls_group_message_received` listing the `bot_id` values whose npubs appear in the message's mention envelope. |

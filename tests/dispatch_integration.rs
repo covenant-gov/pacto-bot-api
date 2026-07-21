@@ -33,6 +33,7 @@ fn test_keys() -> nostr::Keys {
 fn bot_config(id: &str, keys: &nostr::Keys, capabilities: &[&str]) -> BotConfig {
     BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
@@ -94,6 +95,7 @@ fn sample_event(bot_id: &str) -> AgentEvent {
         rumor_id: "rumor1".to_string(),
         author: "npub1sender".to_string(),
         timestamp: 42,
+        ..Default::default()
     }
 }
 
@@ -1902,6 +1904,7 @@ async fn mls_welcome_event_is_fanned_out_to_handlers() -> Result<(), Box<dyn std
         rumor_id: "rumor-welcome-1".to_string(),
         author: keys.public_key().to_bech32()?,
         timestamp: 42,
+        ..Default::default()
     };
     dispatch.dispatch_event(welcome_event).await?;
 

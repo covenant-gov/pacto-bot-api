@@ -336,6 +336,7 @@ The easiest path for bot development is to start with the default Docker stack a
 
    [[bots]]
    id = "echo-bot"
+   display_name = "Echo Bot"
    npub = "npub1..."
    signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
    relays = ["ws://localhost:7000"]
@@ -412,6 +413,7 @@ Then point the bot at the local bunker instead of an `nsec` key. The bunker base
 ```toml
 [[bots]]
 id = "bunker-bot"
+display_name = "Bunker Bot"
 npub = "npub1..."
 signing = { backend = "bunker_local", uri = "http://127.0.0.1:3001" }
 relays = ["ws://localhost:7000"]

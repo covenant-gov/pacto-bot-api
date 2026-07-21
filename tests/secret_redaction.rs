@@ -76,6 +76,7 @@ data_dir = "{}"
 
 [[bots]]
 id = "leak-test-bot"
+display_name = "leak-test-bot Display"
 npub = "npub1leaktest"
 signing = {{ backend = "nsec", nsec = "{}" }}
 "#,
@@ -211,6 +212,7 @@ fn config_parse_error_nsec_backend_does_not_leak_marker() {
         r#"
 [[bots]]
 id = "leak-test-bot"
+display_name = "leak-test-bot Display"
 npub = "{}"
 signing = {{ backend = "nsec", nsec = "" }}
 "#,
@@ -342,6 +344,7 @@ use tokio::sync::RwLock;
 fn mls_bot_config(id: &str, keys: &Keys, mls_db_path: Option<&str>) -> BotConfig {
     BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
@@ -365,6 +368,9 @@ fn write_mls_config(dir: &tempfile::TempDir, bots: &[BotConfig]) -> PathBuf {
     for bot in bots {
         content.push_str("[[bots]]\n");
         content.push_str(&format!("id = {:?}\n", bot.id));
+        if let Some(display_name) = &bot.display_name {
+            content.push_str(&format!("display_name = {:?}\n", display_name));
+        }
         content.push_str(&format!("npub = {:?}\n", bot.npub));
         match &bot.signing {
             SigningConfig::Nsec { nsec } => {

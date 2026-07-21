@@ -1206,9 +1206,8 @@ fn build_bot_snippet(params: &NewBotParams, npub: &str, nsec: &str) -> String {
         format_toml_array(&params.capabilities)
     ));
 
-    if let Some(display_name) = &params.display_name {
-        lines.push(format!("display_name = {display_name:?}"));
-    }
+    let display_name = params.display_name.as_deref().unwrap_or(&params.bot_id);
+    lines.push(format!("display_name = {display_name:?}"));
     if let Some(about) = &params.about {
         lines.push(format!("about = {about:?}"));
     }
@@ -4052,13 +4051,13 @@ mod tests {
     fn dummy_bot(id: &str, npub: &str, nsec: &str) -> BotConfig {
         BotConfig {
             id: id.to_string(),
+            display_name: None,
             npub: npub.to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new(nsec.to_string().into()),
             },
             relays: vec!["wss://relay.example.com".to_string()],
             capabilities: vec!["ReadMessages".to_string()],
-            display_name: None,
             about: None,
             picture: None,
             mls_dedup_window_secs: None,

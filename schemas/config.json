@@ -32,7 +32,7 @@
           "mls_key_package_freshness_secs": { "type": "integer", "minimum": 0, "description": "Freshness window in seconds for MLS KeyPackage events" },
           "mls_dedup_window_secs": { "type": "integer", "minimum": 0, "description": "Time window in seconds for MLS group-message deduplication" }
         },
-        "required": ["id", "npub", "signing"]
+        "required": ["id", "npub", "display_name", "signing"]
       }
     }
   }

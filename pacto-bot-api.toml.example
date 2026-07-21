@@ -9,6 +9,7 @@ http_bind = "127.0.0.1:9800"
 # Bot 1: local test key for early iteration (dev mode)
 [[bots]]
 id = "echo-bot"
+display_name = "Echo Bot"
 npub = "npub1echobot..."
 signing = { backend = "nsec", nsec = "${PACTO_BOT_NSEC}" }
 relays = ["wss://relay.pacto.chat", "wss://relay.damus.io"]
@@ -17,6 +18,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 # Bot 2: local NIP-46 bunker to prove the remote-signing path
 [[bots]]
 id = "welcome-bot"
+display_name = "Welcome Bot"
 npub = "npub1welcomebot..."
 signing = { backend = "bunker_local", uri = "bunker://abcd1234...?relay=ws://127.0.0.1:4848" }
 relays = ["wss://relay.pacto.chat"]
@@ -25,6 +27,7 @@ capabilities = ["ReadMessages", "SendMessages"]
 # Bot 3: production NIP-46 bunker
 [[bots]]
 id = "treasury-bot"
+display_name = "Treasury Bot"
 npub = "npub1treasurybot..."
 signing = { backend = "bunker_remote", uri = "bunker://efgh5678...?relay=wss://relay.nsec.app" }
 relays = ["wss://relay.pacto.chat"]

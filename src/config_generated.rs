@@ -39,8 +39,7 @@ pub struct BotConfigGenerated {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
     /// Human-readable display name for the bot profile
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
+    pub display_name: String,
     /// id
     pub id: String,
     /// Path to the per-bot MLS SQLite database

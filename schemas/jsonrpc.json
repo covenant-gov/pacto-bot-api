@@ -301,6 +301,23 @@
                 "type": "string",
                 "description": "Decrypted rumor content."
               },
+              "mentions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Target npubs from the mention envelope; empty for DMs and legacy squad messages."
+              },
+              "is_mentioned": {
+                "type": "boolean",
+                "default": false,
+                "description": "Whether the receiving bot's npub appears in `mentions`."
+              },
+              "mentioned_bot_ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": [],
+                "description": "Configured `bot_id` values whose npubs appear in `mentions`."
+              },
               "rumor_id": {
                 "type": "string",
                 "description": "Hex id of the decrypted rumor."

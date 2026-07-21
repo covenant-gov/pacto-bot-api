@@ -277,9 +277,8 @@ fn bot_config_to_snippet(bot_config: &BotConfig) -> Result<String, DaemonError> 
         format_toml_array(&bot_config.capabilities)
     ));
 
-    if let Some(display_name) = &bot_config.display_name {
-        lines.push(format!("display_name = {display_name:?}"));
-    }
+    let display_name = bot_config.display_name.as_deref().unwrap_or(&bot_config.id);
+    lines.push(format!("display_name = {display_name:?}"));
     if let Some(about) = &bot_config.about {
         lines.push(format!("about = {about:?}"));
     }
@@ -336,6 +335,7 @@ mod tests {
     fn bot_config_to_snippet_preserves_nsec() {
         let bot = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
@@ -366,6 +366,7 @@ mod tests {
         let path = dir.path().join("pacto-bot-api.toml");
         let bot = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
@@ -386,6 +387,7 @@ mod tests {
         let path = dir.path().join("pacto-bot-api.toml");
         let bot1 = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
@@ -395,6 +397,7 @@ mod tests {
         };
         let bot2 = BotConfig {
             id: "help-bot".to_string(),
+            display_name: Some("help-bot Display".to_string()),
             npub: "npub1help".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1other".into()),
@@ -416,6 +419,7 @@ mod tests {
         let path = dir.path().join("pacto-bot-api.toml");
         let bot1 = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
@@ -425,6 +429,7 @@ mod tests {
         };
         let bot2 = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1different".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1different".into()),
@@ -447,6 +452,7 @@ mod tests {
         fs::write(&path, "[daemon]\ndata_dir = \"data\"\n").unwrap();
         let bot = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),
@@ -477,6 +483,7 @@ mod tests {
 
         let bot = BotConfig {
             id: "echo-bot".to_string(),
+            display_name: Some("echo-bot Display".to_string()),
             npub: "npub1echo".to_string(),
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new("nsec1secret".into()),

@@ -25,6 +25,7 @@ use tokio::sync::RwLock;
 fn bot_config(id: &str, keys: &nostr::Keys) -> BotConfig {
     BotConfig {
         id: id.to_string(),
+        display_name: Some(format!("{} Display", id)),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),

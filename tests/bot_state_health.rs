@@ -9,6 +9,7 @@ fn generate_nsec_config(id: &str) -> BotConfig {
     let npub = keys.public_key().to_bech32().unwrap();
     BotConfig {
         id: id.into(),
+        display_name: Some(format!("{} Display", id)),
         npub,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(nsec.into()),
@@ -74,6 +75,7 @@ fn to_bot_health_reports_bunker_connected() {
     );
     let config = BotConfig {
         id: "bunker-bot".into(),
+        display_name: Some("bunker-bot Display".to_string()),
         npub,
         signing: SigningConfig::BunkerLocal {
             uri: SecretString::new(uri.into()),
@@ -99,6 +101,7 @@ fn new_rejects_empty_nsec() {
     let npub = keys.public_key().to_bech32().unwrap();
     let config = BotConfig {
         id: "empty-nsec-bot".into(),
+        display_name: Some("empty-nsec-bot Display".to_string()),
         npub,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(String::new().into()),
@@ -122,6 +125,7 @@ fn new_rejects_nsec_public_key_mismatch() {
 
     let config = BotConfig {
         id: "mismatch-bot".into(),
+        display_name: Some("mismatch-bot Display".to_string()),
         npub: other_npub,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(nsec.into()),
@@ -140,6 +144,7 @@ fn new_rejects_nsec_public_key_mismatch() {
 fn new_rejects_invalid_npub() {
     let config = BotConfig {
         id: "bad-npub-bot".into(),
+        display_name: Some("bad-npub-bot Display".to_string()),
         npub: "not-a-valid-npub".into(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new("nsec1dummy".into()),
@@ -160,6 +165,7 @@ fn new_rejects_bunker_uri_missing_scheme() {
     let npub = keys.public_key().to_bech32().unwrap();
     let config = BotConfig {
         id: "bad-bunker-bot".into(),
+        display_name: Some("bad-bunker-bot Display".to_string()),
         npub,
         signing: SigningConfig::BunkerLocal {
             uri: SecretString::new("not-a-bunker-uri".into()),
@@ -184,6 +190,7 @@ fn new_rejects_bunker_uri_missing_remote_signer_pubkey() {
     let npub = keys.public_key().to_bech32().unwrap();
     let config = BotConfig {
         id: "missing-pubkey-bot".into(),
+        display_name: Some("missing-pubkey-bot Display".to_string()),
         npub,
         signing: SigningConfig::BunkerLocal {
             uri: SecretString::new("bunker://?relay=ws://127.0.0.1:4848".into()),
@@ -212,6 +219,7 @@ fn new_rejects_bunker_remote_with_ws_relay() {
     );
     let config = BotConfig {
         id: "remote-ws-bot".into(),
+        display_name: Some("remote-ws-bot Display".to_string()),
         npub,
         signing: SigningConfig::BunkerRemote {
             uri: SecretString::new(uri.into()),

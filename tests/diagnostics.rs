@@ -248,6 +248,7 @@ fn bot_health_reflects_bot_state() {
     let nsec = keys.secret_key().to_bech32().unwrap();
     let config = BotConfig {
         id: "snapshot-bot".into(),
+        display_name: Some("snapshot-bot Display".to_string()),
         npub,
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(nsec.into()),
@@ -278,6 +279,7 @@ async fn client_manager_populates_diagnostics_bots() {
         daemon: GlobalDaemonConfig::default(),
         bots: vec![BotConfig {
             id: "diag-bot".into(),
+            display_name: Some("diag-bot Display".to_string()),
             npub,
             signing: SigningConfig::Nsec {
                 nsec: SecretString::new(nsec.into()),

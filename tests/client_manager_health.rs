@@ -11,6 +11,7 @@ use secrecy::SecretString;
 fn bot_config(id: &str, keys: &nostr::Keys, relays: Vec<String>) -> BotConfig {
     BotConfig {
         id: id.into(),
+        display_name: Some(format!("{} Display", id)),
         npub: keys.public_key().to_bech32().unwrap(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
@@ -69,6 +70,7 @@ async fn bot_health_snapshot_reflects_bot_config() {
     let npub = keys.public_key().to_bech32().unwrap();
     let manager = manager_with_bots(vec![BotConfig {
         id: "health-bot".into(),
+        display_name: Some("health-bot Display".to_string()),
         npub: npub.clone(),
         signing: SigningConfig::Nsec {
             nsec: SecretString::new(keys.secret_key().to_bech32().unwrap().into()),
