@@ -52,6 +52,7 @@ class FieldDef:
     annotation: str
     required: bool
     description: str
+    default: Any | None = None
 
 
 @dataclass
@@ -103,6 +104,7 @@ def _collect_object_model(
                 annotation=annotation,
                 required=field_required,
                 description=prop_schema.get("description", ""),
+                default=prop_schema.get("default"),
             )
         )
         # Nested models are emitted globally; we don't need to attach them here.
@@ -225,6 +227,22 @@ def _example_kwargs(fields: list[FieldDef]) -> str:
     return ", ".join(kwargs)
 
 
+def _py_default(value: Any) -> str:
+    """Return a Python literal for a JSON schema default value."""
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return repr(value)
+    if isinstance(value, list):
+        return "[]"
+    if value is None:
+        return "None"
+    # Fallback for unknown shapes; treat as None to keep the model valid.
+    return "None"
+
+
 def _emit_model_class(out: list[str], model: ModelDef) -> None:
     out.append(f"class {model.name}(BaseModel):\n")
 
@@ -251,8 +269,15 @@ def _emit_model_class(out: list[str], model: ModelDef) -> None:
     for f in model.fields:
         if f.description:
             out.append(f"    # {f.description}\n")
-        annot = f.annotation if f.required else f"{f.annotation} | None"
-        default = "" if f.required else " = None"
+        if f.required:
+            annot = f.annotation
+            default = ""
+        elif f.default is not None:
+            annot = f.annotation
+            default = f" = {_py_default(f.default)}"
+        else:
+            annot = f"{f.annotation} | None"
+            default = " = None"
         out.append(f"    {f.name}: {annot}{default}\n")
 
     out.append("\n\n")
@@ -406,8 +431,15 @@ def _emit_request_method(
 
     sig_parts = ["self"]
     for f in sorted(param_fields, key=lambda f: (not f.required, f.name)):
-        annot = f.annotation if f.required else f"{f.annotation} | None"
-        default = "" if f.required else " = None"
+        if f.required:
+            annot = f.annotation
+            default = ""
+        elif f.default is not None:
+            annot = f.annotation
+            default = f" = {_py_default(f.default)}"
+        else:
+            annot = f"{f.annotation} | None"
+            default = " = None"
         sig_parts.append(f"{f.name}: {annot}{default}")
 
     return_type: str
@@ -474,8 +506,15 @@ def _emit_notification_method(
 
     sig_parts = ["self"]
     for f in sorted(param_fields, key=lambda f: (not f.required, f.name)):
-        annot = f.annotation if f.required else f"{f.annotation} | None"
-        default = "" if f.required else " = None"
+        if f.required:
+            annot = f.annotation
+            default = ""
+        elif f.default is not None:
+            annot = f.annotation
+            default = f" = {_py_default(f.default)}"
+        else:
+            annot = f"{f.annotation} | None"
+            default = " = None"
         sig_parts.append(f"{f.name}: {annot}{default}")
 
     out.append(f"    async def {py_name}({', '.join(sig_parts)}) -> None:\n")

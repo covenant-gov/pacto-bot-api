@@ -227,11 +227,11 @@ class AgentEventParams(BaseModel):
     # Hex id of the enclosing gift-wrap event.
     event_id: str
     # Whether the receiving bot's npub appears in `mentions`.
-    is_mentioned: bool | None = None
+    is_mentioned: bool = False
     # Configured `bot_id` values whose npubs appear in `mentions`.
-    mentioned_bot_ids: list[str] | None = None
+    mentioned_bot_ids: list[str] = []
     # Target npubs from the mention envelope; empty for DMs and legacy squad messages.
-    mentions: list[str] | None = None
+    mentions: list[str] = []
     # Hex id of the decrypted rumor.
     rumor_id: str
     # Unix timestamp of the rumor.
@@ -617,7 +617,7 @@ class HandlerReconnectResponse(BaseModel):
     # Server-generated UUID for this handler.
     handler_id: str
     # Map from daemon-local bot_id to the bot's Nostr public key (npub).
-    own_pubkeys: dict[str, str] | None = None
+    own_pubkeys: dict[str, str] = None
     # Event types the handler is now subscribed to.
     registered_events: list[str]
 
@@ -659,7 +659,7 @@ class HandlerRegisterResponse(BaseModel):
     # Server-generated UUID for this handler.
     handler_id: str
     # Map from daemon-local bot_id to the bot's Nostr public key (npub).
-    own_pubkeys: dict[str, str] | None = None
+    own_pubkeys: dict[str, str] = None
     # Server-generated secret token for reconnecting this handler.
     reconnect_token: str
     # Event types the handler is now subscribed to.
