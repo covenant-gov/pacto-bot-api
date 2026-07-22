@@ -1551,7 +1551,26 @@ async def test_send_group_message_prefills_bot_id():
     result = await bot.send_group_message("0xabc", "hello squad")
     assert result == "ok"
     bot._client.agent_send_group_message.assert_awaited_once_with(
-        bot_id="test-bot", group_id="0xabc", content="hello squad"
+        bot_id="test-bot", group_id="0xabc", content="hello squad", pacto_virtual_bucket=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_group_message_forwards_pacto_virtual_bucket():
+    """bot.send_group_message forwards pacto_virtual_bucket to the client."""
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_send_group_message.return_value = "ok"
+
+    result = await bot.send_group_message(
+        "0xabc", "hello squad", pacto_virtual_bucket="squad:abc"
+    )
+    assert result == "ok"
+    bot._client.agent_send_group_message.assert_awaited_once_with(
+        bot_id="test-bot",
+        group_id="0xabc",
+        content="hello squad",
+        pacto_virtual_bucket="squad:abc",
     )
 
 
