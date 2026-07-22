@@ -359,7 +359,7 @@ class PactoClient:
         result = response.get('result')
         return result
 
-    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendGroupMessageResponse:
+    async def agent_send_group_message(self, bot_id: str, content: str, group_id: str, pacto_virtual_bucket: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendGroupMessageResponse:
         """
         Call JSON-RPC method `agent.send_group_message`.
 
@@ -372,7 +372,7 @@ class PactoClient:
 
         jsonrpc_method: ``"agent.send_group_message"``
         """
-        params = models.AgentSendGroupMessageParams(bot_id=bot_id, content=content, group_id=group_id)
+        params = models.AgentSendGroupMessageParams(bot_id=bot_id, content=content, group_id=group_id, pacto_virtual_bucket=pacto_virtual_bucket)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("agent.send_group_message", params_dict, timeout=timeout)
         result = response.get('result')

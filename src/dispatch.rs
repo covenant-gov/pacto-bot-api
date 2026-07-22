@@ -1834,9 +1834,13 @@ impl Dispatch {
             .and_then(Value::as_str)
             .ok_or_else(|| DaemonError::Config("agent.send_group_message missing content".into()))?
             .to_string();
+        let pacto_virtual_bucket = params
+            .get("pacto_virtual_bucket")
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
 
         let event_id = self
-            .handle_send_group_message_inner(bot_id, group_id, content, handler_id)
+            .handle_send_group_message_inner(bot_id, group_id, content, pacto_virtual_bucket, handler_id)
             .await?;
         Ok(Some(Value::String(event_id.to_hex())))
     }
@@ -1846,6 +1850,7 @@ impl Dispatch {
         bot_id: &str,
         group_id: &str,
         content: String,
+        pacto_virtual_bucket: Option<String>,
         handler_id: Option<&str>,
     ) -> Result<EventId, DaemonError> {
         let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
@@ -1880,7 +1885,13 @@ impl Dispatch {
             })?;
         let event_id = cm
             .nostr_client
-            .send_group_message(mls_engine, &bot.signer, mls_group_id, content)
+            .send_group_message(
+                mls_engine,
+                &bot.signer,
+                mls_group_id,
+                content,
+                pacto_virtual_bucket,
+            )
             .await?;
         Ok(event_id)
     }
