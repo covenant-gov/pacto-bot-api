@@ -752,8 +752,10 @@ async fn valid_envelope_is_parsed_into_content_and_mentions()
     let target = Keys::generate();
     let target_npub = target.public_key().to_bech32()?;
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "@Joke Bot /help",
         "mentions": [{"npub": target_npub, "alias": "Joke Bot"}],
+        "pacto_virtual_bucket": "squad:test123",
     });
     let message_event = peer.create_group_message(&envelope.to_string()).await;
     let expected_group_id = support::mock_mls_peer::group_wire_id(&message_event);
@@ -771,6 +773,7 @@ async fn valid_envelope_is_parsed_into_content_and_mentions()
     assert_eq!(event.content, "@Joke Bot /help");
     assert_eq!(event.chat_id, expected_group_id);
     assert_eq!(event.mentions, vec![target_npub]);
+    assert_eq!(event.pacto_virtual_bucket.as_deref(), Some("squad:test123"));
 
     consumer.abort();
     let _ = consumer.await;
@@ -854,7 +857,7 @@ async fn envelope_missing_npub_falls_back_to_legacy() -> Result<(), Box<dyn std:
     )
     .await?;
 
-    let raw = r#"{"body":"hi","mentions":[{"alias":"Joke Bot"}]}"#;
+    let raw = r#"{"kind":"pacto.mentions.envelope.v1","body":"hi","mentions":[{"alias":"Joke Bot"}]}"#;
     let message_event = peer.create_group_message(raw).await;
     relay.inject_event(message_event).await;
 
@@ -867,6 +870,39 @@ async fn envelope_missing_npub_falls_back_to_legacy() -> Result<(), Box<dyn std:
     let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
     assert_eq!(event.content, raw);
     assert!(event.mentions.is_empty());
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn wrong_kind_envelope_is_treated_as_legacy() -> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let raw = r#"{"kind":"pacto.mentions.envelope.v0","body":"hello","mentions":[]}"#;
+    let message_event = peer.create_group_message(raw).await;
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.content, raw);
+    assert!(event.mentions.is_empty());
+    assert_eq!(event.pacto_virtual_bucket, None);
 
     consumer.abort();
     let _ = consumer.await;
@@ -921,6 +957,7 @@ async fn envelope_is_parsed_before_deduplication_gate() -> Result<(), Box<dyn st
     let target = Keys::generate();
     let target_npub = target.public_key().to_bech32()?;
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "@Joke Bot /help",
         "mentions": [{"npub": target_npub, "alias": "Joke Bot"}],
     });
@@ -971,6 +1008,7 @@ async fn multi_bot_mention_metadata() -> Result<(), Box<dyn std::error::Error>> 
 
     let npub_b = keys[1].public_key().to_bech32()?;
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "@bot-b hi",
         "mentions": [{"npub": npub_b, "alias": "bot-b"}],
     });
@@ -1064,6 +1102,7 @@ async fn mentioned_bot_receives_is_mentioned_true() -> Result<(), Box<dyn std::e
 
     let bot_npub = keys.public_key().to_bech32()?;
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "@mls-bot /help",
         "mentions": [{"npub": bot_npub, "alias": "mls-bot"}],
     });
@@ -1111,6 +1150,7 @@ async fn joke_bot_mention_reaches_only_target() -> Result<(), Box<dyn std::error
 
     let joke_npub = keys[0].public_key().to_bech32()?;
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "@Joke Bot /help",
         "mentions": [{"npub": joke_npub, "alias": "Joke Bot"}],
     });
@@ -1213,6 +1253,7 @@ async fn envelope_with_empty_mentions_marks_all_bots_not_mentioned()
     .await?;
 
     let envelope = serde_json::json!({
+        "kind": "pacto.mentions.envelope.v1",
         "body": "just a regular message",
         "mentions": [],
     });

@@ -2605,11 +2605,11 @@ async def test_mention_metadata_reaches_squad_handler(
         transport=transport,
         event_types=["dm_received", "mls_group_message_received"],
     )
-    captured: list[tuple[bool | None, list[str] | None, list[str] | None]] = []
+    captured: list[tuple[bool | None, list[str] | None, list[str] | None, str | None]] = []
 
     @bot.command("/hello")
     async def hello(event: AgentEventParams, b: Bot) -> dict[str, Any]:
-        captured.append((event.is_mentioned, event.mentioned_bot_ids, event.mentions))
+        captured.append((event.is_mentioned, event.mentioned_bot_ids, event.mentions, event.pacto_virtual_bucket))
         return b.reply(event, "Hi!")
 
     task = await _start_registered_bot(bot, transport)
@@ -2628,6 +2628,7 @@ async def test_mention_metadata_reaches_squad_handler(
             "is_mentioned": True,
             "mentioned_bot_ids": ["test-bot", "other-bot"],
             "mentions": ["npub1test", "npub1other"],
+            "pacto_virtual_bucket": "squad:test123",
         },
     })
     await asyncio.sleep(0.05)
@@ -2636,10 +2637,11 @@ async def test_mention_metadata_reaches_squad_handler(
     assert len(responses) == 1
     assert responses[0]["params"]["action"] == "reply"
     assert len(captured) == 1
-    is_mentioned, mentioned_bot_ids, mentions = captured[0]
+    is_mentioned, mentioned_bot_ids, mentions, bucket = captured[0]
     assert is_mentioned is True
     assert mentioned_bot_ids == ["test-bot", "other-bot"]
     assert mentions == ["npub1test", "npub1other"]
+    assert bucket == "squad:test123"
 
     bot._request_shutdown()
     await task
