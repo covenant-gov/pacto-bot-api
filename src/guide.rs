@@ -275,7 +275,9 @@ fn render_handler_jsonrpc(out: &mut String) {
     out.push_str("- `mentions` — target npubs from the mention envelope.\n");
     out.push_str("- `is_mentioned` — `true` when the receiving bot's own npub is in `mentions`.\n");
     out.push_str("- `mentioned_bot_ids` — configured `bot_id` values whose npubs appear in `mentions` (may include bots other than the receiver).\n");
-    out.push_str("- `pacto_virtual_bucket` — the virtual bucket from the envelope, when present.\n\n");
+    out.push_str(
+        "- `pacto_virtual_bucket` — the virtual bucket from the envelope, when present.\n\n",
+    );
     out.push_str("Example `agent.event` for a squad message:\n\n");
     out.push_str("```json\n");
     out.push_str(r#"{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"joke-bot","type":"mls_group_message_received","content":"@Joke Bot /help","author":"<npub>","rumor_id":"<id>","event_id":"<id>","chat_id":"<group-id>","mentions":["<joke-bot-npub>"],"is_mentioned":true,"mentioned_bot_ids":["joke-bot"],"pacto_virtual_bucket":"optional-bucket"}}"#);

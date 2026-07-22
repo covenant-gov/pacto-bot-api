@@ -89,12 +89,20 @@ fn serialize_agent_event_includes_new_fields() {
     assert_eq!(value["mentions"], serde_json::json!(["npub1echo"]));
     assert_eq!(value["is_mentioned"], serde_json::json!(true));
     assert_eq!(value["mentioned_bot_ids"], serde_json::json!(["echo-bot"]));
-    assert_eq!(value["pacto_virtual_bucket"], serde_json::json!("squad:abc"));
+    assert_eq!(
+        value["pacto_virtual_bucket"],
+        serde_json::json!("squad:abc")
+    );
     // Verify skip_serializing_if removes the field when None.
     let event_without_bucket = AgentEvent {
         pacto_virtual_bucket: None,
         ..event
     };
     let value_no_bucket = serde_json::to_value(&event_without_bucket).unwrap();
-    assert!(!value_no_bucket.as_object().unwrap().contains_key("pacto_virtual_bucket"));
+    assert!(
+        !value_no_bucket
+            .as_object()
+            .unwrap()
+            .contains_key("pacto_virtual_bucket")
+    );
 }

@@ -1956,8 +1956,7 @@ mod tests {
 
     #[test]
     fn parse_mention_envelope_valid() {
-        let plaintext =
-            r#"{"kind":"pacto.mentions.envelope.v1","body":"@Joke Bot /help","mentions":[{"npub":"npub1joke","alias":"Joke Bot"}]}"#;
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"@Joke Bot /help","mentions":[{"npub":"npub1joke","alias":"Joke Bot"}]}"#;
         let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "@Joke Bot /help");
         assert_eq!(mentions, vec!["npub1joke"]);
@@ -2011,7 +2010,8 @@ mod tests {
 
     #[test]
     fn parse_mention_envelope_missing_body_falls_back() {
-        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","mentions":[{"npub":"npub1joke"}]}"#;
+        let plaintext =
+            r#"{"kind":"pacto.mentions.envelope.v1","mentions":[{"npub":"npub1joke"}]}"#;
         let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, plaintext);
         assert!(mentions.is_empty());

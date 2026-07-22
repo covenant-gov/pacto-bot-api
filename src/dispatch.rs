@@ -1840,7 +1840,13 @@ impl Dispatch {
             .map(|s| s.to_string());
 
         let event_id = self
-            .handle_send_group_message_inner(bot_id, group_id, content, pacto_virtual_bucket, handler_id)
+            .handle_send_group_message_inner(
+                bot_id,
+                group_id,
+                content,
+                pacto_virtual_bucket,
+                handler_id,
+            )
             .await?;
         Ok(Some(Value::String(event_id.to_hex())))
     }
