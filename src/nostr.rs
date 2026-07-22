@@ -1056,7 +1056,7 @@ impl NostrClient {
             None => return Ok(vec![]),
         };
 
-        let (content, mentions, _pacto_virtual_bucket) = parse_mention_envelope(&decrypted.content);
+        let (content, mentions, pacto_virtual_bucket) = parse_mention_envelope(&decrypted.content);
 
         let mut agent_events = Vec::new();
         for recipient in &recipients {
@@ -1098,6 +1098,7 @@ impl NostrClient {
                 chat_id: Some(decrypted.group_id.clone()),
                 content: content.clone(),
                 mentions: mentions.clone(),
+                pacto_virtual_bucket: pacto_virtual_bucket.clone(),
                 rumor_id: event.id.to_hex(),
                 author: decrypted.author.clone(),
                 timestamp: decrypted.timestamp,

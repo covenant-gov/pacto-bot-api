@@ -36,6 +36,8 @@ pub struct AgentEvent {
     pub is_mentioned: bool,
     #[serde(default)]
     pub mentioned_bot_ids: Vec<String>,
+    #[serde(rename = "pacto_virtual_bucket", default, skip_serializing_if = "Option::is_none")]
+    pub pacto_virtual_bucket: Option<String>,
     pub rumor_id: String,
     pub author: String,
     pub timestamp: u64,

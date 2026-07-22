@@ -402,6 +402,7 @@ mod tests {
             mentions: Vec::new(),
             is_mentioned: false,
             mentioned_bot_ids: Vec::new(),
+            pacto_virtual_bucket: None,
             rumor_id: "rumor1".to_string(),
             author: "npub1sender".to_string(),
             timestamp: 1,

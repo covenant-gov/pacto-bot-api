@@ -318,6 +318,10 @@
                 "default": [],
                 "description": "Configured `bot_id` values whose npubs appear in `mentions`."
               },
+              "pacto_virtual_bucket": {
+                "type": "string",
+                "description": "Virtual bucket identifier from the mention envelope; omitted for DMs and legacy squad messages."
+              },
               "rumor_id": {
                 "type": "string",
                 "description": "Hex id of the decrypted rumor."
