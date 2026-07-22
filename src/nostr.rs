@@ -640,8 +640,23 @@ impl NostrClient {
         signer: &dyn Signer,
         group_id: Vec<u8>,
         content: String,
+        pacto_virtual_bucket: Option<String>,
     ) -> Result<EventId, DaemonError> {
         let bot_pubkey = signer.public_key();
+
+        // When a virtual bucket is provided, wrap the plaintext in the Pacto
+        // mention envelope so the receiving app can route replies back to the
+        // same virtual channel. Otherwise preserve legacy plain-text behavior.
+        let payload = match pacto_virtual_bucket {
+            Some(bucket) => serde_json::to_string(&json!({
+                "kind": MENTION_ENVELOPE_KIND,
+                "body": content,
+                "mentions": [],
+                "pacto_virtual_bucket": bucket,
+            }))
+            .map_err(DaemonError::Json)?,
+            None => content,
+        };
 
         // Build the plaintext inner rumor event. The inner kind must differ from
         // the kind:445 MLS wrapper so that decrypted group content is not mistaken
@@ -651,7 +666,7 @@ impl NostrClient {
             Timestamp::now(),
             Kind::TextNote,
             Vec::new(),
-            content,
+            payload,
         );
 
         let wrapper = mls_engine

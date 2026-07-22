@@ -613,6 +613,10 @@
               "content": {
                 "type": "string",
                 "description": "Plaintext message body to encrypt."
+              },
+              "pacto_virtual_bucket": {
+                "type": "string",
+                "description": "Optional virtual bucket identifier; when provided, the content is wrapped in the pacto mention envelope before MLS encryption."
               }
             },
             "required": ["bot_id", "group_id", "content"]

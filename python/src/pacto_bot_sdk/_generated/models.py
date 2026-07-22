@@ -495,6 +495,8 @@ class AgentSendGroupMessageParams(BaseModel):
     content: str
     # Hex-encoded MLS group ID.
     group_id: str
+    # Optional virtual bucket identifier; when provided, the content is wrapped in the pacto mention envelope before MLS encryption.
+    pacto_virtual_bucket: str | None = None
 
 
 class AgentSetProfileParams(BaseModel):
