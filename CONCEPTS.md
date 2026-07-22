@@ -154,6 +154,7 @@ Recurring review feedback is captured in `docs/solutions/` (searchable by `tags`
 | **Squad** | An MLS group chat in the Pacto ecosystem. |
 | **Squad wire ID** | The Nostr event `h` tag value that identifies a Squad on the wire. |
 | **Bot mention** | An `@alias` mention in a Squad message whose canonical target is a bot's npub. The daemon uses the target npub to mark the event as addressed to that bot. |
-| **Mention envelope** | The JSON structure `{ body, mentions }` carried inside an encrypted MLS group message. `mentions` is an array of `{ npub, alias }` objects. |
+| **Mention envelope** | The JSON structure `{kind, body, mentions, pacto_virtual_bucket}` carried inside an encrypted MLS group message. `kind` must equal `"pacto.mentions.envelope.v1"`. `mentions` is an array of `{npub, alias}` objects. `pacto_virtual_bucket` is an optional correlation identifier that is returned on incoming `mls_group_message_received` events and can be provided on outgoing `agent.send_group_message` to wrap the content in the envelope before encryption. |
 | **is_mentioned** | Event metadata on `mls_group_message_received` that is `true` when the receiving bot's npub appears in the message's mention envelope. |
 | **mentioned_bot_ids** | Event metadata on `mls_group_message_received` listing the `bot_id` values whose npubs appear in the message's mention envelope. |
+| **pacto_virtual_bucket** | Optional correlation identifier carried in the mention envelope and returned on incoming `mls_group_message_received` events; when provided on outgoing `agent.send_group_message`, the daemon wraps the content in the envelope before MLS encryption. |

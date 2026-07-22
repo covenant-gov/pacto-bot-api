@@ -266,15 +266,22 @@ fn render_handler_jsonrpc(out: &mut String) {
     out.push_str("Handlers must declare capabilities at registration. The daemon rejects calls that exceed those capabilities.\n\n");
 
     out.push_str("### Bot mentions in squad channels\n\n");
-    out.push_str("When a Pacto Squad message uses the `{body, mentions}` envelope, the daemon enriches `mls_group_message_received` events before fan-out:\n\n");
+    out.push_str("Pacto Squad messages use a structured mention envelope:\n\n");
+    out.push_str("```json\n");
+    out.push_str(r#"{"kind":"pacto.mentions.envelope.v1","body":"@Joke Bot /help","mentions":[{"npub":"npub1...","alias":"Joke Bot"}],"pacto_virtual_bucket":"optional-bucket"}"#);
+    out.push_str("\n```\n\n");
+    out.push_str("`pacto_virtual_bucket` is optional and, when present, is returned on the `mls_group_message_received` event for correlation. When the daemon receives a kind:445 MLS group message, it decrypts the payload and checks `kind`. If `kind` equals `\"pacto.mentions.envelope.v1\"`, the daemon sets `content` to `body`, populates `mentions` with the target npubs, and forwards `pacto_virtual_bucket` if it exists. Legacy plaintext and any JSON payload whose `kind` is not the expected value fall back to `content = full text` and empty mention metadata.\n\n");
+    out.push_str("The daemon enriches `mls_group_message_received` events before fan-out:\n\n");
     out.push_str("- `mentions` — target npubs from the mention envelope.\n");
     out.push_str("- `is_mentioned` — `true` when the receiving bot's own npub is in `mentions`.\n");
-    out.push_str("- `mentioned_bot_ids` — configured `bot_id` values whose npubs appear in `mentions` (may include bots other than the receiver).\n\n");
+    out.push_str("- `mentioned_bot_ids` — configured `bot_id` values whose npubs appear in `mentions` (may include bots other than the receiver).\n");
+    out.push_str("- `pacto_virtual_bucket` — the virtual bucket from the envelope, when present.\n\n");
     out.push_str("Example `agent.event` for a squad message:\n\n");
     out.push_str("```json\n");
-    out.push_str(r#"{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"joke-bot","type":"mls_group_message_received","content":"@Joke Bot /help","author":"<npub>","rumor_id":"<id>","event_id":"<id>","chat_id":"<group-id>","mentions":["<joke-bot-npub>"],"is_mentioned":true,"mentioned_bot_ids":["joke-bot"]}}"#);
+    out.push_str(r#"{"jsonrpc":"2.0","method":"agent.event","params":{"bot_id":"joke-bot","type":"mls_group_message_received","content":"@Joke Bot /help","author":"<npub>","rumor_id":"<id>","event_id":"<id>","chat_id":"<group-id>","mentions":["<joke-bot-npub>"],"is_mentioned":true,"mentioned_bot_ids":["joke-bot"],"pacto_virtual_bucket":"optional-bucket"}}"#);
     out.push_str("\n```\n\n");
-    out.push_str("All bots in the squad still receive the message (hybrid dispatch), but the Python SDK gates `@bot.command` and `@bot.hears` by default so they only fire when `is_mentioned` is `true`. Opt out with `require_mention=False` on the decorator or bot constructor. Legacy plaintext messages fall back to `content = full text` and empty mention metadata.\n\n");
+    out.push_str("All bots in the squad still receive the message (hybrid dispatch), but the Python SDK gates `@bot.command` and `@bot.hears` by default so they only fire when `is_mentioned` is `true`. Opt out with `require_mention=False` on the decorator or bot constructor. Legacy plaintext messages and envelopes with the wrong `kind` fall back to `content = full text` and empty mention metadata.\n\n");
+    out.push_str("Outgoing `agent.send_group_message` (and the Python SDK's `bot.send_group_message`) accepts an optional `pacto_virtual_bucket` parameter. When provided, the daemon wraps the `content` in the mention envelope before MLS encryption, so the receiving bot can correlate the response via the same virtual bucket.\n\n");
 }
 
 fn render_when_to_use(out: &mut String) {
@@ -313,6 +320,8 @@ mod tests {
         assert!(guide.contains("mentions"));
         assert!(guide.contains("require_mention"));
         assert!(guide.contains("mls_group_message_received"));
+        assert!(guide.contains("pacto.mentions.envelope.v1"));
+        assert!(guide.contains("pacto_virtual_bucket"));
     }
 
     #[test]

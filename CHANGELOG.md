@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Bot @ mentions in Pacto Squad channels. The daemon parses the Pacto-app `{body, mentions}` envelope on inbound MLS group messages and forwards `mls_group_message_received` events with `content`, `mentions`, `is_mentioned`, and `mentioned_bot_ids` to every bot in the group. All bots still receive the message (hybrid dispatch), but each can tell whether it was directly addressed.
+- Squad mention envelope now requires a `kind` discriminator equal to `"pacto.mentions.envelope.v1"` and carries an optional `pacto_virtual_bucket` for correlation. The daemon parses the envelope on inbound MLS group messages and forwards `mls_group_message_received` events with `content`, `mentions`, `is_mentioned`, `mentioned_bot_ids`, and `pacto_virtual_bucket` to every bot in the group. Legacy plaintext and wrong-kind JSON fall back to full content with empty mention metadata.
+- Outgoing `agent.send_group_message` and the Python SDK's `bot.send_group_message(..., pacto_virtual_bucket=...)` accept an optional virtual bucket; when provided, the daemon wraps the content in the mention envelope before MLS encryption.
 - Python SDK decorators `@bot.command` and `@bot.hears` are now gated by `event.is_mentioned` in squad channels by default; opt out with `require_mention=False` per-decorator or on the `Bot(...)` constructor.
 - `pacto-bot-admin` and `pacto-bot-api` operator guide now documents squad mention metadata, the `display_name`/`about`/`picture` config fields, and example JSON-RPC event payloads.
 - Python SDK README includes a "Mentions and command gating in squads" section with `@bot.command` and `@bot.hears` examples.
