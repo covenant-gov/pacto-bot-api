@@ -232,6 +232,8 @@ class AgentEventParams(BaseModel):
     mentioned_bot_ids: list[str] = []
     # Target npubs from the mention envelope; empty for DMs and legacy squad messages.
     mentions: list[str] = []
+    # Virtual bucket identifier from the mention envelope; omitted for DMs and legacy squad messages.
+    pacto_virtual_bucket: str | None = None
     # Hex id of the decrypted rumor.
     rumor_id: str
     # Unix timestamp of the rumor.
