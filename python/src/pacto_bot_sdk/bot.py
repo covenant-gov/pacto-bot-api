@@ -551,12 +551,18 @@ class Bot:
             raise ValueError("reply content exceeds 8192 bytes")
         return {"event_id": event.event_id, "action": "reply", "content": content}
 
-    async def send_group_message(self, group_id: str, content: str) -> str:
+    async def send_group_message(
+        self,
+        group_id: str,
+        content: str,
+        pacto_virtual_bucket: str | None = None,
+    ) -> str:
         """Send an encrypted MLS group message as this bot."""
         return await self._client.agent_send_group_message(
             bot_id=self.bot_id,
             group_id=group_id,
             content=content,
+            pacto_virtual_bucket=pacto_virtual_bucket,
         )
 
     async def _default_squad_join_handler(
