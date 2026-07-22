@@ -857,7 +857,8 @@ async fn envelope_missing_npub_falls_back_to_legacy() -> Result<(), Box<dyn std:
     )
     .await?;
 
-    let raw = r#"{"kind":"pacto.mentions.envelope.v1","body":"hi","mentions":[{"alias":"Joke Bot"}]}"#;
+    let raw =
+        r#"{"kind":"pacto.mentions.envelope.v1","body":"hi","mentions":[{"alias":"Joke Bot"}]}"#;
     let message_event = peer.create_group_message(raw).await;
     relay.inject_event(message_event).await;
 
