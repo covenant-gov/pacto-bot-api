@@ -216,7 +216,7 @@ bot = Bot(
 
 Available helpers:
 
-- `await bot.send_group_message(group_id, content)` — send an encrypted message to the Squad.
+- `await bot.send_group_message(group_id, content, pacto_virtual_bucket=None)` — send an encrypted message to the Squad. When `pacto_virtual_bucket` is provided, the daemon wraps `content` in the structured mention envelope before encryption, so the receiving bot can correlate the response via the same bucket.
 - `await bot.is_squad_member(group_id, member_pubkey)` — check whether a pubkey is a Squad member.
 - `await bot.exit_squad(group_id)` — publish a self-removal MLS proposal to leave the Squad. Returns the hex event id of the published kind:445 evolution event. The actual removal must be committed by a Squad admin.
 
@@ -291,13 +291,33 @@ async def announce(event, bot):
 
 #### Mentions and command gating in squads
 
-When a Pacto Squad message is sent with bot mentions (e.g. `@Joke Bot /help`),
-the daemon enriches `mls_group_message_received` events with mention metadata:
+Pacto Squad messages use a structured mention envelope:
+
+```json
+{
+  "kind": "pacto.mentions.envelope.v1",
+  "body": "@Joke Bot /help",
+  "mentions": [{"npub": "npub1...", "alias": "Joke Bot"}],
+  "pacto_virtual_bucket": "optional-bucket"
+}
+```
+
+The `kind` field must equal `"pacto.mentions.envelope.v1"`. `pacto_virtual_bucket` is
+optional and is returned on the `mls_group_message_received` event for correlation.
+When the daemon decrypts a kind:445 MLS group message, it checks the envelope
+`kind`. If the kind matches, it sets `event.content` to `body`, populates
+`event.mentions` with the target npubs, and includes `event.pacto_virtual_bucket`
+when present. Legacy plaintext and any JSON whose `kind` is not the expected
+value fall back to `event.content = full text` with empty mention metadata.
+
+The daemon enriches `mls_group_message_received` events with mention metadata:
 
 - `event.mentions` — target npubs from the mention envelope.
 - `event.is_mentioned` — `true` when the receiving bot's npub is in `mentions`.
 - `event.mentioned_bot_ids` — `bot_id` values whose npubs were mentioned, which
   may include other bots in the squad.
+- `event.pacto_virtual_bucket` — the virtual bucket from the envelope, when
+  present.
 
 By default, the SDK gates `@bot.command` and `@bot.hears` so they only fire when
 `event.is_mentioned` is `true`. This prevents a bot from responding to every
@@ -328,9 +348,11 @@ Requirements:
   `display_name` values across bots.
 - The bot must subscribe to `mls_group_message_received` (and have
   `ReceiveGroupMessages`) to receive squad messages.
-- Legacy plaintext squad messages fall back to `content = full text` with empty
-  `mentions`, `is_mentioned = false`, and `mentioned_bot_ids = []`, so existing
-  handlers continue to work.
+- Legacy plaintext squad messages and wrong-kind JSON fall back to
+  `content = full text` with empty `mentions`, `is_mentioned = false`, and
+  `mentioned_bot_ids = []`, so existing handlers continue to work.
+- Outgoing `bot.send_group_message(group_id, content, pacto_virtual_bucket=...)`
+  wraps the content in the mention envelope when a bucket is provided.
 
 ### Reconnection resilience
 

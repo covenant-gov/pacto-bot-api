@@ -19,36 +19,37 @@ Squad channels are shared by multiple bots. Today every bot receives every decry
 
 ### Wire format and parsing
 
-- R1. The daemon parses the decrypted MLS group message content as a JSON envelope containing `body` (string) and `mentions` (array of objects with `npub` and `alias` fields) when the shape is valid.
-- R2. If the decrypted content is not valid JSON or lacks the envelope shape, the daemon treats the entire content as the message body and sets the mention list to empty.
+- R1. The daemon parses the decrypted MLS group message content as a JSON envelope `{kind, body, mentions, pacto_virtual_bucket}` when the shape is valid. `kind` must equal `"pacto.mentions.envelope.v1"`. `body` is a string, `mentions` is an array of objects with `npub` and `alias` fields, and `pacto_virtual_bucket` is an optional string.
+- R2. If the decrypted content is not valid JSON, lacks the envelope shape, or has a `kind` other than `"pacto.mentions.envelope.v1"`, the daemon treats the entire content as the message body and sets the mention list to empty.
 - R3. The daemon extracts the `npub` value from each entry in `mentions` and maps it to configured bot identities.
 
 ### Event metadata for handlers
 
-- R4. The daemon forwards the `body` string as the `content` field of the `mls_group_message_received` event.
+- R4. The daemon forwards the `body` string as the `content` field of the `mls_group_message_received` event and forwards `pacto_virtual_bucket` when it is present in the envelope.
 - R5. The daemon forwards the list of mentioned `npub` values (without aliases) to the bot handler as a new `mentions` field on the event.
 - R6. The daemon sets `is_mentioned` to `true` on the event if the receiving bot's npub appears in the mention list, otherwise `false`.
 - R7. The daemon sets `mentioned_bot_ids` to the list of `bot_id` values whose npubs appear in the mention list. The list may be empty and may include bots other than the receiver.
 
 ### SDK behavior
 
-- R8. The SDK exposes `event.is_mentioned` and `event.mentioned_bot_ids` to bot handlers.
+- R8. The SDK exposes `event.is_mentioned`, `event.mentioned_bot_ids`, and `event.pacto_virtual_bucket` to bot handlers.
 - R9. In squad channels, the SDK's `@bot.command` and `@bot.hears` decorators only fire when `is_mentioned` is `true`. Bot authors opt out with an explicit `require_mention=False` flag.
 - R10. The SDK continues to give bot authors full control over the reply text and does not auto-prefix outbound squad messages.
+- R11. Outgoing `agent.send_group_message` and the Python SDK's `bot.send_group_message(..., pacto_virtual_bucket=...)` accept an optional `pacto_virtual_bucket`. When provided, the daemon wraps the content in the mention envelope before MLS encryption so the receiving bot can correlate the response via the same virtual bucket.
 
 ### Operational constraints
 
-- R11. The daemon validates that no two configured bots share the same `display_name` and rejects the config at load time. `display_name` is required for every bot identity.
-- R12. The new mention metadata is added in a backward-compatible way: existing `dm_received` events are unchanged, and legacy group messages without a JSON envelope are handled by R2.
+- R12. The daemon validates that no two configured bots share the same `display_name` and rejects the config at load time. `display_name` is required for every bot identity.
+- R13. The new mention metadata is added in a backward-compatible way: existing `dm_received` events are unchanged, and legacy group messages without a JSON envelope or with the wrong `kind` are handled by R2.
 
 ## Key Technical Decisions
 
-- KTD-1. **Envelope parsing belongs in the Nostr/MLS layer.** `src/nostr.rs` already produces `AgentEvent` from decrypted plaintext; it will parse the `{ body, mentions }` envelope and place the body in `content` plus the npub list in `mentions`. This keeps the dispatch layer focused on routing, not format detection. (see origin: `docs/brainstorms/2026-07-20-bot-mentions-in-squad-channels-requirements.md`, Key Decisions)
+- KTD-1. **Envelope parsing belongs in the Nostr/MLS layer.** `src/nostr.rs` already produces `AgentEvent` from decrypted plaintext; it will parse the `{kind, body, mentions, pacto_virtual_bucket}` envelope, verify that `kind` equals `"pacto.mentions.envelope.v1"`, and place the body in `content`, the npub list in `mentions`, and the virtual bucket in `pacto_virtual_bucket`. This keeps the dispatch layer focused on routing, not format detection. (see origin: `docs/brainstorms/2026-07-20-bot-mentions-in-squad-channels-requirements.md`, Key Decisions)
 - KTD-2. **`is_mentioned` and `mentioned_bot_ids` are computed in dispatch.** The receiving bot is known per `AgentEvent`, but the npub-to-bot_id mapping needs the full `ClientManager` configuration. `src/dispatch.rs` will compute these fields after MLS preflight checks and before fan-out. (see origin)
-- KTD-3. **New fields are optional-with-defaults on the wire for backward compatibility.** `schemas/jsonrpc.json` will list `mentions`, `is_mentioned`, and `mentioned_bot_ids` as optional with documented defaults; the Rust `AgentEvent` struct will use `serde(default)` so tests and older handlers do not break. The daemon always populates them for new events. (see R12)
-- KTD-4. **`display_name` is required and unique.** `schemas/config.json` will mark `display_name` as required; `src/config.rs` will reject configs with missing or duplicate display names. This matches the UI's need for deterministic alias-to-npub resolution. (see R11, confirmed in synthesis)
+- KTD-3. **New fields are optional-with-defaults on the wire for backward compatibility.** `schemas/jsonrpc.json` will list `mentions`, `is_mentioned`, `mentioned_bot_ids`, and `pacto_virtual_bucket` as optional with documented defaults; the Rust `AgentEvent` struct will use `serde(default)` so tests and older handlers do not break. The daemon always populates them for new events. (see R13)
+- KTD-4. **`display_name` is required and unique.** `schemas/config.json` will mark `display_name` as required; `src/config.rs` will reject configs with missing or duplicate display names. This matches the UI's need for deterministic alias-to-npub resolution. (see R12, confirmed in synthesis)
 - KTD-5. **`require_mention` is supported as a decorator parameter and a Bot constructor default.** The decorator flag is the explicit opt-out; the constructor default sets the policy for every decorator on that bot. Decorator-level values override the constructor default. (see origin, confirmed in synthesis)
-- KTD-6. **Legacy plaintext is handled by R2.** Non-JSON squad messages and JSON without the envelope shape are treated as the body with empty mention metadata. Existing handlers continue to receive content unchanged. (see R2)
+- KTD-6. **Legacy plaintext is handled by R2.** Non-JSON squad messages, JSON without the envelope shape, and JSON with the wrong `kind` are treated as the body with empty mention metadata. Existing handlers continue to receive content unchanged. (see R2)
 
 ## High-Level Technical Design
 
@@ -57,10 +58,10 @@ Squad channels are shared by multiple bots. Today every bot receives every decry
 ```mermaid
 flowchart TB
   A[User sends Squad message with @Joke Bot /help]
-  B[UI encrypts JSON envelope\n{ body, mentions }]
+  B[UI encrypts JSON envelope\n{ kind, body, mentions, pacto_virtual_bucket }]
   C[Daemon receives kind:445]
-  D[src/nostr.rs\nDecrypt + parse envelope]
-  E[AgentEvent\ncontent=body\nmentions=[npub1joke...]]
+  D[src/nostr.rs\nDecrypt + parse envelope\ncheck kind]
+  E[AgentEvent\ncontent=body\nmentions=[npub1joke...]\npacto_virtual_bucket=<bucket>]
   F[src/dispatch.rs\nCompute is_mentioned\nmentioned_bot_ids]
   G[Fan-out to all handlers\nfor receiving bot]
   H[Python SDK @bot.command\nrequire_mention check]
@@ -126,7 +127,7 @@ flowchart TB
 
 **Goal:** Convert the decrypted MLS group message into a normalized `AgentEvent` with the message body in `content` and target npubs in `mentions`.
 
-**Requirements:** R1, R2, R4
+**Requirements:** R1, R2, R4, R11
 
 **Dependencies:** U1
 
@@ -135,14 +136,16 @@ flowchart TB
 - `src/events.rs` — `AgentEvent` (already updated in U1).
 - `tests/mls_inbound.rs` — add envelope parsing cases.
 
-**Approach:** After decrypting the kind:445 payload, attempt to parse it as JSON. If the top-level object has a string `body` and an array `mentions` where each element has an `npub` string, set `content = body` and `mentions = [npub, ...]`. On any parse failure or shape mismatch, fall back to `content = raw_plaintext` and `mentions = []`. This logic is isolated in the Nostr layer so dispatch does not need to know about the UI envelope format.
+**Approach:** After decrypting the kind:445 payload, attempt to parse it as JSON. If the top-level object has `kind` equal to `"pacto.mentions.envelope.v1"`, a string `body`, an array `mentions` where each element has an `npub` string, and an optional `pacto_virtual_bucket` string, set `content = body`, `mentions = [npub, ...]`, and `pacto_virtual_bucket = <bucket>`. On any parse failure or shape mismatch, including a `kind` other than the expected value, fall back to `content = raw_plaintext` and empty mention metadata. This logic is isolated in the Nostr layer so dispatch does not need to know about the UI envelope format.
 
 **Patterns to follow:** The existing `process_mls_group_message` error handling in `src/nostr.rs:923-1030` (malformed messages are dropped with diagnostics); the fallback for legacy content should not drop the message, just normalize it.
 
 **Test scenarios:**
-- **Happy path:** Covers AE1. A valid JSON envelope `{ "body": "@Joke Bot /help", "mentions": [{"npub": "npub1joke...", "alias": "Joke Bot"}] }` is parsed into `content = "@Joke Bot /help"` and `mentions = ["npub1joke..."]`.
-- **Edge case:** Covers AE2. A legacy plaintext message `"!snapshot"` is treated as `content = "!snapshot"` with `mentions = []`.
-- **Edge case:** A JSON object without `body` or `mentions` is treated as legacy content.
+- **Happy path:** Covers AE1. A valid JSON envelope `{ "kind": "pacto.mentions.envelope.v1", "body": "@Joke Bot /help", "mentions": [{"npub": "npub1joke...", "alias": "Joke Bot"}], "pacto_virtual_bucket": "bucket-123" }` is parsed into `content = "@Joke Bot /help"`, `mentions = ["npub1joke..."]`, and `pacto_virtual_bucket = "bucket-123"`.
+- **Edge case:** A valid envelope without `pacto_virtual_bucket` is parsed with `pacto_virtual_bucket` omitted.
+- **Edge case:** A JSON envelope with the wrong `kind` falls back to `content = full JSON` and empty mention metadata.
+- **Edge case:** Covers AE2. A legacy plaintext message `"!snapshot"` is treated as `content = "!snapshot"` with empty mention metadata.
+- **Edge case:** A JSON object without `kind`, `body`, or `mentions` is treated as legacy content.
 - **Edge case:** An envelope with a `mentions` entry missing `npub` is ignored for that entry (or the whole envelope falls back to legacy).
 - **Error path:** A malformed UTF-8 or invalid JSON payload is treated as legacy content, not dropped.
 - **Integration:** The envelope parsing happens before the existing deduplication and rate-limit gates so those checks operate on the same wrapper event id regardless of format.
@@ -164,7 +167,7 @@ flowchart TB
 - `src/client_manager.rs` — expose or reuse a helper to map npub to `bot_id` across all configured bots.
 - `src/events.rs` — `AgentEvent` (already updated in U1).
 
-**Approach:** After U2, the `AgentEvent` already contains `mentions` (the list of target npubs). In `src/dispatch.rs`, before fan-out, build a map from configured bot npubs to `bot_id`s. Set `mentioned_bot_ids` to the `bot_id`s whose npubs appear in `mentions`. Set `is_mentioned` to `true` if the receiving bot's own npub is in `mentions`, otherwise `false`. This preserves the hybrid dispatch model: all bots still receive the message, but each knows whether it was addressed.
+**Approach:** After U2, the `AgentEvent` already contains `mentions` (the list of target npubs) and `pacto_virtual_bucket` (if present). In `src/dispatch.rs`, before fan-out, build a map from configured bot npubs to `bot_id`s. Set `mentioned_bot_ids` to the `bot_id`s whose npubs appear in `mentions`. Set `is_mentioned` to `true` if the receiving bot's own npub is in `mentions`, otherwise `false`. Leave `pacto_virtual_bucket` untouched. This preserves the hybrid dispatch model: all bots still receive the message, but each knows whether it was addressed.
 
 **Patterns to follow:** The existing `process_mls_group_message` preflight in `src/dispatch.rs:2153-2192`; the `collect_own_pubkeys` helper pattern; the `ClientManager` read-lock pattern in `dispatch_event`.
 
@@ -243,7 +246,7 @@ flowchart TB
 
 **Goal:** Prove the full path from UI envelope to handler response, including multi-bot scenarios and legacy compatibility.
 
-**Requirements:** R1-R12
+**Requirements:** R1-R13
 
 **Dependencies:** U1, U2, U3, U4, U5
 
@@ -258,12 +261,14 @@ flowchart TB
 **Patterns to follow:** The existing `setup_mls_dispatch`, `peer_group_setup`, `register_handler`, and `parse_agent_event` helpers in `tests/mls_inbound.rs`; the mock transport pattern in `python/tests/test_bot.py`.
 
 **Test scenarios:**
-- **Happy path:** Covers AE1. `@Joke Bot /help` reaches only `joke-bot` with `is_mentioned: true` and `mentioned_bot_ids: ["joke-bot"]`; `snapshot-bot` receives `is_mentioned: false` and the same `mentioned_bot_ids`.
+- **Happy path:** Covers AE1. `@Joke Bot /help` reaches only `joke-bot` with `is_mentioned: true` and `mentioned_bot_ids: ["joke-bot"]`, and includes the original `pacto_virtual_bucket`; `snapshot-bot` receives `is_mentioned: false` and the same `mentioned_bot_ids`.
 - **Happy path:** Covers AE3. A `/help` command with `require_mention=True` is ignored; the same command with `@Joke Bot` prefix triggers the handler.
+- **Happy path:** A bot sends a squad message with `pacto_virtual_bucket` and the receiving bot sees the same bucket on the inbound event.
 - **Edge case:** Covers AE2. A legacy plaintext squad message produces `content` equal to the full text and empty mention metadata.
+- **Edge case:** A squad message with a JSON envelope whose `kind` is not `"pacto.mentions.envelope.v1"` falls back to `content = full text` and empty mention metadata.
 - **Edge case:** A squad message with no `@` mention produces `is_mentioned: false` for all bots.
 - **Error path:** A config with duplicate `display_name` is rejected before the daemon starts.
-- **Integration:** The Python SDK's `require_mention` gating emits the correct `handler.response` action for both mentioned and non-mentioned events.
+- **Integration:** The Python SDK's `require_mention` gating emits the correct `handler.response` action for both mentioned and non-mentioned events, and `bot.send_group_message(..., pacto_virtual_bucket=...)` wraps the content in the envelope.
 
 **Verification:** `cargo test` and `pytest tests/` pass; `make validate` passes.
 
@@ -288,12 +293,12 @@ flowchart TB
 
 - **Bot operators:** Must add a unique `display_name` to every bot identity in `pacto-bot-api.toml`. Existing configs without `display_name` will fail to load.
 - **Bot authors:** Existing squad handlers continue to receive `content` unchanged for legacy messages, but `@bot.command` and `@bot.hears` now gate squad commands by default. Authors who want bare-word triggers must add `require_mention=False`.
-- **UI/UX:** The daemon assumes the UI sends the structured `{ body, mentions }` envelope. The UI must include the target bot npub in `mentions`.
-- **Tests:** Both Rust and Python test suites need updates to include `display_name` and the new event fields.
+- **UI/UX:** The daemon assumes the UI sends the structured `{ kind, body, mentions, pacto_virtual_bucket }` envelope with `kind = "pacto.mentions.envelope.v1"`. The UI must include the target bot npub in `mentions` and may include a `pacto_virtual_bucket` for correlation.
+- **Tests:** Both Rust and Python test suites need updates to include `display_name`, the `kind` discriminator, and the new event fields.
 
 ## Risks & Dependencies
 
-- **Dependency:** The Pacto-app UI implements the JSON envelope for squad messages and includes bot npubs as mention targets. If the UI envelope shape diverges, the daemon fallback treats the whole payload as the body, which degrades mention behavior but does not break the channel.
+- **Dependency:** The Pacto-app UI implements the JSON envelope `{ kind, body, mentions, pacto_virtual_bucket }` with `kind = "pacto.mentions.envelope.v1"` for squad messages and includes bot npubs as mention targets. If the UI envelope shape diverges, the daemon fallback treats the whole payload as the body, which degrades mention behavior but does not break the channel.
 - **Dependency:** The daemon can decrypt MLS group messages and access the plaintext content. This is already true for the inbound MLS feature.
 - **Risk:** Requiring `display_name` is a breaking config change for existing daemon deployments. Mitigation: the error message clearly identifies the missing field; operators can add it without code changes.
 - **Risk:** Older Python SDK handlers that manually instantiate `AgentEventParams` with positional arguments will break when the generated model changes. Mitigation: new fields are optional-with-defaults in the generated Pydantic model, and the daemon always sends them as keyword-equivalent values.

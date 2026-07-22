@@ -1640,7 +1640,8 @@ async def test_default_handler_sends_hello_on_squad_join():
     )
     await bot._handle_event(event)
     bot._client.agent_send_group_message.assert_awaited_once_with(
-        bot_id="hello-bot", group_id="group-wire-id", content="Hi from hello-bot!"
+        bot_id="hello-bot", group_id="group-wire-id", content="Hi from hello-bot!",
+        pacto_virtual_bucket=None,
     )
     bot._client.handler_response.assert_awaited_once_with(
         action="ignore", event_id="e-welcome"
