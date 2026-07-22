@@ -56,8 +56,11 @@ impl std::fmt::Debug for NostrClient {
 /// Parsed mention envelope shape produced by the Pacto app for squad messages.
 #[derive(Debug, Deserialize)]
 struct MentionEnvelope {
+    kind: String,
     body: String,
     mentions: Vec<MentionEntry>,
+    #[serde(rename = "pacto_virtual_bucket")]
+    pacto_virtual_bucket: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,23 +68,36 @@ struct MentionEntry {
     npub: String,
 }
 
+const MENTION_ENVELOPE_KIND: &str = "pacto.mentions.envelope.v1";
+
 /// Attempt to parse the decrypted MLS group message content as a structured
-/// `{ body, mentions }` envelope. On success, return the body and the list of
-/// target npubs. On any parse failure or shape mismatch, return the raw
-/// plaintext as the body and an empty mention list.
-fn parse_mention_envelope(plaintext: &str) -> (String, Vec<String>) {
+/// `{ kind, body, mentions, pacto_virtual_bucket }` envelope. Only succeeds
+/// when `kind == "pacto.mentions.envelope.v1"`. On success, return the body,
+/// the list of target npubs, and the optional virtual bucket. On any parse
+/// failure, shape mismatch, or wrong kind, return the raw plaintext as the
+/// body, an empty mention list, and no bucket.
+fn parse_mention_envelope(plaintext: &str) -> (String, Vec<String>, Option<String>) {
     match serde_json::from_str::<MentionEnvelope>(plaintext) {
-        Ok(envelope) => (
+        Ok(envelope) if envelope.kind == MENTION_ENVELOPE_KIND => (
             envelope.body,
             envelope.mentions.into_iter().map(|m| m.npub).collect(),
+            envelope.pacto_virtual_bucket,
         ),
+        Ok(envelope) => {
+            debug!(
+                kind = %envelope.kind,
+                plaintext_len = plaintext.len(),
+                "mention envelope kind mismatch; treating as legacy content"
+            );
+            (plaintext.to_string(), Vec::new(), None)
+        }
         Err(e) => {
             debug!(
                 error = %e,
                 plaintext_len = plaintext.len(),
                 "failed to parse mention envelope; treating as legacy content"
             );
-            (plaintext.to_string(), Vec::new())
+            (plaintext.to_string(), Vec::new(), None)
         }
     }
 }
@@ -1040,7 +1056,7 @@ impl NostrClient {
             None => return Ok(vec![]),
         };
 
-        let (content, mentions) = parse_mention_envelope(&decrypted.content);
+        let (content, mentions, _pacto_virtual_bucket) = parse_mention_envelope(&decrypted.content);
 
         let mut agent_events = Vec::new();
         for recipient in &recipients {
@@ -1925,73 +1941,109 @@ mod tests {
     #[test]
     fn parse_mention_envelope_valid() {
         let plaintext =
-            r#"{"body":"@Joke Bot /help","mentions":[{"npub":"npub1joke","alias":"Joke Bot"}]}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+            r#"{"kind":"pacto.mentions.envelope.v1","body":"@Joke Bot /help","mentions":[{"npub":"npub1joke","alias":"Joke Bot"}]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "@Joke Bot /help");
         assert_eq!(mentions, vec!["npub1joke"]);
+        assert_eq!(bucket, None);
+    }
+
+    #[test]
+    fn parse_mention_envelope_with_virtual_bucket() {
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"@Joke Bot /help","mentions":[{"npub":"npub1joke"}],"pacto_virtual_bucket":"squad:abc123"}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
+        assert_eq!(content, "@Joke Bot /help");
+        assert_eq!(mentions, vec!["npub1joke"]);
+        assert_eq!(bucket.as_deref(), Some("squad:abc123"));
+    }
+
+    #[test]
+    fn parse_mention_envelope_wrong_kind_falls_back() {
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v0","body":"@Joke Bot /help","mentions":[{"npub":"npub1joke"}]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
+        assert_eq!(content, plaintext);
+        assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_legacy_plaintext() {
         let plaintext = "!snapshot";
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "!snapshot");
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_invalid_json() {
         let plaintext = "{not json";
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "{not json");
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
+    }
+
+    #[test]
+    fn parse_mention_envelope_missing_kind_falls_back() {
+        let plaintext = r#"{"body":"@Joke Bot /help","mentions":[{"npub":"npub1joke"}]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
+        assert_eq!(content, plaintext);
+        assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_missing_body_falls_back() {
-        let plaintext = r#"{"mentions":[{"npub":"npub1joke"}]}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","mentions":[{"npub":"npub1joke"}]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, plaintext);
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_missing_mentions_falls_back() {
-        let plaintext = r#"{"body":"hello"}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"hello"}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, plaintext);
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_missing_npub_falls_back() {
-        let plaintext = r#"{"body":"hello","mentions":[{"alias":"Joke Bot"}]}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"hello","mentions":[{"alias":"Joke Bot"}]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, plaintext);
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_empty_mentions() {
-        let plaintext = r#"{"body":"hello","mentions":[]}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"hello","mentions":[]}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "hello");
         assert!(mentions.is_empty());
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_ignores_alias_and_extra_fields() {
-        let plaintext = r#"{"body":"hi","mentions":[{"npub":"npub1a","alias":"A"},{"npub":"npub1b"}],"extra":true}"#;
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = r#"{"kind":"pacto.mentions.envelope.v1","body":"hi","mentions":[{"npub":"npub1a","alias":"A"},{"npub":"npub1b"}],"extra":true}"#;
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "hi");
         assert_eq!(mentions, vec!["npub1a", "npub1b"]);
+        assert_eq!(bucket, None);
     }
 
     #[test]
     fn parse_mention_envelope_unicode_and_escapes() {
-        let plaintext = "{\"body\":\"@Joke Bot \\u263A\",\"mentions\":[{\"npub\":\"npub1joke\"}]}";
-        let (content, mentions) = parse_mention_envelope(plaintext);
+        let plaintext = "{\"kind\":\"pacto.mentions.envelope.v1\",\"body\":\"@Joke Bot \\u263A\",\"mentions\":[{\"npub\":\"npub1joke\"}]}";
+        let (content, mentions, bucket) = parse_mention_envelope(plaintext);
         assert_eq!(content, "@Joke Bot ☺");
         assert_eq!(mentions, vec!["npub1joke"]);
+        assert_eq!(bucket, None);
     }
 }
