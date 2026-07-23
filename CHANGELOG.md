@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-22
+
 ### Added
 
 - Squad mention envelope now requires a `kind` discriminator equal to `"pacto.mentions.envelope.v1"` and carries an optional `pacto_virtual_bucket` for correlation. The daemon parses the envelope on inbound MLS group messages and forwards `mls_group_message_received` events with `content`, `mentions`, `is_mentioned`, `mentioned_bot_ids`, and `pacto_virtual_bucket` to every bot in the group. Legacy plaintext and wrong-kind JSON fall back to full content with empty mention metadata.
@@ -290,7 +292,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.6.0...v0.7.0
