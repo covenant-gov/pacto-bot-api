@@ -158,6 +158,9 @@ fn cargo_generate_outdated_returns_version_error() {
         let mut file = fs::File::create(&fake).unwrap();
         writeln!(file, "#!/bin/sh").unwrap();
         writeln!(file, "echo 'cargo generate 0.1.0'").unwrap();
+        file.flush().unwrap();
+        // Explicitly close the handle before marking executable so Linux
+        // does not reject execution with ETXTBSY while the file is still open.
     }
     let mut perms = fs::metadata(&fake).unwrap().permissions();
     perms.set_mode(0o755);
