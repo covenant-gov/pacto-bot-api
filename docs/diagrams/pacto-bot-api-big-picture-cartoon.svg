@@ -1,0 +1,336 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#81d4fa"/>
+      <stop offset="100%" stop-color="#4fc3f7"/>
+    </linearGradient>
+    <linearGradient id="ocean" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4fc3f7"/>
+      <stop offset="100%" stop-color="#0277bd"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fff9c4"/>
+      <stop offset="80%" stop-color="#ffd54f"/>
+      <stop offset="100%" stop-color="#ffb300"/>
+    </radialGradient>
+    <marker id="arrow" markerWidth="14" markerHeight="12" refX="12" refY="6" orient="auto">
+      <polygon points="0 0, 14 6, 0 12" fill="#5d4037"/>
+    </marker>
+    <filter id="parchment" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" result="noise"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.75  0 0 0 0 0.65  0 0 0 0 0.45  0 0 0 0.04 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="over" in="coloredNoise" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#sky)"/>
+  <circle cx="1350" cy="100" r="55" fill="url(#sun)"/>
+
+  <g fill="#e1f5fe" opacity="0.9">
+    <ellipse cx="180" cy="90" rx="70" ry="28"/>
+    <ellipse cx="240" cy="80" rx="45" ry="22"/>
+    <ellipse cx="900" cy="70" rx="60" ry="24"/>
+    <ellipse cx="960" cy="65" rx="40" ry="18"/>
+    <ellipse cx="110" cy="180" rx="55" ry="20"/>
+  </g>
+
+  <rect y="430" width="1600" height="570" fill="url(#ocean)"/>
+  <g fill="#b3e5fc" opacity="0.5">
+    <path d="M0,470 Q120,455 240,470 T480,470 T720,470 T960,470 T1200,470 T1440,470 T1600,470 L1600,495 L0,495 Z"/>
+    <path d="M0,520 Q140,505 280,520 T560,520 T840,520 T1120,520 T1400,520 T1600,520 L1600,545 L0,545 Z"/>
+    <path d="M0,580 Q120,565 240,580 T480,580 T720,580 T960,580 T1200,580 T1440,580 T1600,580 L1600,605 L0,605 Z"/>
+  </g>
+  <g transform="translate(520, 230)">
+    <!-- Stern lantern -->
+    <rect x="320" y="115" width="18" height="25" fill="#ffeb3b" stroke="#f57f17" stroke-width="2"/>
+    
+    <!-- Hull with planking and wales -->
+    <path d="M-30,180 L360,180 L340,240 L20,240 Q-10,220 -30,180 Z" fill="#6d4c41" stroke="#3e2723" stroke-width="3"/>
+    <path d="M-10,180 L340,180 L328,225 L12,225 Q0,210 -10,180 Z" fill="#795548" opacity="0.4"/>
+    <line x1="-20" y1="200" x2="340" y2="200" stroke="#ffd54f" stroke-width="4"/>
+    <!-- Deck / quarterdeck -->
+    <rect x="40" y="160" width="260" height="20" fill="#8d6e63" stroke="#3e2723" stroke-width="2"/>
+    <!-- Beakhead -->
+    <path d="M-30,180 L-55,200 L-30,210 Z" fill="#5d4037" stroke="#3e2723" stroke-width="2"/>
+    <!-- Cannon ports -->
+    <g fill="#1a1a1a">
+      <circle cx="30" cy="210" r="6"/>
+      <circle cx="80" cy="210" r="6"/>
+      <circle cx="130" cy="210" r="6"/>
+      <circle cx="180" cy="210" r="6"/>
+      <circle cx="230" cy="210" r="6"/>
+      <circle cx="280" cy="210" r="6"/>
+    </g>
+    <!-- Portholes -->
+    <g fill="#ffd54f" stroke="#f57f17" stroke-width="2">
+      <circle cx="60" cy="200" r="7"/>
+      <circle cx="155" cy="200" r="7"/>
+      <circle cx="250" cy="200" r="7"/>
+    </g>
+    
+    <!-- Masts -->
+    <rect x="40" y="-30" width="10" height="210" fill="#4e342e"/>
+    <rect x="165" y="-70" width="12" height="250" fill="#4e342e"/>
+    <rect x="280" y="20" width="9" height="150" fill="#4e342e"/>
+    
+    <!-- Yards (crossbars) -->
+    <line x1="20" y1="-25" x2="90" y2="-25" stroke="#4e342e" stroke-width="4"/>
+    <line x1="20" y1="5" x2="95" y2="5" stroke="#4e342e" stroke-width="4"/>
+    <line x1="140" y1="-35" x2="260" y2="-35" stroke="#4e342e" stroke-width="4"/>
+    <line x1="140" y1="5" x2="260" y2="5" stroke="#4e342e" stroke-width="4"/>
+    <line x1="255" y1="25" x2="335" y2="25" stroke="#4e342e" stroke-width="3"/>
+    
+    <!-- Crow's nests -->
+    <rect x="155" y="-80" width="32" height="14" rx="4" fill="#5d4037" stroke="#3e2723" stroke-width="2"/>
+    <rect x="32" y="-38" width="26" height="10" rx="3" fill="#5d4037" stroke="#3e2723" stroke-width="2"/>
+    
+    <!-- Square sails -->
+    <rect x="25" y="-23" width="60" height="28" fill="#fff" stroke="#9e9e9e" stroke-width="2"/>
+    <rect x="25" y="7" width="65" height="73" fill="#fff" stroke="#9e9e9e" stroke-width="2"/>
+    <rect x="145" y="-33" width="110" height="38" fill="#fff" stroke="#9e9e9e" stroke-width="2"/>
+    <rect x="145" y="7" width="110" height="93" fill="#fff" stroke="#9e9e9e" stroke-width="2"/>
+    
+    <!-- Lateen (mizzen) sail -->
+    <path d="M260,27 L340,100 L260,110 Z" fill="#fff" stroke="#9e9e9e" stroke-width="2"/>
+    
+    <!-- Jib / staysail -->
+    <path d="M40,-20 L40,70 L-15,40 Z" fill="#e1f5fe" stroke="#90caf9" stroke-width="2"/>
+    
+    <!-- Ratlines (rope ladders) -->
+    <g stroke="#bdbdbd" stroke-width="1" fill="none">
+      <line x1="25" y1="-20" x2="85" y2="-20"/>
+      <line x1="25" y1="-10" x2="85" y2="-10"/>
+      <line x1="25" y1="0" x2="90" y2="0"/>
+      <line x1="25" y1="10" x2="90" y2="10"/>
+      <line x1="25" y1="20" x2="90" y2="20"/>
+      <line x1="25" y1="30" x2="90" y2="30"/>
+      <line x1="145" y1="-30" x2="255" y2="-30"/>
+      <line x1="145" y1="-20" x2="255" y2="-20"/>
+      <line x1="145" y1="-10" x2="255" y2="-10"/>
+      <line x1="145" y1="0" x2="255" y2="0"/>
+      <line x1="145" y1="10" x2="255" y2="10"/>
+      <line x1="145" y1="20" x2="255" y2="20"/>
+      <line x1="145" y1="30" x2="255" y2="30"/>
+    </g>
+    
+    <!-- Shrouds / stays -->
+    <g stroke="#8d6e63" stroke-width="1.5" fill="none">
+      <line x1="45" y1="-30" x2="45" y2="160"/>
+      <line x1="170" y1="-70" x2="170" y2="160"/>
+      <line x1="284" y1="20" x2="284" y2="160"/>
+      <line x1="45" y1="5" x2="-10" y2="160"/>
+      <line x1="170" y1="70" x2="100" y2="160"/>
+      <line x1="170" y1="70" x2="250" y2="160"/>
+    </g>
+    
+    <!-- Tattered Jolly Roger flag on main mast -->
+    <path d="M176,-130 L176,-70" stroke="#4e342e" stroke-width="4" stroke-linecap="round"/>
+    <path d="M176,-130 Q195,-135 210,-128 L230,-130 L220,-115 L235,-110 L220,-95 L228,-80 L210,-82 L195,-75 L176,-78 Z" fill="#1a1a1a" stroke="#000" stroke-width="2"/>
+    <!-- Skull -->
+    <ellipse cx="203" cy="-108" rx="9" ry="10" fill="#fff"/>
+    <circle cx="200" cy="-111" r="2.2" fill="#1a1a1a"/>
+    <circle cx="206" cy="-111" r="2.2" fill="#1a1a1a"/>
+    <path d="M199,-103 Q203,-99 207,-103" fill="none" stroke="#1a1a1a" stroke-width="1.5"/>
+    <!-- Crossbones -->
+    <line x1="192" y1="-98" x2="214" y2="-92" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="214" y1="-98" x2="192" y2="-92" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+    
+    <!-- Figurehead (pirate) -->
+    <circle cx="-38" cy="175" r="9" fill="#ffccbc"/>
+    <rect x="-43" y="183" width="10" height="18" fill="#5d4037"/>
+    <path d="M-43,178 L-33,178 L-33,173 L-43,173 Z" fill="#1a1a1a"/>
+    
+    <!-- Labels in sky, clear of ship -->
+    <rect x="60" y="-205" width="220" height="45" rx="22" fill="#fff8e1" stroke="#f57f17" stroke-width="3"/>
+    <text x="170" y="-175" font-family="Comic Sans MS, cursive, sans-serif" font-size="26" fill="#e65100" text-anchor="middle" font-weight="bold">The Flagship</text>
+    <rect x="-20" y="-155" width="380" height="30" rx="15" fill="#fff8e1" stroke="#f57f17" stroke-width="2"/>
+    <text x="170" y="-134" font-family="Comic Sans MS, cursive, sans-serif" font-size="16" fill="#5d4037" text-anchor="middle">Does the hard stuff so your bots don't have to</text>
+  </g>
+  <g transform="translate(80, 430)">
+    <path d="M0,50 L160,50 L140,90 L20,90 Z" fill="#66bb6a" stroke="#2e7d32" stroke-width="3"/>
+    <rect x="78" y="-35" width="6" height="85" fill="#4e342e"/>
+    <path d="M84,-30 L84,40 Q84,42 80,42 L35,42 Q30,42 30,40 L30,-20 Q30,-22 35,-22 Z" fill="#c8e6c9" stroke="#43a047" stroke-width="2"/>
+    <rect x="84" y="-50" width="36" height="24" fill="#1a1a1a"/>
+    <circle cx="98" cy="-40" r="5" fill="#fff"/>
+    <line x1="92" y1="-34" x2="104" y2="-34" stroke="#fff" stroke-width="2"/>
+    <rect x="20" y="-60" width="120" height="30" rx="15" fill="#e8f5e9" stroke="#43a047" stroke-width="2"/>
+    <text x="80" y="-40" font-family="Comic Sans MS, cursive, sans-serif" font-size="17" fill="#1b5e20" text-anchor="middle" font-weight="bold">Echo Bot</text>
+  </g>
+
+  <g transform="translate(1280, 420)">
+    <path d="M0,50 L160,50 L140,90 L20,90 Z" fill="#ff7043" stroke="#d84315" stroke-width="3"/>
+    <rect x="78" y="-35" width="6" height="85" fill="#4e342e"/>
+    <path d="M84,-30 L84,40 Q84,42 80,42 L35,42 Q30,42 30,40 L30,-20 Q30,-22 35,-22 Z" fill="#ffccbc" stroke="#ff8a65" stroke-width="2"/>
+    <circle cx="59" cy="8" r="14" fill="none" stroke="#d84315" stroke-width="2"/>
+    <circle cx="54" cy="4" r="3" fill="#d84315"/>
+    <circle cx="64" cy="4" r="3" fill="#d84315"/>
+    <path d="M51,12 Q59,20 67,12" fill="none" stroke="#d84315" stroke-width="2"/>
+    <rect x="84" y="-50" width="36" height="24" fill="#1a1a1a"/>
+    <circle cx="98" cy="-40" r="5" fill="#fff"/>
+    <line x1="92" y1="-34" x2="104" y2="-34" stroke="#fff" stroke-width="2"/>
+    <rect x="20" y="-60" width="120" height="30" rx="15" fill="#fbe9e7" stroke="#ff5722" stroke-width="2"/>
+    <text x="80" y="-40" font-family="Comic Sans MS, cursive, sans-serif" font-size="17" fill="#bf360c" text-anchor="middle" font-weight="bold">Joke Bot</text>
+  </g>
+  <g transform="translate(250, 630)">
+    <!-- Sandy beach base -->
+    <ellipse cx="140" cy="90" rx="130" ry="45" fill="#fff59d" stroke="#f9a825" stroke-width="3"/>
+    <ellipse cx="140" cy="95" rx="110" ry="32" fill="#fdd835" stroke="none"/>
+    
+    <!-- Palm tree -->
+    <rect x="135" y="25" width="10" height="60" fill="#6d4c41" rx="3"/>
+    <path d="M140,25 Q115,5 100,20 Q120,15 140,25" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
+    <path d="M140,25 Q165,5 180,20 Q160,15 140,25" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
+    <path d="M140,25 Q130,0 115,5 Q130,10 140,25" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
+    <path d="M140,25 Q150,0 165,5 Q150,10 140,25" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
+    <path d="M140,25 Q140,0 140,5 Q140,10 140,25" fill="#43a047" stroke="#2e7d32" stroke-width="2"/>
+    
+    <!-- Red X marks the spot -->
+    <line x1="110" y1="75" x2="120" y2="85" stroke="#d32f2f" stroke-width="3"/>
+    <line x1="120" y1="75" x2="110" y2="85" stroke="#d32f2f" stroke-width="3"/>
+    
+    <!-- Message bottles on the sand -->
+    <g transform="translate(60, 70)">
+      <rect x="0" y="0" width="22" height="9" rx="4" fill="#b3e5fc" stroke="#0277bd" stroke-width="1.5"/>
+      <rect x="18" y="2" width="5" height="5" fill="#4fc3f7"/>
+    </g>
+    <g transform="translate(180, 75)">
+      <rect x="0" y="0" width="22" height="9" rx="4" fill="#b3e5fc" stroke="#0277bd" stroke-width="1.5"/>
+      <rect x="18" y="2" width="5" height="5" fill="#4fc3f7"/>
+    </g>
+    
+    <!-- Island label -->
+    <rect x="40" y="110" width="200" height="36" rx="18" fill="#fffde7" stroke="#f9a825" stroke-width="2"/>
+    <text x="140" y="134" font-family="Comic Sans MS, cursive, sans-serif" font-size="19" fill="#e65100" text-anchor="middle" font-weight="bold">Message Island</text>
+    
+    <rect x="15" y="150" width="250" height="32" rx="4" fill="#fffde7" stroke="#f9a825" stroke-width="2" stroke-dasharray="5,3"/>
+    <text x="140" y="172" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#3e2723" text-anchor="middle">where messages arrive from the internet</text>
+  </g>
+
+  <g transform="translate(1020, 620)">
+    <ellipse cx="140" cy="100" rx="130" ry="48" fill="#a1887f" stroke="#6d4c41" stroke-width="3"/>
+    <ellipse cx="60" cy="80" rx="30" ry="16" fill="#795548"/>
+    <ellipse cx="220" cy="82" rx="22" ry="14" fill="#795548"/>
+    <g transform="translate(100, 35)">
+      <!-- Chest base with metal bands -->
+      <rect x="0" y="25" width="90" height="55" rx="4" fill="#6d4c41" stroke="#3e2723" stroke-width="3"/>
+      <rect x="8" y="25" width="8" height="55" fill="#ffd54f" stroke="#f57f17" stroke-width="1.5"/>
+      <rect x="74" y="25" width="8" height="55" fill="#ffd54f" stroke="#f57f17" stroke-width="1.5"/>
+      <!-- Curved lid -->
+      <path d="M0,25 Q45,0 90,25 L90,28 L0,28 Z" fill="#8d6e63" stroke="#3e2723" stroke-width="3"/>
+      <rect x="8" y="8" width="8" height="20" fill="#ffd54f" stroke="#f57f17" stroke-width="1.5"/>
+      <rect x="74" y="8" width="8" height="20" fill="#ffd54f" stroke="#f57f17" stroke-width="1.5"/>
+      <!-- Lock plate -->
+      <rect x="35" y="42" width="20" height="24" rx="2" fill="#ffd54f" stroke="#f57f17" stroke-width="2"/>
+      <circle cx="45" cy="52" r="4" fill="#5d4037"/>
+      <!-- Scattered coins -->
+      <circle cx="15" cy="78" r="5" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+      <circle cx="80" cy="78" r="4" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+      <circle cx="95" cy="72" r="3" fill="#ffe082"/>
+      <!-- Glow -->
+      <circle cx="45" cy="55" r="45" fill="#fff59d" opacity="0.2"/>
+    </g>
+    <g transform="translate(130, 0)">
+      <circle cx="0" cy="12" r="9" fill="none" stroke="#ffd54f" stroke-width="4"/>
+      <rect x="0" y="9" width="24" height="5" fill="#ffd54f"/>
+      <rect x="20" y="9" width="4" height="9" fill="#ffd54f"/>
+      <rect x="12" y="9" width="4" height="7" fill="#ffd54f"/>
+    </g>
+    <rect x="40" y="120" width="200" height="36" rx="18" fill="#fff3e0" stroke="#ef6c00" stroke-width="2"/>
+    <text x="140" y="144" font-family="Comic Sans MS, cursive, sans-serif" font-size="19" fill="#bf360c" text-anchor="middle" font-weight="bold">Key Vault</text>
+    <rect x="40" y="160" width="200" height="30" rx="4" fill="#fff3e0" stroke="#ef6c00" stroke-width="2" stroke-dasharray="5,3"/>
+    <text x="140" y="181" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#3e2723" text-anchor="middle">keeps the secret key safe</text>
+  </g>
+  <g stroke="#5d4037" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M520,460 Q440,560 380,620" stroke-dasharray="8,4"/>
+  </g>
+  <!-- BOOTY treasure chest traveling to Message Island -->
+  <g transform="translate(450, 530) rotate(30) scale(1.2)">
+    <!-- Chest base -->
+    <rect x="0" y="8" width="44" height="22" rx="2" fill="#6d4c41" stroke="#3e2723" stroke-width="2"/>
+    <!-- Lid -->
+    <path d="M0,8 Q22,-6 44,8 L44,10 L0,10 Z" fill="#8d6e63" stroke="#3e2723" stroke-width="2"/>
+    <!-- Gold bands -->
+    <rect x="8" y="-2" width="5" height="32" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+    <rect x="31" y="-2" width="5" height="32" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+    <!-- Lock -->
+    <rect x="18" y="6" width="8" height="8" rx="1" fill="#ffd54f" stroke="#f57f17" stroke-width="1.5"/>
+    <circle cx="22" cy="9" r="2" fill="#5d4037"/>
+    <!-- Overflowing gold coins -->
+    <circle cx="12" cy="4" r="3" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+    <circle cx="18" cy="2" r="3" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+    <circle cx="26" cy="3" r="3" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+    <circle cx="32" cy="5" r="3" fill="#ffd54f" stroke="#f57f17" stroke-width="1"/>
+  </g>
+  <text x="435" y="515" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#5d4037" text-anchor="middle" font-weight="bold">BOOTY</text>
+  <rect x="300" y="630" width="240" height="32" rx="4" fill="#fff8e1" stroke="#5d4037" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="420" y="651" font-family="Comic Sans MS, cursive, sans-serif" font-size="16" fill="#3e2723" text-anchor="middle" font-weight="bold">sends messages as cargo</text>
+
+  <g stroke="#5d4037" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M750,460 Q900,550 1070,620" stroke-dasharray="8,4"/>
+  </g>
+  <!-- MAP aged parchment scroll traveling to Key Vault -->
+  <g transform="translate(860, 530) rotate(-25) scale(1.15)">
+    <!-- Scroll body (parchment) -->
+    <path d="M8,0 L42,0 Q48,0 48,6 L48,20 Q48,26 42,26 L8,26 Q2,26 2,20 L2,6 Q2,0 8,0 Z" fill="#fff8e1" stroke="#8d6e63" stroke-width="2"/>
+    <!-- Aged edges -->
+    <path d="M4,2 Q6,8 4,13 Q6,18 4,24" fill="none" stroke="#d7ccc8" stroke-width="1"/>
+    <path d="M46,2 Q44,8 46,13 Q44,18 46,24" fill="none" stroke="#d7ccc8" stroke-width="1"/>
+    <!-- Map lines and X -->
+    <path d="M12,8 L20,18 M18,8 L12,18" stroke="#8d6e63" stroke-width="1.5" opacity="0.5"/>
+    <path d="M30,18 L38,8" stroke="#8d6e63" stroke-width="1.5" opacity="0.5"/>
+    <line x1="22" y1="10" x2="32" y2="16" stroke="#5d4037" stroke-width="1.5" opacity="0.6"/>
+    <!-- Red X marks the spot -->
+    <line x1="26" y1="10" x2="34" y2="18" stroke="#d32f2f" stroke-width="2.5"/>
+    <line x1="34" y1="10" x2="26" y2="18" stroke="#d32f2f" stroke-width="2.5"/>
+    <!-- Wax seal -->
+    <circle cx="40" cy="20" r="5" fill="#b71c1c" stroke="#7f0000" stroke-width="1"/>
+    <circle cx="40" cy="20" r="2" fill="#ffcdd2"/>
+  </g>
+  <text x="895" y="505" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#bf360c" text-anchor="middle" font-weight="bold">MAP</text>
+  <rect x="900" y="630" width="260" height="32" rx="4" fill="#fff3e0" stroke="#5d4037" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="1030" y="651" font-family="Comic Sans MS, cursive, sans-serif" font-size="16" fill="#3e2723" text-anchor="middle" font-weight="bold">sends sacred stuff to sign</text>
+
+  <g stroke="#2e7d32" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M240,470 Q360,460 520,420"/>
+  </g>
+  <rect x="300" y="430" width="110" height="26" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="355" y="448" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#1b5e20" text-anchor="middle" font-weight="bold">talks to</text>
+
+  <g stroke="#d84315" stroke-width="3" fill="none" marker-end="url(#arrow)">
+    <path d="M1280,470 Q1100,460 880,420"/>
+  </g>
+  <rect x="1040" y="430" width="110" height="26" rx="4" fill="#fbe9e7" stroke="#d84315" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="1095" y="448" font-family="Comic Sans MS, cursive, sans-serif" font-size="15" fill="#bf360c" text-anchor="middle" font-weight="bold">talks to</text>
+  <!-- Floating barrels and bottles -->
+  <g transform="translate(180, 720)">
+    <rect x="0" y="0" width="28" height="10" rx="5" fill="#b3e5fc" stroke="#0277bd" stroke-width="1.5"/>
+    <rect x="23" y="2" width="6" height="6" fill="#4fc3f7"/>
+  </g>
+  <g transform="translate(1250, 740)">
+    <rect x="0" y="0" width="28" height="10" rx="5" fill="#b3e5fc" stroke="#0277bd" stroke-width="1.5"/>
+    <rect x="23" y="2" width="6" height="6" fill="#4fc3f7"/>
+  </g>
+  <g transform="translate(700, 760)">
+    <rect x="0" y="0" width="28" height="10" rx="5" fill="#b3e5fc" stroke="#0277bd" stroke-width="1.5"/>
+    <rect x="23" y="2" width="6" height="6" fill="#4fc3f7"/>
+  </g>
+  
+  <!-- Compass rose decorative accent -->
+  <g transform="translate(1460, 680)" opacity="0.25">
+    <circle cx="0" cy="0" r="35" fill="none" stroke="#5d4037" stroke-width="2"/>
+    <circle cx="0" cy="0" r="28" fill="none" stroke="#5d4037" stroke-width="1"/>
+    <path d="M0,-35 L8,-8 L35,0 L8,8 L0,35 L-8,8 L-35,0 L-8,-8 Z" fill="#fff8e1" stroke="#5d4037" stroke-width="1.5"/>
+    <text x="0" y="-42" font-family="serif" font-size="12" fill="#5d4037" text-anchor="middle" font-weight="bold">N</text>
+  </g>
+
+  <g transform="translate(800, 25)">
+    <rect x="-300" y="0" width="600" height="55" rx="4" fill="#fff8e1" stroke="#5d4037" stroke-width="3" stroke-dasharray="8,3"/>
+    <path d="M-300,0 L-290,-8 L-280,0 M300,0 L290,-8 L280,0 M-300,55 L-290,63 L-280,55 M300,55 L290,63 L280,55" fill="none" stroke="#5d4037" stroke-width="2"/>
+    <text x="0" y="37" font-family="Comic Sans MS, cursive, sans-serif" font-size="32" fill="#3e2723" text-anchor="middle" font-weight="bold">How Pacto Bots Work</text>
+  </g>
+
+  <g transform="translate(800, 920)">
+    <rect x="-480" y="0" width="960" height="50" rx="4" fill="#fff8e1" stroke="#5d4037" stroke-width="3" stroke-dasharray="10,4"/>
+    <text x="0" y="32" font-family="Comic Sans MS, cursive, sans-serif" font-size="20" fill="#3e2723" text-anchor="middle">Your bots talk to the Flagship. It handles all the crypto and keeps your keys safe in the vault.</text>
+  </g>
+</svg>
