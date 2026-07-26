@@ -2786,6 +2786,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rpassword",
  "rusqlite",
+ "rustls",
  "schemars 0.8.22",
  "secrecy",
  "semver",
@@ -3566,6 +3567,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
