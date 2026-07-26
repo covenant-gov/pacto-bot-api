@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Install a `rustls` crypto provider (`ring`) at process startup in `pacto-bot-api` and `pacto-bot-admin`. Without it, the first `wss://` (TLS) relay connection panicked the whole process with "Could not automatically determine the process-level CryptoProvider from Rustls crate features" — the daemon and admin CLI could only ever reach `ws://` relays. Both binaries now connect to `wss://` relays (e.g. `wss://jskitty.cat/nostr`) without crashing.
+
 ## [0.9.0] - 2026-07-22
 
 ### Added

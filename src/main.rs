@@ -54,6 +54,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    pacto_bot_api::install_tls_crypto_provider();
     let cli = Cli::parse();
 
     let env_filter = if let Some(level) = &cli.log_level {

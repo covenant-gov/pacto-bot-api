@@ -587,6 +587,7 @@ enum MlsGroupCommand {
 
 #[tokio::main]
 async fn main() {
+    pacto_bot_api::install_tls_crypto_provider();
     let cli = Cli::parse();
     if let Err(e) = run(cli).await {
         eprintln!("error: {e}");

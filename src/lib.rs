@@ -28,3 +28,20 @@ pub mod version;
 
 #[cfg(test)]
 pub mod test_support;
+
+/// Installs the process-wide `rustls` crypto provider.
+///
+/// `rustls` 0.23 refuses to pick a default automatically once more than one
+/// backend feature (`ring`, `aws-lc-rs`) is compiled into the dependency
+/// graph — which happens here because different transitive dependencies
+/// (nostr-sdk's `wss://` relay connections, `reqwest`'s `rustls-tls`) each
+/// request a backend. Without an explicit install, the first `wss://` relay
+/// connection panics inside `rustls::crypto::mod::CryptoProvider`. Call this
+/// once, as early as possible, from every binary entry point before any
+/// TLS-capable client (relay pool, HTTP client) is constructed.
+///
+/// Safe to call more than once: a second install is reported as an `Err`
+/// (provider already set) and is intentionally ignored.
+pub fn install_tls_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
