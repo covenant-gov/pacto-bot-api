@@ -355,6 +355,8 @@ fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
         "mls_group_message_received" => Ok(EventType::MlsGroupMessageReceived),
         "reaction_received" => Ok(EventType::ReactionReceived),
         "attachment_received" => Ok(EventType::AttachmentReceived),
+        "mls_group_reaction_received" => Ok(EventType::MlsGroupReactionReceived),
+        "mls_group_attachment_received" => Ok(EventType::MlsGroupAttachmentReceived),
         _ => Err(DaemonError::InvalidEventType(event_type.to_string())),
     }
 }

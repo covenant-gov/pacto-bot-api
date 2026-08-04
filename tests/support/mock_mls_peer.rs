@@ -201,8 +201,6 @@ impl MockMlsPeer {
     /// The returned event is signed by an ephemeral key derived from the group
     /// exporter secret, matching the production NIP-104 format.
     pub async fn create_group_message(&self, content: &str) -> Event {
-        let groups = self.engine.get_groups().expect("get groups");
-        let group = groups.first().expect("group exists");
         let rumor = nostr::UnsignedEvent::new(
             self.keys.public_key(),
             nostr::Timestamp::now(),
@@ -210,6 +208,13 @@ impl MockMlsPeer {
             Vec::new(),
             content,
         );
+        self.create_group_rumor(rumor).await
+    }
+
+    /// Create a kind:445 wrapper carrying an arbitrary inner rumor.
+    pub async fn create_group_rumor(&self, rumor: nostr::UnsignedEvent) -> Event {
+        let groups = self.engine.get_groups().expect("get groups");
+        let group = groups.first().expect("group exists");
         self.engine
             .create_message(&group.mls_group_id, rumor)
             .expect("create group message")

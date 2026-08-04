@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use mdk_storage_traits::GroupId;
-use nostr::{Event, Kind, PublicKey, RelayUrl, UnsignedEvent};
+use nostr::{Event, Kind, PublicKey, RelayUrl, Tags, UnsignedEvent};
 use tokio::sync::{mpsc, oneshot};
 
 /// Errors that can occur when interacting with the MLS engine.
@@ -545,6 +545,9 @@ impl MlsEngineHandle {
                                         Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
                                             Ok(Some(DecryptedMessage {
                                                 content: msg.content,
+                                                kind: msg.kind,
+                                                tags: msg.tags,
+                                                rumor_id: msg.id.to_hex(),
                                                 group_id,
                                                 author: msg.pubkey.to_hex(),
                                                 event_id: event.id.to_hex(),
@@ -975,6 +978,12 @@ pub struct MlsGroupListEntry {
 pub struct DecryptedMessage {
     /// Plaintext content of the application message.
     pub content: String,
+    /// Inner rumor kind, distinct from the kind:445 wrapper.
+    pub kind: Kind,
+    /// Inner rumor tags used by reaction and attachment taxonomy.
+    pub tags: Tags,
+    /// Inner rumor event id in hex.
+    pub rumor_id: String,
     /// Squad wire id from the wrapper event's `h` tag.
     pub group_id: String,
     /// Sender's Nostr pubkey in hex.

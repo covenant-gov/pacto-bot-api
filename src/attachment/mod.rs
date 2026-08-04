@@ -10,3 +10,4 @@ pub mod blossom;
 pub mod crypto;
 pub mod inbound;
 pub mod mime;
+pub mod outbound;

@@ -340,6 +340,25 @@ class PactoClient:
         result = response.get('result')
         return result
 
+    async def agent_send_attachment(self, bot_id: str, recipient: str, blurhash: str | None = None, dim: str | None = None, filename: str | None = None, inline_base64: str | None = None, reply_to: str | None = None, spool_path: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendAttachmentResponse:
+        """
+        Call JSON-RPC method `agent.send_attachment`.
+
+        Encrypt, upload, and send a direct-message attachment as the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_send_attachment(...)
+            >>> isinstance(result, AgentSendAttachmentResponse)
+
+        jsonrpc_method: ``"agent.send_attachment"``
+        """
+        params = models.AgentSendAttachmentParams(blurhash=blurhash, bot_id=bot_id, dim=dim, filename=filename, inline_base64=inline_base64, recipient=recipient, reply_to=reply_to, spool_path=spool_path)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.send_attachment", params_dict, timeout=timeout)
+        result = response.get('result')
+        return result
+
     async def agent_send_dm(self, bot_id: str, content: str, recipient: str, reply_to: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendDmResponse:
         """
         Call JSON-RPC method `agent.send_dm`.
@@ -356,6 +375,25 @@ class PactoClient:
         params = models.AgentSendDmParams(bot_id=bot_id, content=content, recipient=recipient, reply_to=reply_to)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("agent.send_dm", params_dict, timeout=timeout)
+        result = response.get('result')
+        return result
+
+    async def agent_send_group_attachment(self, bot_id: str, group_id: str, blurhash: str | None = None, dim: str | None = None, filename: str | None = None, inline_base64: str | None = None, reply_to: str | None = None, spool_path: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendGroupAttachmentResponse:
+        """
+        Call JSON-RPC method `agent.send_group_attachment`.
+
+        Encrypt, upload, and send an MLS group attachment as the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_send_group_attachment(...)
+            >>> isinstance(result, AgentSendGroupAttachmentResponse)
+
+        jsonrpc_method: ``"agent.send_group_attachment"``
+        """
+        params = models.AgentSendGroupAttachmentParams(blurhash=blurhash, bot_id=bot_id, dim=dim, filename=filename, group_id=group_id, inline_base64=inline_base64, reply_to=reply_to, spool_path=spool_path)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.send_group_attachment", params_dict, timeout=timeout)
         result = response.get('result')
         return result
 

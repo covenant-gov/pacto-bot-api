@@ -400,6 +400,22 @@ impl NostrClient {
         self.send_gift_wrap(signer, &recipient, &rumor).await
     }
 
+    /// Sign and gift-wrap a prepared kind:15 attachment rumor.
+    pub async fn send_attachment(
+        &self,
+        signer: &dyn Signer,
+        recipient: &PublicKey,
+        rumor: UnsignedEvent,
+    ) -> Result<EventId, DaemonError> {
+        if rumor.kind != Kind::Custom(15) {
+            return Err(DaemonError::AttachmentInvalid {
+                category: "outbound rumor kind is not 15".into(),
+            });
+        }
+        let rumor = sign_unsigned_event(signer, rumor).await?;
+        self.send_gift_wrap(signer, recipient, &rumor).await
+    }
+
     /// Build a NIP-59 gift wrap around a signed rumor and publish it to every
     /// configured relay.
     ///
@@ -938,6 +954,8 @@ impl NostrClient {
                                     let tx = tx.clone();
                                     let signers = Arc::clone(&signers);
                                     let mls_engines = Arc::clone(&mls_engines);
+                                    let diagnostics = diagnostics.clone();
+                                    let attachment_processor = attachment_processor.clone();
                                     tokio::spawn(async move {
                                         let signers = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
@@ -945,6 +963,8 @@ impl NostrClient {
                                             &signers,
                                             &mls_engines,
                                             &event,
+                                            diagnostics.as_ref(),
+                                            attachment_processor.as_deref(),
                                         )
                                         .await
                                         {
@@ -1187,6 +1207,8 @@ impl NostrClient {
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
         mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
+        diagnostics: Option<&Diagnostics>,
+        attachment_processor: Option<&InboundAttachmentProcessor>,
     ) -> Result<Vec<AgentEvent>, DaemonError> {
         info!(
             event_id = %event.id.to_hex(),
@@ -1262,7 +1284,92 @@ impl NostrClient {
             None => return Ok(vec![]),
         };
 
-        let (content, mentions, pacto_virtual_bucket) = parse_mention_envelope(&decrypted.content);
+        let inner = UnsignedEvent::new(
+            PublicKey::parse(&decrypted.author)
+                .map_err(|_| DaemonError::Nostr("invalid inner group author".into()))?,
+            Timestamp::from(decrypted.timestamp),
+            decrypted.kind,
+            decrypted.tags.clone(),
+            decrypted.content.clone(),
+        );
+
+        let (event_type, reaction, attachment, content, mentions, pacto_virtual_bucket) =
+            match decrypted.kind {
+                Kind::TextNote => {
+                    let (content, mentions, pacto_virtual_bucket) =
+                        parse_mention_envelope(&decrypted.content);
+                    (
+                        EventType::MlsGroupMessageReceived,
+                        None,
+                        None,
+                        content,
+                        mentions,
+                        pacto_virtual_bucket,
+                    )
+                }
+                Kind::Reaction => match Self::extract_reaction(&inner) {
+                    Some(payload) => (
+                        EventType::MlsGroupReactionReceived,
+                        Some(payload),
+                        None,
+                        decrypted.content.clone(),
+                        Vec::new(),
+                        None,
+                    ),
+                    None => {
+                        if let Some(diagnostics) = diagnostics {
+                            diagnostics.record_invalid_event().await;
+                        }
+                        return Ok(vec![]);
+                    }
+                },
+                Kind::Custom(15) => {
+                    let Some(processor) = attachment_processor else {
+                        if let Some(diagnostics) = diagnostics {
+                            diagnostics.record_invalid_event().await;
+                            diagnostics.record_attachment_receive_failed().await;
+                        }
+                        return Ok(vec![]);
+                    };
+                    match processor.process_rumor(&inner).await {
+                        Ok(payload) => {
+                            if let Some(diagnostics) = diagnostics {
+                                diagnostics.record_attachment_receive().await;
+                            }
+                            (
+                                EventType::MlsGroupAttachmentReceived,
+                                None,
+                                Some(payload),
+                                decrypted.content.clone(),
+                                Vec::new(),
+                                None,
+                            )
+                        }
+                        Err(error) => {
+                            warn!(error = %error, "rejecting invalid MLS group attachment");
+                            if let Some(diagnostics) = diagnostics {
+                                diagnostics.record_invalid_event().await;
+                                diagnostics.record_attachment_receive_failed().await;
+                                diagnostics
+                                    .record_error(
+                                        Some("attachment_invalid"),
+                                        &error.to_string(),
+                                        None,
+                                    )
+                                    .await;
+                            }
+                            return Ok(vec![]);
+                        }
+                    }
+                }
+                other => {
+                    debug!(
+                        kind = other.as_u16(),
+                        "skipping unrepresented MLS inner rumor kind"
+                    );
+                    return Ok(vec![]);
+                }
+            };
 
         let mut agent_events = Vec::new();
         for recipient in &recipients {
@@ -1300,14 +1407,16 @@ impl NostrClient {
             agent_events.push(AgentEvent {
                 bot_id: bot_id.clone(),
                 event_id: decrypted.event_id.clone(),
-                event_type: EventType::MlsGroupMessageReceived,
+                event_type,
                 chat_id: Some(decrypted.group_id.clone()),
                 content: content.clone(),
                 mentions: mentions.clone(),
                 pacto_virtual_bucket: pacto_virtual_bucket.clone(),
-                rumor_id: event.id.to_hex(),
+                rumor_id: decrypted.rumor_id.clone(),
                 author: decrypted.author.clone(),
                 timestamp: decrypted.timestamp,
+                reaction: reaction.clone(),
+                attachment: attachment.clone(),
                 ..Default::default()
             });
         }
@@ -1559,6 +1668,33 @@ mod tests {
             .await
             .expect("gift wrap should be published");
         assert!(events.iter().any(|e| e.kind == Kind::GiftWrap));
+        relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn send_attachment_publishes_gift_wrap() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+        let (sender, _) = test_signer();
+        let recipient = Keys::generate().public_key();
+        let rumor = UnsignedEvent::new(
+            sender.public_key(),
+            Timestamp::now(),
+            Kind::Custom(15),
+            [Tag::public_key(recipient)],
+            "https://cdn.example/blob",
+        );
+
+        let event_id = client
+            .send_attachment(&sender, &recipient, rumor)
+            .await
+            .unwrap();
+        assert_valid_event_id(&event_id);
+        let events = relay
+            .wait_for_event(|event| event.kind == Kind::GiftWrap, Duration::from_secs(5))
+            .await
+            .expect("gift wrap should be published");
+        assert!(events.iter().any(|event| event.kind == Kind::GiftWrap));
         relay.stop().await;
     }
 
