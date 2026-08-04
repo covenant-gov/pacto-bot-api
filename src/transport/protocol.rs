@@ -80,6 +80,10 @@ use std::sync::LazyLock;
 
 /// Maximum size of a single newline-delimited JSON frame (1 MiB).
 pub const MAX_FRAME_BYTES: usize = 1_048_576;
+/// JSON-RPC envelope headroom reserved before base64 expansion.
+pub const INLINE_ENVELOPE_RESERVE: usize = 8_192;
+/// Largest decoded inline attachment that fits under the unchanged frame cap.
+pub const MAX_INLINE_ATTACHMENT_BYTES: usize = (MAX_FRAME_BYTES - INLINE_ENVELOPE_RESERVE) * 3 / 4;
 
 fn jsonrpc_version() -> String {
     "2.0".to_string()
@@ -272,6 +276,8 @@ pub enum Method {
     AgentSendDm,
     #[serde(rename = "agent.send_reaction")]
     AgentSendReaction,
+    #[serde(rename = "agent.send_attachment")]
+    AgentSendAttachment,
     #[serde(rename = "agent.set_profile")]
     AgentSetProfile,
     #[serde(rename = "agent.error")]
@@ -304,6 +310,8 @@ pub enum Method {
     AgentSendGroupMessage,
     #[serde(rename = "agent.send_group_reaction")]
     AgentSendGroupReaction,
+    #[serde(rename = "agent.send_group_attachment")]
+    AgentSendGroupAttachment,
     #[serde(rename = "agent.publish_key_package")]
     AgentPublishKeyPackage,
     #[serde(rename = "admin.send_test_dm")]
@@ -327,6 +335,7 @@ impl Method {
             Method::HandlerUnregister,
             Method::AgentSendDm,
             Method::AgentSendReaction,
+            Method::AgentSendAttachment,
             Method::AgentSetProfile,
             Method::AgentError,
             Method::HandlerResponse,
@@ -343,6 +352,7 @@ impl Method {
             Method::AgentExitMlsGroup,
             Method::AgentSendGroupMessage,
             Method::AgentSendGroupReaction,
+            Method::AgentSendGroupAttachment,
             Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
             Method::AdminCreateMlsGroup,
@@ -363,6 +373,7 @@ impl FromStr for Method {
             "handler.unregister" => Ok(Self::HandlerUnregister),
             "agent.send_dm" => Ok(Self::AgentSendDm),
             "agent.send_reaction" => Ok(Self::AgentSendReaction),
+            "agent.send_attachment" => Ok(Self::AgentSendAttachment),
             "agent.set_profile" => Ok(Self::AgentSetProfile),
             "agent.error" => Ok(Self::AgentError),
             "handler.response" => Ok(Self::HandlerResponse),
@@ -379,6 +390,7 @@ impl FromStr for Method {
             "agent.exit_mls_group" => Ok(Self::AgentExitMlsGroup),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.send_group_reaction" => Ok(Self::AgentSendGroupReaction),
+            "agent.send_group_attachment" => Ok(Self::AgentSendGroupAttachment),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
             "admin.create_mls_group" => Ok(Self::AdminCreateMlsGroup),
@@ -413,6 +425,8 @@ pub struct HandlerRegisterResponse {
     pub registered_events: Vec<String>,
     #[serde(default)]
     pub own_pubkeys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub spool_dir: String,
 }
 
 /// Typed payload for the `handler.reconnect` JSON-RPC method.
@@ -879,6 +893,7 @@ mod tests {
             reconnect_token: "token".into(),
             registered_events: vec!["dm_received".into()],
             own_pubkeys: BTreeMap::from([("echo-bot".into(), "npub1test".into())]),
+            spool_dir: "/data/spool/outbound".into(),
         };
         let json = serde_json::to_value(&response).unwrap();
         let own_pubkeys = json.get("own_pubkeys").unwrap().as_object().unwrap();

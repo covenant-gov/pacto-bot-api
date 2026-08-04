@@ -14,8 +14,14 @@ AgentMetricsResponse = dict[str, Any]
 # Result type alias for `agent.publish_key_package`.
 AgentPublishKeyPackageResponse = str
 
+# Result type alias for `agent.send_attachment`.
+AgentSendAttachmentResponse = str
+
 # Result type alias for `agent.send_dm`.
 AgentSendDmResponse = str
+
+# Result type alias for `agent.send_group_attachment`.
+AgentSendGroupAttachmentResponse = str
 
 # Result type alias for `agent.send_group_message`.
 AgentSendGroupMessageResponse = str
@@ -513,6 +519,37 @@ class AgentRateLimitedParams(BaseModel):
     window_seconds: int
 
 
+class AgentSendAttachmentParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.send_attachment`.
+
+    Encrypt, upload, and send a direct-message attachment as the specified bot.
+
+    Example:
+
+        >>> AgentSendAttachmentParams(bot_id="...", recipient="...")
+
+    jsonrpc_method: ``"agent.send_attachment"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.send_attachment"
+    # Optional image blurhash metadata.
+    blurhash: str | None = None
+    # Bot identity that will send the attachment.
+    bot_id: str
+    # Optional image dimensions in WIDTHxHEIGHT form.
+    dim: str | None = None
+    # Optional sender filename metadata.
+    filename: str | None = None
+    # Standard-base64 payload below the inline threshold.
+    inline_base64: str | None = None
+    # Nostr public key (npub or hex) of the recipient.
+    recipient: str
+    # Optional hex rumor id this attachment replies to.
+    reply_to: str | None = None
+    # Path confined to the outbound attachment spool.
+    spool_path: str | None = None
+
+
 class AgentSendDmParams(BaseModel):
     """
     Model for JSON-RPC method `agent.send_dm`.
@@ -534,6 +571,37 @@ class AgentSendDmParams(BaseModel):
     recipient: str
     # Optional hex event id this message replies to.
     reply_to: str | None = None
+
+
+class AgentSendGroupAttachmentParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.send_group_attachment`.
+
+    Encrypt, upload, and send an MLS group attachment as the specified bot.
+
+    Example:
+
+        >>> AgentSendGroupAttachmentParams(bot_id="...", group_id="...")
+
+    jsonrpc_method: ``"agent.send_group_attachment"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.send_group_attachment"
+    # Optional image blurhash metadata.
+    blurhash: str | None = None
+    # Bot identity that will send the attachment.
+    bot_id: str
+    # Optional image dimensions in WIDTHxHEIGHT form.
+    dim: str | None = None
+    # Optional sender filename metadata.
+    filename: str | None = None
+    # Hex-encoded MLS group ID.
+    group_id: str
+    # Standard-base64 payload below the inline threshold.
+    inline_base64: str | None = None
+    # Optional hex rumor id this attachment replies to.
+    reply_to: str | None = None
+    # Path confined to the outbound attachment spool.
+    spool_path: str | None = None
 
 
 class AgentSendGroupMessageParams(BaseModel):
@@ -761,7 +829,7 @@ class HandlerRegisterResponse(BaseModel):
 
     Example:
 
-        >>> HandlerRegisterResponse(handler_id="...", reconnect_token="...", registered_events=[])
+        >>> HandlerRegisterResponse(handler_id="...", reconnect_token="...", registered_events=[], spool_dir="...")
 
     jsonrpc_method: ``"handler.register"``
     """
@@ -774,6 +842,8 @@ class HandlerRegisterResponse(BaseModel):
     reconnect_token: str
     # Event types the handler is now subscribed to.
     registered_events: list[str]
+    # Absolute outbound spool directory where handlers may stage attachment payloads.
+    spool_dir: str
 
 
 class HandlerResponseParams(BaseModel):
@@ -847,4 +917,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

@@ -12,6 +12,7 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::attachment::outbound::{AttachmentMetadata, OutboundAttachmentProcessor};
 use crate::client_manager::ClientManager;
 use crate::config::BotConfig;
 use crate::db::{Db, MlsGroupRow};
@@ -417,6 +418,7 @@ pub struct Dispatch {
     mls_group_locks: MlsGroupLockPool,
     dispatch_timeout: Duration,
     handler_stale_timeout: Duration,
+    outbound_attachments: Option<Arc<OutboundAttachmentProcessor>>,
 }
 
 /// Inputs gathered by the shared pre-flight helper for MLS group operations.
@@ -452,6 +454,7 @@ impl Dispatch {
             mls_group_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
             dispatch_timeout: DISPATCH_TIMEOUT,
             handler_stale_timeout: HANDLER_STALE_TIMEOUT,
+            outbound_attachments: None,
         }
     }
 
@@ -474,7 +477,17 @@ impl Dispatch {
             mls_group_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
             dispatch_timeout: DISPATCH_TIMEOUT,
             handler_stale_timeout: HANDLER_STALE_TIMEOUT,
+            outbound_attachments: None,
         }
+    }
+
+    /// Attach outbound attachment services configured by daemon startup.
+    pub fn with_outbound_attachments(
+        mut self,
+        processor: Arc<OutboundAttachmentProcessor>,
+    ) -> Self {
+        self.outbound_attachments = Some(processor);
+        self
     }
 
     /// Override the dispatch timeout. Intended for tests only.
@@ -844,6 +857,7 @@ impl Dispatch {
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
             Method::AgentSendReaction => self.handle_send_reaction(handler_id, params).await,
+            Method::AgentSendAttachment => self.handle_send_attachment(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
@@ -860,6 +874,9 @@ impl Dispatch {
             }
             Method::AgentSendGroupReaction => {
                 self.handle_send_group_reaction(handler_id, params).await
+            }
+            Method::AgentSendGroupAttachment => {
+                self.handle_send_group_attachment(handler_id, params).await
             }
             Method::AgentPublishKeyPackage => {
                 self.handle_publish_key_package(handler_id, params).await
@@ -969,6 +986,11 @@ impl Dispatch {
             reconnect_token: reconnect_token.expose_secret().to_string(),
             registered_events,
             own_pubkeys,
+            spool_dir: self
+                .outbound_attachments
+                .as_ref()
+                .map(|processor| processor.spool_dir().to_string_lossy().into_owned())
+                .unwrap_or_default(),
         })?))
     }
 
@@ -1142,6 +1164,73 @@ impl Dispatch {
             .send_reaction(&signer, recipient, target, emoji)
             .await?;
         Ok(Some(Value::String(event_id.to_hex())))
+    }
+
+    async fn handle_send_attachment(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params =
+            params.ok_or_else(|| invalid_params("agent.send_attachment missing params"))?;
+        let bot_id = required_string(params, "bot_id", "agent.send_attachment")?;
+        let recipient_text = required_string(params, "recipient", "agent.send_attachment")?;
+        let recipient = PublicKey::parse(recipient_text)
+            .map_err(|_| invalid_params("recipient must be an npub or hex public key"))?;
+        let processor = self
+            .outbound_attachments
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("attachment service is not configured".into()))?
+            .clone();
+        let source = OutboundAttachmentProcessor::source_from_params(
+            params.get("spool_path").and_then(Value::as_str),
+            params.get("inline_base64").and_then(Value::as_str),
+        )?;
+        let metadata = attachment_metadata(params);
+        OutboundAttachmentProcessor::validate_metadata(&metadata)?;
+
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendAttachments")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+        if !self.rate_limiter.check(hid, bot_id, Instant::now()).await {
+            self.diagnostics.record_rate_limited().await;
+            return Err(DaemonError::RateLimited);
+        }
+
+        self.diagnostics.record_attachment_send().await;
+        let result = async {
+            let (signer, client) = {
+                let cm = self.client_manager.read().await;
+                let bot = cm
+                    .get_bot_by_id(bot_id)
+                    .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+                (bot.signer.clone(), cm.nostr_client.clone())
+            };
+            let prepared = processor
+                .prepare(&signer, source, metadata, Some(recipient))
+                .await?;
+            let event_id = client
+                .send_attachment(&signer, &recipient, prepared.rumor.clone())
+                .await?;
+            processor.complete(&prepared);
+            Ok::<EventId, DaemonError>(event_id)
+        }
+        .await;
+        match result {
+            Ok(event_id) => Ok(Some(Value::String(event_id.to_hex()))),
+            Err(error) => {
+                self.diagnostics.record_attachment_send_failed().await;
+                if matches!(error, DaemonError::BlobUploadFailed { .. }) {
+                    self.diagnostics.record_blob_upload_failed().await;
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn handle_set_profile(
@@ -1995,6 +2084,85 @@ impl Dispatch {
         Ok(Some(Value::String(event_id.to_hex())))
     }
 
+    async fn handle_send_group_attachment(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params =
+            params.ok_or_else(|| invalid_params("agent.send_group_attachment missing params"))?;
+        let bot_id = required_string(params, "bot_id", "agent.send_group_attachment")?;
+        let group_id = required_string(params, "group_id", "agent.send_group_attachment")?;
+        let processor = self
+            .outbound_attachments
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("attachment service is not configured".into()))?
+            .clone();
+        let source = OutboundAttachmentProcessor::source_from_params(
+            params.get("spool_path").and_then(Value::as_str),
+            params.get("inline_base64").and_then(Value::as_str),
+        )?;
+        let metadata = attachment_metadata(params);
+        OutboundAttachmentProcessor::validate_metadata(&metadata)?;
+
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendGroupAttachments")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+        if !self.rate_limiter.check(hid, bot_id, Instant::now()).await {
+            self.diagnostics.record_rate_limited().await;
+            return Err(DaemonError::RateLimited);
+        }
+
+        self.diagnostics.record_attachment_send().await;
+        let result = async {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+            let mls_engine = bot
+                .mls
+                .as_ref()
+                .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            let mls_group_id = mls_engine
+                .resolve_wire_id(group_id)
+                .await
+                .map_err(|error| match error {
+                    crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
+                    other => DaemonError::Mls(other),
+                })?;
+            let prepared = processor
+                .prepare(&bot.signer, source, metadata, None)
+                .await?;
+            let event_id = cm
+                .nostr_client
+                .send_group_message(
+                    mls_engine,
+                    &bot.signer,
+                    mls_group_id,
+                    prepared.rumor.clone(),
+                )
+                .await?;
+            processor.complete(&prepared);
+            Ok::<EventId, DaemonError>(event_id)
+        }
+        .await;
+        match result {
+            Ok(event_id) => Ok(Some(Value::String(event_id.to_hex()))),
+            Err(error) => {
+                self.diagnostics.record_attachment_send_failed().await;
+                if matches!(error, DaemonError::BlobUploadFailed { .. }) {
+                    self.diagnostics.record_blob_upload_failed().await;
+                }
+                Err(error)
+            }
+        }
+    }
+
     async fn handle_publish_key_package(
         &self,
         handler_id: Option<&str>,
@@ -2332,6 +2500,31 @@ impl Dispatch {
         if let Some(handler) = cm.handler_registry.get_handler_mut(handler_id) {
             handler.disconnect();
         }
+    }
+}
+
+fn invalid_params(message: &'static str) -> DaemonError {
+    DaemonError::JsonRpc(JsonRpcError::new(-32602, message))
+}
+
+fn attachment_metadata(params: &Value) -> AttachmentMetadata {
+    AttachmentMetadata {
+        filename: params
+            .get("filename")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        blurhash: params
+            .get("blurhash")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        dim: params
+            .get("dim")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        reply_to: params
+            .get("reply_to")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 

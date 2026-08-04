@@ -1,6 +1,7 @@
 use clap::Parser;
 use fs2::FileExt;
 use pacto_bot_api::attachment::inbound::InboundAttachmentProcessor;
+use pacto_bot_api::attachment::outbound::OutboundAttachmentProcessor;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::DaemonConfig;
 use pacto_bot_api::db::Db;
@@ -320,6 +321,11 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         config.daemon.attachment_max_bytes,
         Duration::from_secs(config.daemon.spool_outbound_retention_secs),
     ));
+    let outbound_attachment_processor = Arc::new(OutboundAttachmentProcessor::new(
+        Arc::clone(&spool),
+        config.daemon.attachment_max_bytes,
+        config.daemon.blob_servers.clone(),
+    ));
     let nostr_client = NostrClient::new(unique_relays)
         .await
         .map_err(|e| format!("failed to initialize nostr client: {e}"))?
@@ -364,7 +370,8 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
         Arc::new(RwLock::new(client_manager)),
         db,
         diagnostics.clone(),
-    );
+    )
+    .with_outbound_attachments(outbound_attachment_processor);
     dispatch.set_handler_stale_timeout(Duration::from_secs(
         config.daemon.handler_stale_timeout_secs,
     ));

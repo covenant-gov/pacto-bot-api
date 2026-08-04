@@ -58,9 +58,13 @@
               "additionalProperties": { "type": "string" },
               "default": {},
               "description": "Map from daemon-local bot_id to the bot's Nostr public key (npub)."
+            },
+            "spool_dir": {
+              "type": "string",
+              "description": "Absolute outbound spool directory where handlers may stage attachment payloads."
             }
           },
-          "required": ["handler_id", "reconnect_token", "registered_events"]
+          "required": ["handler_id", "reconnect_token", "registered_events", "spool_dir"]
         }
       }
     },
@@ -199,6 +203,33 @@
       }
     },
     {
+      "name": "agent.send_attachment",
+      "summary": "Encrypt, upload, and send a direct-message attachment as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": { "type": "string", "description": "Bot identity that will send the attachment." },
+              "recipient": { "type": "string", "description": "Nostr public key (npub or hex) of the recipient." },
+              "spool_path": { "type": "string", "description": "Path confined to the outbound attachment spool." },
+              "inline_base64": { "type": "string", "description": "Standard-base64 payload below the inline threshold." },
+              "filename": { "type": "string", "description": "Optional sender filename metadata." },
+              "blurhash": { "type": "string", "description": "Optional image blurhash metadata." },
+              "dim": { "type": "string", "description": "Optional image dimensions in WIDTHxHEIGHT form." },
+              "reply_to": { "type": "string", "description": "Optional hex rumor id this attachment replies to." }
+            },
+            "required": ["bot_id", "recipient"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": { "type": "string", "description": "Hex id of the published gift-wrap event." }
+      }
+    },
+    {
       "name": "agent.set_profile",
       "summary": "Update the bot's Nostr kind:0 profile.",
       "params": [
@@ -313,7 +344,7 @@
               },
               "type": {
                 "type": "string",
-                "enum": ["dm_received", "mls_welcome_received", "mls_group_message_received", "reaction_received", "attachment_received"],
+                "enum": ["dm_received", "mls_welcome_received", "mls_group_message_received", "reaction_received", "attachment_received", "mls_group_reaction_received", "mls_group_attachment_received"],
                 "description": "Event type."
               },
               "chat_id": {
@@ -693,6 +724,33 @@
               "emoji": { "type": "string", "description": "Exactly one Unicode grapheme cluster." }
             },
             "required": ["bot_id", "group_id", "target_rumor_id", "emoji"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": { "type": "string", "description": "Hex id of the published kind:445 MLS group message event." }
+      }
+    },
+    {
+      "name": "agent.send_group_attachment",
+      "summary": "Encrypt, upload, and send an MLS group attachment as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": { "type": "string", "description": "Bot identity that will send the attachment." },
+              "group_id": { "type": "string", "description": "Hex-encoded MLS group ID." },
+              "spool_path": { "type": "string", "description": "Path confined to the outbound attachment spool." },
+              "inline_base64": { "type": "string", "description": "Standard-base64 payload below the inline threshold." },
+              "filename": { "type": "string", "description": "Optional sender filename metadata." },
+              "blurhash": { "type": "string", "description": "Optional image blurhash metadata." },
+              "dim": { "type": "string", "description": "Optional image dimensions in WIDTHxHEIGHT form." },
+              "reply_to": { "type": "string", "description": "Optional hex rumor id this attachment replies to." }
+            },
+            "required": ["bot_id", "group_id"]
           }
         }
       ],

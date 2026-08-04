@@ -10,6 +10,8 @@ pub enum EventType {
     MlsGroupMessageReceived,
     ReactionReceived,
     AttachmentReceived,
+    MlsGroupReactionReceived,
+    MlsGroupAttachmentReceived,
 }
 
 impl EventType {
@@ -21,6 +23,8 @@ impl EventType {
             EventType::MlsGroupMessageReceived => "mls_group_message_received",
             EventType::ReactionReceived => "reaction_received",
             EventType::AttachmentReceived => "attachment_received",
+            EventType::MlsGroupReactionReceived => "mls_group_reaction_received",
+            EventType::MlsGroupAttachmentReceived => "mls_group_attachment_received",
         }
     }
 }

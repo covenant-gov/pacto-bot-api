@@ -10,8 +10,12 @@ use support::mock_relay::MockRelay;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+
 use futures::StreamExt;
 use nostr::{Keys, ToBech32};
+use pacto_bot_api::attachment::crypto::{AttachmentKey, encrypt, sha256_hex};
+use pacto_bot_api::attachment::inbound::{BlobFetcher, InboundAttachmentProcessor};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
 use pacto_bot_api::db::Db;
@@ -22,10 +26,30 @@ use pacto_bot_api::handlers::ConnectionHandle;
 use pacto_bot_api::mls::MlsEngineHandle;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::signer::Signer;
+use pacto_bot_api::spool::Spool;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use secrecy::SecretString;
 use tokio::sync::{RwLock, mpsc};
 use tokio::time::{Instant, timeout};
+
+#[derive(Debug)]
+struct StaticBlobFetcher(Vec<u8>);
+
+#[async_trait]
+impl BlobFetcher for StaticBlobFetcher {
+    async fn fetch(
+        &self,
+        _url: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, pacto_bot_api::errors::DaemonError> {
+        if self.0.len() as u64 > max_bytes {
+            return Err(pacto_bot_api::errors::DaemonError::AttachmentTooLarge {
+                limit: max_bytes,
+            });
+        }
+        Ok(self.0.clone())
+    }
+}
 
 fn bot_config(id: &str, keys: &Keys, capabilities: &[&str]) -> BotConfig {
     BotConfig {
@@ -57,6 +81,40 @@ async fn setup_mls_dispatch(
     ),
     Box<dyn std::error::Error>,
 > {
+    setup_mls_dispatch_inner(capabilities, None).await
+}
+
+async fn setup_mls_dispatch_with_attachment(
+    capabilities: &[&str],
+    body: Vec<u8>,
+) -> Result<
+    (
+        Keys,
+        Arc<Dispatch>,
+        Arc<RwLock<ClientManager>>,
+        NostrClient,
+        MockRelay,
+        tempfile::TempDir,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    setup_mls_dispatch_inner(capabilities, Some(body)).await
+}
+
+async fn setup_mls_dispatch_inner(
+    capabilities: &[&str],
+    attachment_body: Option<Vec<u8>>,
+) -> Result<
+    (
+        Keys,
+        Arc<Dispatch>,
+        Arc<RwLock<ClientManager>>,
+        NostrClient,
+        MockRelay,
+        tempfile::TempDir,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let keys = Keys::generate();
     let bot = bot_config("mls-bot", &keys, capabilities);
     let config = DaemonConfig {
@@ -65,7 +123,17 @@ async fn setup_mls_dispatch(
     };
     let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;
-    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let mut nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    if let Some(body) = attachment_body {
+        let spool = Arc::new(Spool::open(dir.path())?);
+        let processor = InboundAttachmentProcessor::with_fetcher(
+            spool,
+            10_485_760,
+            Duration::from_secs(86_400),
+            Arc::new(StaticBlobFetcher(body)),
+        );
+        nostr_client = nostr_client.with_attachment_processor(Arc::new(processor));
+    }
     let db = Db::open(dir.path().join("test.db").as_path()).await?;
     let cm = Arc::new(RwLock::new(
         ClientManager::new(dir.path(), config, nostr_client, &db).await?,
@@ -389,6 +457,133 @@ async fn authorized_handler_receives_group_message() -> Result<(), Box<dyn std::
     assert_eq!(event.event_type, EventType::MlsGroupMessageReceived);
     assert_eq!(event.content, "!snapshot");
     assert_eq!(event.chat_id, expected_group_id);
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn group_reaction_delivers_only_to_group_reaction_subscribers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut reaction_rx) = register_handler(
+        &dispatch,
+        &["mls_group_reaction_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+    let (_, mut text_rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let target = nostr::EventId::from_hex(
+        "0000000000000000000000000000000000000000000000000000000000000003",
+    )?;
+    let rumor = nostr::UnsignedEvent::new(
+        peer.public_key(),
+        nostr::Timestamp::now(),
+        nostr::Kind::Reaction,
+        [nostr::Tag::event(target)],
+        "👩‍💻",
+    );
+    relay
+        .inject_event(peer.create_group_rumor(rumor).await)
+        .await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+    let message = next_message(&mut reaction_rx)
+        .await
+        .ok_or("no group reaction agent.event")?;
+    let event = parse_agent_event(&message).ok_or("not an agent.event")?;
+    assert_eq!(event.event_type, EventType::MlsGroupReactionReceived);
+    let reaction = event.reaction.ok_or("missing reaction payload")?;
+    assert_eq!(reaction.target_rumor_id, target.to_hex());
+    assert_eq!(reaction.emoji, "👩‍💻");
+    assert!(
+        timeout(Duration::from_secs(1), text_rx.recv())
+            .await
+            .is_err()
+    );
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn group_attachment_delivers_verified_spool_payload() -> Result<(), Box<dyn std::error::Error>>
+{
+    let plaintext = b"group attachment payload";
+    let key = AttachmentKey::generate()?;
+    let ciphertext = encrypt(&key, plaintext)?;
+    let (keys, dispatch, cm, client, relay, _dir) = setup_mls_dispatch_with_attachment(
+        &["ReceiveGroupMessages", "SendGroupMessages"],
+        ciphertext.clone(),
+    )
+    .await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut attachment_rx) = register_handler(
+        &dispatch,
+        &["mls_group_attachment_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+    let (_, mut text_rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let custom_tag = |name: &str, value: String| {
+        nostr::Tag::parse([name.to_string(), value]).expect("valid custom tag")
+    };
+    let rumor = nostr::UnsignedEvent::new(
+        peer.public_key(),
+        nostr::Timestamp::now(),
+        nostr::Kind::Custom(15),
+        [
+            custom_tag("file-type", "text/plain".to_string()),
+            custom_tag("size", ciphertext.len().to_string()),
+            custom_tag("x", sha256_hex(&ciphertext)),
+            custom_tag("ox", sha256_hex(plaintext)),
+            custom_tag("decryption-key", key.key_hex()),
+            custom_tag("decryption-nonce", key.nonce_hex()),
+            custom_tag("encryption-algorithm", "aes-gcm".to_string()),
+            custom_tag("filename", "message.txt".to_string()),
+        ],
+        "https://cdn.example/group-attachment",
+    );
+    relay
+        .inject_event(peer.create_group_rumor(rumor).await)
+        .await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+    let message = next_message(&mut attachment_rx)
+        .await
+        .ok_or("no group attachment agent.event")?;
+    let event = parse_agent_event(&message).ok_or("not an agent.event")?;
+    assert_eq!(event.event_type, EventType::MlsGroupAttachmentReceived);
+    let attachment = event.attachment.ok_or("missing attachment payload")?;
+    assert_eq!(attachment.mime_type, "text/plain");
+    assert_eq!(attachment.size, plaintext.len() as u64);
+    assert_eq!(attachment.filename.as_deref(), Some("message.txt"));
+    assert_eq!(std::fs::read(&attachment.path)?, plaintext);
+    assert!(
+        timeout(Duration::from_secs(1), text_rx.recv())
+            .await
+            .is_err()
+    );
 
     consumer.abort();
     let _ = consumer.await;
