@@ -34,7 +34,7 @@ You can customize the installation with environment variables:
 curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | INSTALL_PREFIX=~/.local bash
 
 # Install a specific version instead of latest
-curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.9.0 bash
+curl -sSL https://raw.githubusercontent.com/covenant-gov/pacto-bot-api/main/scripts/install.sh | PACTO_VERSION=0.10.0 bash
 ```
 
 #### Build from source
@@ -73,6 +73,20 @@ chmod 0o600 pacto-bot-api.toml
 ```
 
 Paste the snippet from `pacto-bot-admin new` into `pacto-bot-api.toml`, set the `nsec` via the `PACTO_BOT_NSEC` environment variable, and adjust `relays` as needed.
+
+Attachment settings are optional, so an unmodified 0.8.0 config remains valid. The defaults are equivalent to:
+
+```toml
+[daemon]
+attachment_max_bytes = 10485760            # 10 MiB, inbound and outbound
+spool_outbound_retention_secs = 86400      # failed/abandoned outbound files
+blob_servers = ["https://nostr.download"] # ordered Blossom upload failover
+```
+
+Verified inbound plaintext remains in `$DATA_DIR/spool/inbound` for one hour.
+Handlers stage larger outbound files under the `spool_dir` returned by
+`handler.register` or `handler.reconnect`; successful sends remove the staged
+file, while abandoned entries are swept after the configured retention period.
 
 ### 4. Run the daemon
 
@@ -159,8 +173,14 @@ speak JSON-RPC 2.0 themselves. The canonical API contract lives in
 {"jsonrpc":"2.0","id":1,"method":"handler.register","params":{"bot_ids":["echo-bot"],"event_types":["dm_received"],"capabilities":["ReadMessages","SendMessages"]}}
 ```
 
-Incoming DMs arrive as `agent.event` notifications; handlers reply with
-`agent.send_dm` or `handler.response`.
+Incoming content arrives as typed `agent.event` notifications. Subscribe to
+`reaction_received`, `attachment_received`, `mls_group_reaction_received`, or
+`mls_group_attachment_received` separately from text messages. Send operations
+are `agent.send_reaction`, `agent.send_group_reaction`, `agent.send_attachment`,
+and `agent.send_group_attachment`; each requires its matching capability.
+Attachment send requests provide exactly one of a confined `spool_path` or
+small standard-base64 `inline_base64` payload. The daemon owns MIME sniffing,
+hashing, encryption, Blossom upload, and Nostr publication.
 
 Reference material:
 
@@ -173,6 +193,25 @@ Reference material:
   using the generated SDK.
 - [`tests/example_http_handler.rs`](tests/example_http_handler.rs) and
   [`tests/example_multi_bot.rs`](tests/example_multi_bot.rs) — Rust example tests.
+
+## pacto-app interoperability check
+
+Live interoperability is a release check because this repository does not bundle the
+`pacto-app` GUI or a production Blossom host. Before publishing 0.10.0, run the daemon
+and an unmodified current `pacto-app` against the same relay and project-operated blob
+host, then verify both DM and Squad surfaces:
+
+1. Have the bot send a reaction and an inline or spool-backed file; confirm the app
+   attaches the reaction to the targeted message and downloads/decrypts the file.
+2. From the app, react to a bot message and send a photo; confirm the handler receives
+   the corresponding typed reaction/attachment event, the target id and emoji are
+   correct, and the attachment path is readable with the expected plaintext hash.
+3. Repeat in an MLS Squad, then confirm a handler subscribed only to text receives none
+   of the reaction/attachment events.
+
+Record the app commit, blob host, relay, event ids, and observed hashes in the release
+run. Automated mock-relay/blob tests cover the same wire tags and crypto parameters,
+but they do not replace this UI/runtime check.
 
 ## Debugging and observability
 
@@ -270,7 +309,10 @@ pacto-bot-api/
 - The `nsec` backend is a dev-only convenience. Production bots must use a NIP-46 bunker.
 - The Unix socket is created with `0o600`; any process running as the daemon user can connect.
 - The HTTP transport is disabled by default. When enabled, it requires `X-Pacto-Bot-Secret`.
-- Secrets (nsec, bunker URI, HTTP token) are never logged or returned in error responses.
+- Secrets (nsec, bunker URI, HTTP token, attachment key/nonce, and decrypted payload content) are never logged or returned in error responses.
+- `$DATA_DIR/spool` contains decrypted attachment plaintext. Keep it owner-only and exclude it from backups, cloud sync, indexing, and support bundles.
+- Attachment event subscriptions expose readable local plaintext paths and are elevated privilege. Register only handlers that need file access, even though receive subscriptions do not require a send capability.
+- Blob hosts see the bot's upload authorization npub, ciphertext size/hash, source IP, and timing, but cannot decrypt the payload from the upload alone.
 
 ## Status
 
@@ -279,6 +321,7 @@ Phase 1 of the daemon is implemented and passes its in-process test suite:
 - Multi-bot static config loaded from `pacto-bot-api.toml`.
 - Full daemon event loop with Unix-socket and optional localhost HTTP transports.
 - NIP-17/44/59 DM send/receive over a shared `nostr-sdk` relay pool.
+- Typed Nostr kind:7 reactions and encrypted kind:15 attachments on DM and MLS Squad surfaces.
 - Three signing backends: dev-only `nsec`, local NIP-46 bunker, and remote NIP-46 bunker.
 - Handler registration, capability enforcement, fan-out dispatch, and per-handler/per-bot rate limits.
 - SQLite persistence with WAL mode, cursor recovery, and `export`/`import` via `pacto-bot-admin`.

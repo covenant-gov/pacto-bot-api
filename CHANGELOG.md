@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Install a `rustls` crypto provider (`ring`) at process startup in `pacto-bot-api` and `pacto-bot-admin`. Without it, the first `wss://` (TLS) relay connection panicked the whole process with "Could not automatically determine the process-level CryptoProvider from Rustls crate features" — the daemon and admin CLI could only ever reach `ws://` relays. Both binaries now connect to `wss://` relays (e.g. `wss://jskitty.cat/nostr`) without crashing.
 
+## [0.10.0] - 2026-08-04
+
+### Added
+
+- Typed reaction events (`reaction_received` and `mls_group_reaction_received`) and authorized DM/Squad send methods for Nostr kind:7 reactions.
+- Verified attachment events (`attachment_received` and `mls_group_attachment_received`) plus encrypted kind:15 sends from inline base64 or the confined outbound spool.
+- Python SDK decorators and send helpers for reactions and attachments; registration now reports `spool_dir` for staging large outbound files.
+
+### Changed
+
+- Rumor kind now controls event taxonomy on both DM and MLS surfaces. Handlers subscribed only to `dm_received` or `mls_group_message_received` no longer receive reactions, attachments, or other rumor kinds as text.
+- Unrepresented rumor kinds are skipped after cursor advancement instead of being delivered as misleading text. This replaces the previous deliver-everything-as-text behavior.
+
+### Security
+
+- Attachment plaintext is capped, hash-verified, written to owner-only inbound spool files, and never named from sender metadata. Outbound paths are canonicalized and confined before reading.
+- Attachment keys, nonces, and plaintext are excluded from logs, diagnostics, shutdown reports, and JSON-RPC errors. Operators must exclude `$DATA_DIR/spool` from backups and file-sync tools because it contains decrypted plaintext.
+
 ## [0.9.0] - 2026-07-22
 
 ### Added
@@ -296,7 +314,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config file permissions enforced (`0o600` or stricter) on daemon startup.
 - Daemon-wide exclusive lock on `$DATA_DIR/daemon.lock` to prevent concurrent instances.
 
-[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/covenant-gov/pacto-bot-api/compare/v0.7.0...v0.8.0

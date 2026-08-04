@@ -9,20 +9,26 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use assert_cmd::cargo::CommandCargoExt;
+use pacto_bot_api::attachment::crypto::{AttachmentKey, decrypt, encrypt};
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::signer::{BunkerConnection, BunkerKind, LocalKey};
 use pacto_bot_api::transport::http::HttpTransport;
 use pacto_bot_api::transport::message_handler;
 use pacto_bot_api::transport::protocol::{JsonRpcMessage, serialize_message};
+#[cfg(unix)]
+use pacto_bot_api::transport::unix::UnixTransport;
 use support::secret_scan::{
     SensitiveFixture, assert_no_leak, assert_no_leak_bytes, capture_logs_during, strings_output,
     write_config_file,
 };
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+use tokio::sync::{mpsc, oneshot};
 
 /// Path to a release build of `pacto-bot-api`, built on first use into a
 /// separate target directory to avoid locking the default `target` tree while
@@ -171,6 +177,9 @@ async fn json_rpc_error_response_does_not_contain_secret_markers()
         "nsec": fixture.nsec_marker,
         "bunker_uri": fixture.bunker_uri_marker,
         "http_token": fixture.http_token_marker,
+        "decryption-key": fixture.attachment_key_marker,
+        "decryption-nonce": fixture.attachment_nonce_marker,
+        "plaintext": fixture.attachment_plaintext_marker,
     });
     let body = serialize_message(&JsonRpcMessage::request(
         7.into(),
@@ -190,6 +199,93 @@ async fn json_rpc_error_response_does_not_contain_secret_markers()
     assert_no_leak(&response, &fixture);
 
     let _ = shutdown_tx.send(());
+    Ok(())
+}
+
+#[tokio::test]
+async fn attachment_secrets_are_absent_from_logs_diagnostics_report_and_rpc_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = SensitiveFixture::new();
+    let key = AttachmentKey::from_hex(
+        &fixture.attachment_key_marker,
+        &fixture.attachment_nonce_marker,
+    )?;
+    let mut ciphertext = encrypt(&key, fixture.attachment_plaintext_marker.as_bytes())?;
+    let last = ciphertext.last_mut().ok_or("missing authentication tag")?;
+    *last ^= 1;
+
+    let (error, logs) = capture_logs_during(|| {
+        let error = decrypt(&key, &ciphertext).expect_err("tampered ciphertext must fail");
+        tracing::warn!(error = %error, "rejecting invalid inbound attachment");
+        error
+    });
+    assert_no_leak(error.to_string(), &fixture);
+    assert_no_leak(&logs, &fixture);
+
+    let diagnostics = Diagnostics::new();
+    diagnostics
+        .record_error(Some("attachment_invalid"), &error.to_string(), None)
+        .await;
+    let snapshot = serde_json::to_string(&diagnostics.snapshot().await)?;
+    assert_no_leak(&snapshot, &fixture);
+
+    let report_dir = TempDir::new()?;
+    diagnostics.flush_report(report_dir.path()).await?;
+    let report = tokio::fs::read_to_string(report_dir.path().join("reports/latest.json")).await?;
+    assert_no_leak(&report, &fixture);
+
+    let rpc = serialize_message(&JsonRpcMessage::error(7.into(), error.into()))?;
+    assert_no_leak(&rpc, &fixture);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_json_rpc_error_does_not_echo_attachment_secret_markers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = SensitiveFixture::new();
+    let dir = TempDir::new()?;
+    let socket_path = dir.path().join("redaction.sock");
+    let error_handler = message_handler(|_, _connection, _handler_id| async move {
+        Err::<Option<JsonRpcMessage>, DaemonError>(DaemonError::MethodNotFound)
+    });
+    let (disconnect_tx, _disconnect_rx) = mpsc::channel(1);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let transport = UnixTransport::new(&socket_path);
+    let handle = tokio::spawn(async move {
+        transport
+            .run(error_handler, disconnect_tx, shutdown_rx)
+            .await
+    });
+
+    for _ in 0..100 {
+        if socket_path.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let stream = UnixStream::connect(&socket_path).await?;
+    let mut stream = BufReader::new(stream);
+    let request = JsonRpcMessage::request(
+        8.into(),
+        "agent.metrics",
+        Some(serde_json::json!({
+            "decryption-key": fixture.attachment_key_marker,
+            "decryption-nonce": fixture.attachment_nonce_marker,
+            "plaintext": fixture.attachment_plaintext_marker,
+        })),
+    );
+    stream
+        .write_all(serialize_message(&request)?.as_bytes())
+        .await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+    let mut response = String::new();
+    stream.read_line(&mut response).await?;
+    assert_no_leak(&response, &fixture);
+
+    let _ = shutdown_tx.send(());
+    handle.await??;
     Ok(())
 }
 
@@ -332,7 +428,6 @@ use std::sync::Arc;
 use nostr::{Keys, Timestamp, ToBech32};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::db::Db;
-use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::nostr::NostrClient;
 use secrecy::{ExposeSecret, SecretString};

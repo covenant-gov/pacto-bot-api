@@ -222,6 +222,10 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("The daemon reads bot identities from `pacto-bot-api.toml`. The file must be readable only by the owner (`0o600` or stricter).\n\n");
     out.push_str("Example config:\n\n");
     out.push_str("```toml\n");
+    out.push_str("[daemon]\n");
+    out.push_str("attachment_max_bytes = 10485760\n");
+    out.push_str("spool_outbound_retention_secs = 86400\n");
+    out.push_str("blob_servers = [\"https://nostr.download\"]\n\n");
     out.push_str("[[bots]]\n");
     out.push_str("id = \"echo-bot\"\n");
     out.push_str("npub = \"npub1...\"\n");
@@ -252,6 +256,8 @@ fn render_daemon_config(out: &mut String) {
     out.push_str("- `nsec` — dev-only local test key. Use `PACTO_BOT_NSEC` environment variable or the config file.\n");
     out.push_str("- `bunker_local` — NIP-46 bunker on the same machine.\n");
     out.push_str("- `bunker_remote` — production NIP-46 bunker reachable over `wss://`.\n\n");
+    out.push_str("Attachment settings are optional: old configs use a 10 MiB cap, a one-day abandoned outbound retention, and the default Blossom host. Inbound plaintext expires after one hour.\n");
+    out.push_str("`$DATA_DIR/spool` contains decrypted plaintext; exclude it from backups, file-sync tools, indexing, and support bundles.\n\n");
     out.push_str("Run the daemon with:\n\n");
     out.push_str("```bash\n");
     out.push_str("pacto-bot-api --config pacto-bot-api.toml\n");
@@ -269,6 +275,7 @@ fn render_handler_jsonrpc(out: &mut String) {
     out.push_str("```json\n");
     out.push_str(r#"{"jsonrpc":"2.0","id":1,"method":"handler.register","params":{"bot_ids":["echo-bot"],"event_types":["dm_received"],"capabilities":["ReadMessages","SendMessages"]}}"#);
     out.push_str("\n```\n\n");
+    out.push_str("The registration result includes `spool_dir`, the only directory where handlers may stage large outbound attachments.\n\n");
 
     out.push_str("### Receive an event\n\n");
     out.push_str("The daemon forwards decrypted DMs as `agent.event` notifications:\n\n");
@@ -302,13 +309,19 @@ fn render_handler_jsonrpc(out: &mut String) {
     out.push_str("\n```\n\n");
     out.push_str("All bots in the squad still receive the message (hybrid dispatch), but the Python SDK gates `@bot.command` and `@bot.hears` by default so they only fire when `is_mentioned` is `true`. Opt out with `require_mention=False` on the decorator or bot constructor. Legacy plaintext messages and envelopes with the wrong `kind` fall back to `content = full text` and empty mention metadata.\n\n");
     out.push_str("Outgoing `agent.send_group_message` (and the Python SDK's `bot.send_group_message`) accepts an optional `pacto_virtual_bucket` parameter. When provided, the daemon wraps the `content` in the mention envelope before MLS encryption, so the receiving bot can correlate the response via the same virtual bucket.\n\n");
+
+    out.push_str("### Reactions and attachments\n\n");
+    out.push_str("Handlers subscribe independently to `reaction_received`, `attachment_received`, `mls_group_reaction_received`, and `mls_group_attachment_received`; text-only subscriptions do not receive these events.\n");
+    out.push_str("Attachments carry a verified plaintext `path` and `expires_at`. Copy needed data before expiry and never treat sender `filename` metadata as a path.\n");
+    out.push_str("Send with `agent.send_reaction`, `agent.send_group_reaction`, `agent.send_attachment`, or `agent.send_group_attachment`. Attachment sends use exactly one of `spool_path` or small `inline_base64`; the daemon performs encryption and upload.\n");
+    out.push_str("Handlers must declare the matching `SendReactions`, `SendAttachments`, `SendGroupReactions`, or `SendGroupAttachments` capability. Attachment subscriptions expose readable plaintext paths and should be granted only to handlers that need them.\n\n");
 }
 
 fn render_when_to_use(out: &mut String) {
     out.push_str("## When to use which\n\n");
     out.push_str("- **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, checking status, running quick health checks (`doctor`), and tracing recent events (`trace-events`).\n");
     out.push_str("- **Daemon (`pacto-bot-api`)** — use as the long-lived runtime: it owns relay connections, decrypts DMs, enforces capabilities, and persists cursors. Start it once and leave it running.\n");
-    out.push_str("- **Handler JSON-RPC** — use when writing bot logic in any language: connect a handler to the daemon's Unix socket or HTTP transport, register for events, and respond with `agent.send_dm` or `agent.set_profile`.\n\n");
+    out.push_str("- **Handler JSON-RPC** — use when writing bot logic in any language: connect over Unix or localhost HTTP, register for typed text/reaction/attachment events, and call only methods allowed by the handler's capabilities.\n\n");
     out.push_str("Typical workflow:\n\n");
     out.push_str("1. Use `pacto-bot-admin new` to create a bot identity.\n");
     out.push_str("2. Add the generated config snippet to `pacto-bot-api.toml`.\n");

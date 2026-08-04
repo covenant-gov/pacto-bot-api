@@ -43,8 +43,8 @@ under the operator's control. It does that by:
 
 ### Secrets never leave the daemon in plain text
 
-- `nsec`, bunker URIs, and the HTTP secret token are never logged.
-- They are never included in error messages sent to handlers.
+- `nsec`, bunker URIs, the HTTP secret token, attachment decryption keys/nonces, and decrypted attachment bytes are never logged.
+- They are never included in diagnostics, shutdown reports, or error messages sent to handlers.
 - The HTTP token is stored in a file with owner-only permissions and compared
   using constant-time comparison.
 - See [Key and secret handling](./key-and-secret-security.md) for details.
@@ -63,9 +63,40 @@ The daemon checks these permissions on **every** mutating call:
   have the `SendMessages` capability.
 - `agent.set_profile` — the handler must be registered for the target `bot_id`
   and have the `ManageProfile` capability.
+- `agent.send_reaction` / `agent.send_group_reaction` — require `SendReactions`
+  or `SendGroupReactions` respectively.
+- `agent.send_attachment` / `agent.send_group_attachment` — require
+  `SendAttachments` or `SendGroupAttachments`; supplied paths are confined to
+  the daemon's outbound spool before any read.
 - `agent.error` — treated as a mutating operation and authorized the same way.
 
 A handler registered only for bot A cannot send messages as bot B.
+
+
+### Attachment plaintext and blob-host visibility
+
+The daemon downloads attachment ciphertext, decrypts it, verifies its plaintext
+hash, and creates the inbound spool file with owner-only permissions. The file
+lives under `$DATA_DIR/spool/inbound` until its one-hour expiry. Outbound files
+staged under `$DATA_DIR/spool/outbound` are removed after a successful send or
+swept after `spool_outbound_retention_secs` when abandoned.
+
+`$DATA_DIR/spool` therefore contains decrypted plaintext. Exclude it from
+backups, cloud/file synchronization, desktop search, antivirus sample upload,
+and diagnostic support bundles. Run handlers under the same trusted OS account
+only when they need this access.
+
+Receiving attachments intentionally uses the existing event-type subscription
+rather than a capability. That keeps old bot configs compatible, but an
+`attachment_received` or `mls_group_attachment_received` subscription is still
+elevated privilege because the event exposes a readable local path. Operators
+should register the narrowest possible event list.
+
+A Blossom upload host sees the bot npub in the signed authorization event, the
+ciphertext size and hash, the source IP, and request timing. It does not receive
+the attachment decryption key or nonce and cannot decrypt the content from the
+upload alone. Use a project-operated host; public hosts may reject encrypted
+bytes because their media sniffers cannot identify the ciphertext.
 
 ### Bunker identities are verified
 

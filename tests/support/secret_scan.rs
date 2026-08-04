@@ -27,6 +27,12 @@ pub struct SensitiveFixture {
     pub bunker_uri_marker: String,
     /// Synthetic HTTP secret token.
     pub http_token_marker: String,
+    /// Synthetic 32-byte attachment key encoded as 64 hex characters.
+    pub attachment_key_marker: String,
+    /// Synthetic 16-byte attachment nonce encoded as 32 hex characters.
+    pub attachment_nonce_marker: String,
+    /// Synthetic decrypted attachment plaintext marker.
+    pub attachment_plaintext_marker: String,
 }
 
 impl SensitiveFixture {
@@ -54,12 +60,20 @@ impl SensitiveFixture {
 
         let token_uuid = Uuid::new_v4().as_simple().to_string();
         let http_token_marker = String::from("pacto-test-token-") + &token_uuid;
+        let attachment_key_marker =
+            Uuid::new_v4().as_simple().to_string() + &Uuid::new_v4().as_simple().to_string();
+        let attachment_nonce_marker = Uuid::new_v4().as_simple().to_string();
+        let attachment_plaintext_marker =
+            String::from("pacto-attachment-plaintext-") + &Uuid::new_v4().as_simple().to_string();
 
         Self {
             nsec_marker,
             nsec_marker_bytes,
             bunker_uri_marker,
             http_token_marker,
+            attachment_key_marker,
+            attachment_nonce_marker,
+            attachment_plaintext_marker,
         }
     }
 }
@@ -85,6 +99,15 @@ pub fn assert_no_leak(haystack: impl AsRef<str>, fixture: &SensitiveFixture) {
     if hay.contains(&fixture.http_token_marker) {
         leaked.push("http_token");
     }
+    if hay.contains(&fixture.attachment_key_marker) {
+        leaked.push("attachment_key");
+    }
+    if hay.contains(&fixture.attachment_nonce_marker) {
+        leaked.push("attachment_nonce");
+    }
+    if hay.contains(&fixture.attachment_plaintext_marker) {
+        leaked.push("attachment_plaintext");
+    }
     assert!(
         leaked.is_empty(),
         "secret markers leaked in haystack: {leaked:?}"
@@ -105,6 +128,15 @@ pub fn assert_no_leak_bytes(haystack: &[u8], fixture: &SensitiveFixture) {
     }
     if contains_subsequence(haystack, fixture.http_token_marker.as_bytes()) {
         leaked.push("http_token");
+    }
+    if contains_subsequence(haystack, fixture.attachment_key_marker.as_bytes()) {
+        leaked.push("attachment_key");
+    }
+    if contains_subsequence(haystack, fixture.attachment_nonce_marker.as_bytes()) {
+        leaked.push("attachment_nonce");
+    }
+    if contains_subsequence(haystack, fixture.attachment_plaintext_marker.as_bytes()) {
+        leaked.push("attachment_plaintext");
     }
     assert!(
         leaked.is_empty(),
