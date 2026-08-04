@@ -36,6 +36,24 @@ fn render_cli_reference(out: &mut String) {
     out.push_str("- `--data-dir <DIR>` — directory for runtime data (database, socket, token).\n");
     out.push_str("- `--llm-help` — print this operator's guide and exit.\n\n");
 
+    let new_capabilities_list = crate::config::VALID_CAPABILITIES
+        .iter()
+        .map(|c| format!("`{c}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let new_notes = format!(
+        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n\
+         - `--relays` — relay URLs for the bot.\n\
+         - `--capabilities` — {new_capabilities_list}.\n\
+         - `--uri` — bunker URI (required for bunker backends; omit to prompt).\n\
+         - `--scaffold` — also generate a handler project for the new identity (non-interactive).\n\
+         - `--language` — handler language (default: `python`).\n\
+         - `--commands` — slash-command stubs to generate.\n\
+         - `--no-tests` — skip pytest files when using `--scaffold`.\n\
+         - In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.\n\
+         - The wizard also asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode."
+    );
+
     render_command(
         out,
         "new",
@@ -50,7 +68,7 @@ pacto-bot-admin new echo-bot --backend bunker_remote --uri bunker://<PUBKEY>?rel
 
 # Create a bot and scaffold a Python handler project in one command
 pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7000 --commands echo"#,
-        "- `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.\n- `--relays` — relay URLs for the bot.\n- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.\n- `--uri` — bunker URI (required for bunker backends; omit to prompt).\n- `--scaffold` — also generate a handler project for the new identity (non-interactive).\n- `--language` — handler language (default: `python`).\n- `--commands` — slash-command stubs to generate.\n- `--no-tests` — skip pytest files when using `--scaffold`.\n- In interactive mode, the wizard asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode.",
+        &new_notes,
     );
 
     render_command(

@@ -8,6 +8,7 @@ use pacto_bot_api::diagnostics::{DaemonStatus, Diagnostics};
 use pacto_bot_api::dispatch::Dispatch;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::signer::Signer;
+use pacto_bot_api::spool::Spool;
 use pacto_bot_api::transport::TransportLayer;
 use pacto_bot_api::transport::http;
 use std::collections::HashSet;
@@ -168,6 +169,7 @@ struct StartupContext {
     #[allow(dead_code)]
     lock_file: File,
     db: Db,
+    spool: Arc<Spool>,
 }
 
 impl std::fmt::Debug for StartupContext {
@@ -176,6 +178,7 @@ impl std::fmt::Debug for StartupContext {
             .field("config", &self.config)
             .field("data_dir", &self.data_dir)
             .field("lock_file", &self.lock_file)
+            .field("spool", &self.spool)
             .finish_non_exhaustive()
     }
 }
@@ -221,6 +224,22 @@ async fn daemon_startup(cli: &Cli) -> Result<StartupContext, String> {
         }
     }
 
+    // Provision the spool directories (KTD4) and clear anything an unclean
+    // shutdown left behind before the daemon accepts attachment traffic. A
+    // daemon that cannot spool must not start, since it would otherwise
+    // accept attachment traffic it silently cannot deliver.
+    let spool_data_dir = data_dir.clone();
+    let spool = tokio::task::spawn_blocking(move || -> Result<Arc<Spool>, String> {
+        let spool = Spool::open(&spool_data_dir)
+            .map_err(|e| format!("failed to open spool directory: {e}"))?;
+        spool
+            .sweep_inbound_now()
+            .map_err(|e| format!("failed to sweep inbound spool at startup: {e}"))?;
+        Ok(Arc::new(spool))
+    })
+    .await
+    .map_err(|e| format!("spool startup task failed: {e}"))??;
+
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
     let lock_file = acquire_lock_file(&lock_path)
         .await
@@ -252,6 +271,7 @@ async fn daemon_startup(cli: &Cli) -> Result<StartupContext, String> {
         data_dir,
         lock_file,
         db,
+        spool,
     })
 }
 
@@ -261,6 +281,7 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     let data_dir = startup.data_dir;
     let db = startup.db;
     let lock_file = startup.lock_file;
+    let spool = startup.spool;
     let lock_path = Path::new(&data_dir).join(DAEMON_LOCK_FILE);
 
     // Best-effort dev-env service-version probe; mismatches are logged as
@@ -466,6 +487,16 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
 
         nostr_client.shutdown().await;
 
+        // Final inbound sweep (KTD15): bound how long decrypted
+        // counterparty plaintext sits on disk between a clean shutdown and
+        // the next start.
+        let spool_for_shutdown = Arc::clone(&spool);
+        match tokio::task::spawn_blocking(move || spool_for_shutdown.sweep_inbound_now()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = %e, "failed to sweep inbound spool during shutdown"),
+            Err(e) => warn!(error = %e, "spool shutdown sweep task failed"),
+        }
+
         // Release the daemon lock before declaring stopped and clean up the
         // lock file so the admin CLI does not see a stale PID.
         drop(lock_file);
@@ -559,6 +590,27 @@ mod tests {
     use tempfile::TempDir;
     use tokio::time::timeout;
 
+    /// Create a temp dir under a user-owned root (`~/.pacto-test`) rather than
+    /// the system temp directory, matching the convention `tests/common::tempdir`
+    /// establishes. The daemon rejects a spool resolving under `/tmp` or
+    /// `/dev/shm`, and on Linux the system temp directory is exactly that.
+    fn project_tempdir() -> std::io::Result<TempDir> {
+        let root = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+            .join(".pacto-test");
+        std::fs::create_dir_all(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&root)?.permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&root, permissions)?;
+        }
+        tempfile::tempdir_in(root)
+    }
+
     fn write_test_config(dir: &std::path::Path) -> std::io::Result<PathBuf> {
         let path = dir.join("pacto-bot-api.toml");
         std::fs::write(&path, "[daemon]\n")?;
@@ -578,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_succeeds_with_valid_config() {
-        let dir = TempDir::new().unwrap();
+        let dir = project_tempdir().unwrap();
         let config_path = write_test_config(dir.path()).unwrap();
         let data_dir = dir.path().join("data");
         let cli = Cli {
@@ -601,7 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_exits_when_lock_already_held() {
-        let dir = TempDir::new().unwrap();
+        let dir = project_tempdir().unwrap();
         let config_path = write_test_config(dir.path()).unwrap();
         let data_dir = dir.path().join("data");
 

@@ -61,7 +61,11 @@ Development-only backend that reads the raw private key from the `PACTO_BOT_NSEC
 
 ### Gift wrap (kind:1059)
 
-Encrypted Nostr event envelope used for sealed DMs. The daemon receives gift wraps, decrypts them, and forwards the inner event to matching handlers as a `dm_received` event.
+Encrypted Nostr event envelope used for sealed DMs. The daemon receives gift wraps, decrypts them, and forwards the inner rumor to matching handlers. The rumor's kind selects the delivered event type — 14 becomes `dm_received`, 443 becomes `mls_welcome_received`, 7 becomes `reaction_received` — and a kind the daemon does not represent is logged and skipped rather than delivered as text.
+
+### Rumor
+
+The decrypted inner Nostr event recovered from a gift wrap or an MLS group message. Its `kind` is what identifies the content type — 14 for text, 15 for an encrypted file reference, 7 for a reaction, 30078 for application data such as typing. The rumor is signed by the original author, so `rumor_id` and the author key both come from it rather than from the enclosing envelope.
 
 ## Capabilities
 
@@ -85,6 +89,14 @@ Cursor advancement waits for terminal handler responses so events are not lost a
 ### Reports
 
 Periodic JSON dumps of runtime metrics and diagnostics to `$DATA_DIR/reports/latest.json`. Used by `pacto-bot-admin diagnose` and `status`. Reports must be created with owner-only permissions; see `docs/solutions/best-practices/secure-file-creation.md`.
+
+### Attachment spool
+
+Filesystem handoff for encrypted file attachments, rooted at `$DATA_DIR/spool` with `0o700` permissions. Split into `inbound/` (decrypted payloads the daemon fetched and verified, delivered to handlers by path) and `outbound/` (payloads a handler staged for the daemon to encrypt and upload). Entries expire on an amortized sweep: one hour inbound, longer outbound. Holds plaintext at rest, so it should be excluded from backups and file-sync tools.
+
+### Blob server (Blossom)
+
+External HTTP host that stores attachment ciphertext, addressed by SHA-256 and uploaded with a signed kind:24242 authorization event. The daemon uploads ciphertext only; the decryption key and nonce travel in the Nostr rumor's tags, never to the host. Configured as an ordered list with failover.
 
 ## Admin CLI
 
@@ -149,8 +161,11 @@ Recurring review feedback is captured in `docs/solutions/` (searchable by `tags`
 | **cursor** | Persisted offset that tracks which events have been processed for a bot/event pair. |
 | **fan-out** | Sending one event to all matching handlers. |
 | **kind:0** | Nostr event kind for profile metadata. |
+| **kind:7** | Nostr event kind for a reaction (NIP-25). Content is the emoji; an `e` tag names the target event. |
+| **kind:15** | Nostr event kind for an encrypted file attachment. Content is the blob URL; tags carry mime type, size, decryption key and nonce, and the original-plaintext hash. |
 | **kind:443** | Nostr event kind for MLS KeyPackage announcements. |
 | **kind:445** | Nostr event kind for MLS group messages. |
+| **kind:24242** | Blossom authorization event (BUD-11), signed by the uploading identity and base64-encoded into the `Authorization` header. |
 | **Squad** | An MLS group chat in the Pacto ecosystem. |
 | **Squad wire ID** | The Nostr event `h` tag value that identifies a Squad on the wire. |
 | **Bot mention** | An `@alias` mention in a Squad message whose canonical target is a bot's npub. The daemon uses the target npub to mark the event as addressed to that bot. |

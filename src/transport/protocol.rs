@@ -479,6 +479,27 @@ pub struct MetricsResponse {
     /// Total MLS group messages dropped due to per-Squad rate limiting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_messages_rate_limited_total: Option<u64>,
+    /// Total outbound attachment sends attempted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_send_total: Option<u64>,
+    /// Total outbound attachment sends that failed for any reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_send_failed_total: Option<u64>,
+    /// Total blob uploads that exhausted every configured Blossom host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_upload_failed_total: Option<u64>,
+    /// Total inbound attachments delivered to at least one handler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_receive_total: Option<u64>,
+    /// Total inbound attachments rejected before delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_receive_failed_total: Option<u64>,
+    /// Current number of files in the inbound spool directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_inbound_entries: Option<u64>,
+    /// Current number of files in the outbound spool directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_outbound_entries: Option<u64>,
     /// Events received in the last 10 minutes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub events_received_last_10_min: Option<u64>,
@@ -525,6 +546,13 @@ impl From<crate::diagnostics::HealthSnapshot> for MetricsResponse {
             send_dm_total: Some(snapshot.send_dm_total),
             send_dm_failed_total: Some(snapshot.send_dm_failed_total),
             group_messages_rate_limited_total: Some(snapshot.group_messages_rate_limited_total),
+            attachment_send_total: Some(snapshot.attachment_send_total),
+            attachment_send_failed_total: Some(snapshot.attachment_send_failed_total),
+            blob_upload_failed_total: Some(snapshot.blob_upload_failed_total),
+            attachment_receive_total: Some(snapshot.attachment_receive_total),
+            attachment_receive_failed_total: Some(snapshot.attachment_receive_failed_total),
+            spool_inbound_entries: Some(snapshot.spool_inbound_entries),
+            spool_outbound_entries: Some(snapshot.spool_outbound_entries),
             events_received_last_10_min: Some(snapshot.recent_counts.events_received),
             events_decrypted_last_10_min: Some(snapshot.recent_counts.events_decrypted),
             events_dispatched_last_10_min: Some(snapshot.recent_counts.events_dispatched),

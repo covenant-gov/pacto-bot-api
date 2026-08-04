@@ -33,6 +33,18 @@ pub struct GlobalDaemonConfig {
     pub handler_stale_timeout_secs: u64,
     #[serde(default = "default_handler_reap_interval_secs")]
     pub handler_reap_interval_secs: u64,
+    /// Maximum plaintext attachment size in bytes, applied to both inbound and
+    /// outbound payloads before encryption.
+    #[serde(default = "default_attachment_max_bytes")]
+    pub attachment_max_bytes: u64,
+    /// Seconds an abandoned outbound spool entry is retained before the
+    /// retention sweep deletes it.
+    #[serde(default = "default_spool_outbound_retention_secs")]
+    pub spool_outbound_retention_secs: u64,
+    /// Ordered list of Blossom hosts attachment ciphertext is uploaded to.
+    /// Entries are tried in order until one accepts the blob.
+    #[serde(default = "default_blob_servers")]
+    pub blob_servers: Vec<String>,
 }
 
 impl Default for GlobalDaemonConfig {
@@ -45,6 +57,9 @@ impl Default for GlobalDaemonConfig {
             http_idle_timeout_secs: default_http_idle_timeout_secs(),
             handler_stale_timeout_secs: default_handler_stale_timeout_secs(),
             handler_reap_interval_secs: default_handler_reap_interval_secs(),
+            attachment_max_bytes: default_attachment_max_bytes(),
+            spool_outbound_retention_secs: default_spool_outbound_retention_secs(),
+            blob_servers: default_blob_servers(),
         }
     }
 }
@@ -75,6 +90,18 @@ fn default_handler_stale_timeout_secs() -> u64 {
 
 fn default_handler_reap_interval_secs() -> u64 {
     5
+}
+
+fn default_attachment_max_bytes() -> u64 {
+    10_485_760
+}
+
+fn default_spool_outbound_retention_secs() -> u64 {
+    86_400
+}
+
+fn default_blob_servers() -> Vec<String> {
+    vec!["https://nostr.download".into()]
 }
 
 /// Per-bot identity configuration.
@@ -251,11 +278,43 @@ fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError
             "daemon.handler_stale_timeout_secs must be greater than 0".into(),
         ));
     }
+    if daemon.blob_servers.is_empty() {
+        return Err(DaemonError::Config(
+            "daemon.blob_servers must list at least one Blossom host".into(),
+        ));
+    }
+    for server in &daemon.blob_servers {
+        if !(server.starts_with("http://") || server.starts_with("https://")) {
+            return Err(DaemonError::Config(format!(
+                "daemon.blob_servers entry {server} must be an absolute http or https URL"
+            )));
+        }
+        if reqwest::Url::parse(server).is_err() {
+            return Err(DaemonError::Config(format!(
+                "daemon.blob_servers entry {server} is not a valid URL"
+            )));
+        }
+    }
+    if daemon.attachment_max_bytes == 0 {
+        return Err(DaemonError::Config(
+            "daemon.attachment_max_bytes must be greater than 0".into(),
+        ));
+    }
+    if daemon.spool_outbound_retention_secs == 0 {
+        return Err(DaemonError::Config(
+            "daemon.spool_outbound_retention_secs must be greater than 0".into(),
+        ));
+    }
     Ok(())
 }
 
 /// Valid bot capability strings.
-const VALID_CAPABILITIES: &[&str] = &[
+///
+/// This is the single source of truth. `pacto-bot-admin`'s validation and
+/// prompt help text derive their accepted sets from this constant rather than
+/// retyping it, so a new capability cannot be added at one site and missed at
+/// another (KTD17).
+pub const VALID_CAPABILITIES: &[&str] = &[
     "ReadMessages",
     "SendMessages",
     "ManageProfile",
@@ -264,6 +323,10 @@ const VALID_CAPABILITIES: &[&str] = &[
     "CreateMlsGroup",
     "InviteToMlsGroup",
     "ExitMlsGroup",
+    "SendReactions",
+    "SendAttachments",
+    "SendGroupReactions",
+    "SendGroupAttachments",
     "Admin",
 ];
 
@@ -274,6 +337,8 @@ const MLS_CAPABILITIES: &[&str] = &[
     "CreateMlsGroup",
     "InviteToMlsGroup",
     "ExitMlsGroup",
+    "SendGroupReactions",
+    "SendGroupAttachments",
 ];
 
 /// Redact query-parameter values from a `bunker://` URI.

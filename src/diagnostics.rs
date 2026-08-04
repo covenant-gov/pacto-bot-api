@@ -104,6 +104,20 @@ pub struct HealthSnapshot {
     pub send_dm_failed_total: u64,
     /// Total MLS group messages dropped due to per-Squad rate limiting.
     pub group_messages_rate_limited_total: u64,
+    /// Total outbound attachment sends attempted.
+    pub attachment_send_total: u64,
+    /// Total outbound attachment sends that failed for any reason.
+    pub attachment_send_failed_total: u64,
+    /// Total blob uploads that exhausted every configured Blossom host.
+    pub blob_upload_failed_total: u64,
+    /// Total inbound attachments delivered to at least one handler.
+    pub attachment_receive_total: u64,
+    /// Total inbound attachments rejected before delivery.
+    pub attachment_receive_failed_total: u64,
+    /// Current number of files in the inbound spool directory.
+    pub spool_inbound_entries: u64,
+    /// Current number of files in the outbound spool directory.
+    pub spool_outbound_entries: u64,
     /// Per-bot health summaries.
     pub bots: Vec<BotHealth>,
     /// Recent redacted error records, oldest first.
@@ -133,6 +147,13 @@ impl Default for HealthSnapshot {
             reply_send_failed_total: 0,
             send_dm_total: 0,
             send_dm_failed_total: 0,
+            attachment_send_total: 0,
+            attachment_send_failed_total: 0,
+            blob_upload_failed_total: 0,
+            attachment_receive_total: 0,
+            attachment_receive_failed_total: 0,
+            spool_inbound_entries: 0,
+            spool_outbound_entries: 0,
             group_messages_rate_limited_total: 0,
             bots: Vec::new(),
             errors: Vec::new(),
@@ -422,6 +443,45 @@ impl Diagnostics {
         inner.send_dm_failed.record();
         let snap = inner.snapshot.clone();
         let _ = inner.metrics_tx.send(snap);
+    }
+
+    /// Record that an outbound attachment send was attempted.
+    pub async fn record_attachment_send(&self) {
+        self.with_snapshot(|snapshot| snapshot.attachment_send_total += 1)
+            .await;
+    }
+
+    /// Increment the counter for outbound attachment sends that failed.
+    pub async fn record_attachment_send_failed(&self) {
+        self.with_snapshot(|snapshot| snapshot.attachment_send_failed_total += 1)
+            .await;
+    }
+
+    /// Increment the counter for blob uploads that exhausted every host.
+    pub async fn record_blob_upload_failed(&self) {
+        self.with_snapshot(|snapshot| snapshot.blob_upload_failed_total += 1)
+            .await;
+    }
+
+    /// Record that an inbound attachment was delivered.
+    pub async fn record_attachment_receive(&self) {
+        self.with_snapshot(|snapshot| snapshot.attachment_receive_total += 1)
+            .await;
+    }
+
+    /// Increment the counter for inbound attachments rejected before delivery.
+    pub async fn record_attachment_receive_failed(&self) {
+        self.with_snapshot(|snapshot| snapshot.attachment_receive_failed_total += 1)
+            .await;
+    }
+
+    /// Set the current spool entry-count gauges.
+    pub async fn set_spool_entries(&self, inbound: u64, outbound: u64) {
+        self.with_snapshot(|snapshot| {
+            snapshot.spool_inbound_entries = inbound;
+            snapshot.spool_outbound_entries = outbound;
+        })
+        .await;
     }
 
     /// Set the number of registered handlers.

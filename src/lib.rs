@@ -8,6 +8,7 @@ pub use client_manager::ClientManager;
 // Re-export secrecy so consumers (and tests) can construct SecretString values
 // for SigningConfig without adding a separate dependency.
 pub use secrecy;
+pub mod attachment;
 pub mod config;
 pub mod config_generated;
 pub mod db;
@@ -23,6 +24,7 @@ pub mod mls_path;
 pub mod nostr;
 pub mod service_compatibility_generated;
 pub mod signer;
+pub mod spool;
 pub mod transport;
 pub mod version;
 

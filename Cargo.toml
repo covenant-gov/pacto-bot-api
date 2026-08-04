@@ -68,6 +68,12 @@ colored = "3"
 nix = { version = "0.31", features = ["signal", "process"] }
     rpassword = "7.5.4"
 jsonschema = "0.46"
+aes = "0.8"
+aes-gcm = "0.10.3"
+sha2 = "0.10"
+base64 = "0.22"
+infer = "0.19"
+nostr-blossom = "0.43"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["winnt", "fileapi", "handleapi", "processthreadsapi", "securitybaseapi"] }
@@ -85,6 +91,7 @@ futures = "0.3"
 syn = { version = "2", features = ["full", "parsing"] }
 quote = "1"
 openmls_traits = "0.4.1"
+wiremock = "0.6"
 
 [profile.release]
 lto = true

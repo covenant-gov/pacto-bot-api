@@ -36,7 +36,7 @@ pacto-bot-admin new --scaffold echo-bot --backend nsec --relays ws://localhost:7
 Notes:
 - `--backend` — `nsec` (dev-only), `bunker_local`, or `bunker_remote`.
 - `--relays` — relay URLs for the bot.
-- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`.
+- `--capabilities` — `ReadMessages`, `SendMessages`, `ManageProfile`, `SendGroupMessages`, `ReceiveGroupMessages`, `CreateMlsGroup`, `InviteToMlsGroup`, `ExitMlsGroup`, `SendReactions`, `SendAttachments`, `SendGroupReactions`, `SendGroupAttachments`, `Admin`.
 - `--uri` — bunker URI (required for bunker backends; omit to prompt).
 - `--scaffold` — also generate a handler project for the new identity (non-interactive).
 - `--language` — handler language (default: `python`).
