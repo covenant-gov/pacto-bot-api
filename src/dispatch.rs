@@ -10,6 +10,7 @@ use serde_json::Value;
 use tokio::sync::{Mutex as TokioMutex, RwLock, mpsc, watch};
 use tokio::time::{Instant, timeout};
 use tracing::{debug, info, warn};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::client_manager::ClientManager;
 use crate::config::BotConfig;
@@ -842,6 +843,7 @@ impl Dispatch {
             Method::HandlerReconnect => self.handle_reconnect(params, connection).await,
             Method::HandlerUnregister => self.handle_unregister(handler_id, params).await,
             Method::AgentSendDm => self.handle_send_dm_msg(handler_id, params).await,
+            Method::AgentSendReaction => self.handle_send_reaction(handler_id, params).await,
             Method::AgentSetProfile => self.handle_set_profile(handler_id, params).await,
             Method::AgentError => self.handle_error(handler_id, params).await,
             Method::HandlerResponse => self.handle_response(handler_id, params).await,
@@ -855,6 +857,9 @@ impl Dispatch {
             Method::SystemHealth => self.handle_health().await,
             Method::AgentSendGroupMessage => {
                 self.handle_send_group_message(handler_id, params).await
+            }
+            Method::AgentSendGroupReaction => {
+                self.handle_send_group_reaction(handler_id, params).await
             }
             Method::AgentPublishKeyPackage => {
                 self.handle_publish_key_package(handler_id, params).await
@@ -1098,6 +1103,45 @@ impl Dispatch {
             .send_dm(&signer, recipient, content, reply_to)
             .await?;
         Ok(event_id)
+    }
+
+    async fn handle_send_reaction(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.send_reaction missing params".into()))?;
+        let bot_id = required_string(params, "bot_id", "agent.send_reaction")?;
+        let recipient = required_string(params, "recipient", "agent.send_reaction")?;
+        let target = required_string(params, "target_rumor_id", "agent.send_reaction")?;
+        let emoji = required_string(params, "emoji", "agent.send_reaction")?;
+        validate_reaction(emoji)?;
+
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendReactions")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+        if !self.rate_limiter.check(hid, bot_id, Instant::now()).await {
+            self.diagnostics.record_rate_limited().await;
+            return Err(DaemonError::RateLimited);
+        }
+
+        let (signer, client) = {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+            (bot.signer.clone(), cm.nostr_client.clone())
+        };
+        let event_id = client
+            .send_reaction(&signer, recipient, target, emoji)
+            .await?;
+        Ok(Some(Value::String(event_id.to_hex())))
     }
 
     async fn handle_set_profile(
@@ -1889,17 +1933,66 @@ impl Dispatch {
                 crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
                 other => DaemonError::Mls(other),
             })?;
+        let rumor = crate::nostr::NostrClient::build_group_text_rumor(
+            &bot.signer.public_key(),
+            content,
+            pacto_virtual_bucket,
+        )?;
         let event_id = cm
             .nostr_client
-            .send_group_message(
-                mls_engine,
-                &bot.signer,
-                mls_group_id,
-                content,
-                pacto_virtual_bucket,
-            )
+            .send_group_message(mls_engine, &bot.signer, mls_group_id, rumor)
             .await?;
         Ok(event_id)
+    }
+
+    async fn handle_send_group_reaction(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params.ok_or_else(|| {
+            DaemonError::Config("agent.send_group_reaction missing params".into())
+        })?;
+        let bot_id = required_string(params, "bot_id", "agent.send_group_reaction")?;
+        let group_id = required_string(params, "group_id", "agent.send_group_reaction")?;
+        let target = required_string(params, "target_rumor_id", "agent.send_group_reaction")?;
+        let emoji = required_string(params, "emoji", "agent.send_group_reaction")?;
+        validate_reaction(emoji)?;
+
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "SendGroupReactions")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+        if !self.rate_limiter.check(hid, bot_id, Instant::now()).await {
+            self.diagnostics.record_rate_limited().await;
+            return Err(DaemonError::RateLimited);
+        }
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+        let mls_engine = bot
+            .mls
+            .as_ref()
+            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+        let mls_group_id =
+            mls_engine
+                .resolve_wire_id(group_id)
+                .await
+                .map_err(|error| match error {
+                    crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
+                    other => DaemonError::Mls(other),
+                })?;
+        let event_id = cm
+            .nostr_client
+            .send_group_reaction(mls_engine, &bot.signer, mls_group_id, target, emoji)
+            .await?;
+        Ok(Some(Value::String(event_id.to_hex())))
     }
 
     async fn handle_publish_key_package(
@@ -2242,6 +2335,24 @@ impl Dispatch {
     }
 }
 
+fn required_string<'a>(
+    params: &'a Value,
+    field: &str,
+    method: &str,
+) -> Result<&'a str, DaemonError> {
+    params
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| DaemonError::Config(format!("{method} missing {field}")))
+}
+
+fn validate_reaction(emoji: &str) -> Result<(), DaemonError> {
+    if emoji.is_empty() || emoji.graphemes(true).count() != 1 {
+        return Err(DaemonError::InvalidReaction);
+    }
+    Ok(())
+}
+
 fn message_params(msg: &JsonRpcMessage) -> Option<&Value> {
     match msg {
         JsonRpcMessage::Request { params, .. } | JsonRpcMessage::Notification { params, .. } => {
@@ -2277,6 +2388,23 @@ fn content_preview(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reaction_validation_accepts_one_multicodepoint_grapheme() {
+        assert!(validate_reaction("👩‍💻").is_ok());
+    }
+
+    #[test]
+    fn reaction_validation_rejects_empty_or_multiple_graphemes() {
+        assert!(matches!(
+            validate_reaction(""),
+            Err(DaemonError::InvalidReaction)
+        ));
+        assert!(matches!(
+            validate_reaction("👍👍"),
+            Err(DaemonError::InvalidReaction)
+        ));
+    }
+
     use super::*;
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;

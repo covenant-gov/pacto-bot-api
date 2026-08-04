@@ -1,5 +1,6 @@
 use clap::Parser;
 use fs2::FileExt;
+use pacto_bot_api::attachment::inbound::InboundAttachmentProcessor;
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::DaemonConfig;
 use pacto_bot_api::db::Db;
@@ -314,10 +315,16 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     let diagnostics = Diagnostics::new();
     diagnostics.set_status(DaemonStatus::Initializing).await;
 
+    let attachment_processor = Arc::new(InboundAttachmentProcessor::new(
+        Arc::clone(&spool),
+        config.daemon.attachment_max_bytes,
+        Duration::from_secs(config.daemon.spool_outbound_retention_secs),
+    ));
     let nostr_client = NostrClient::new(unique_relays)
         .await
         .map_err(|e| format!("failed to initialize nostr client: {e}"))?
-        .with_diagnostics(diagnostics.clone());
+        .with_diagnostics(diagnostics.clone())
+        .with_attachment_processor(attachment_processor);
 
     let mut client_manager = ClientManager::new(
         Path::new(&data_dir),

@@ -26,6 +26,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use tracing::{debug, error, info, warn};
 
+use crate::attachment::inbound::InboundAttachmentProcessor;
 use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
@@ -43,6 +44,7 @@ pub struct NostrClient {
     signers: Arc<RwLock<BotSigners>>,
     mls_engines: Arc<RwLock<HashMap<PublicKey, (String, MlsEngineHandle)>>>,
     diagnostics: Option<Diagnostics>,
+    attachment_processor: Option<Arc<InboundAttachmentProcessor>>,
 }
 
 impl std::fmt::Debug for NostrClient {
@@ -111,6 +113,7 @@ impl NostrClient {
             signers: Arc::new(RwLock::new(HashMap::new())),
             mls_engines: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: None,
+            attachment_processor: None,
         };
         this.add_relays(&relays).await?;
         this.client.connect().await;
@@ -124,6 +127,12 @@ impl NostrClient {
     /// instance can be shared with the dispatch layer.
     pub fn with_diagnostics(mut self, diagnostics: Diagnostics) -> Self {
         self.diagnostics = Some(diagnostics);
+        self
+    }
+
+    /// Attach the processor used for eager inbound kind:15 handling.
+    pub fn with_attachment_processor(mut self, processor: Arc<InboundAttachmentProcessor>) -> Self {
+        self.attachment_processor = Some(processor);
         self
     }
 
@@ -266,6 +275,67 @@ impl NostrClient {
         Ok(rumor_builder.build(*sender))
     }
 
+    fn build_dm_reaction_rumor(
+        sender: &PublicKey,
+        recipient: &PublicKey,
+        target_rumor_id: &str,
+        emoji: &str,
+    ) -> Result<UnsignedEvent, DaemonError> {
+        let target = EventId::parse(target_rumor_id)
+            .map_err(|error| DaemonError::Nostr(format!("invalid target event id: {error}")))?;
+        Ok(EventBuilder::reaction_extended(
+            target,
+            *recipient,
+            Some(Kind::PrivateDirectMessage),
+            emoji,
+        )
+        .build(*sender))
+    }
+
+    fn build_group_reaction_rumor(
+        sender: &PublicKey,
+        target_rumor_id: &str,
+        emoji: &str,
+    ) -> Result<UnsignedEvent, DaemonError> {
+        let target = EventId::parse(target_rumor_id)
+            .map_err(|error| DaemonError::Nostr(format!("invalid target event id: {error}")))?;
+        Ok(EventBuilder::new(Kind::Reaction, emoji)
+            .tag(Tag::event(target))
+            .build(*sender))
+    }
+
+    /// Build the plaintext inner rumor for a kind:445 group text message.
+    ///
+    /// When a virtual bucket is provided, wraps the plaintext in the Pacto
+    /// mention envelope so the receiving app can route replies back to the
+    /// same virtual channel. Otherwise preserves legacy plain-text behavior.
+    /// The inner kind must differ from the kind:445 MLS wrapper so that
+    /// decrypted group content is not mistaken for the wire-format wrapper
+    /// itself.
+    pub fn build_group_text_rumor(
+        sender: &PublicKey,
+        content: String,
+        pacto_virtual_bucket: Option<String>,
+    ) -> Result<UnsignedEvent, DaemonError> {
+        let payload = match pacto_virtual_bucket {
+            Some(bucket) => serde_json::to_string(&json!({
+                "kind": MENTION_ENVELOPE_KIND,
+                "body": content,
+                "mentions": [],
+                "pacto_virtual_bucket": bucket,
+            }))
+            .map_err(DaemonError::Json)?,
+            None => content,
+        };
+        Ok(UnsignedEvent::new(
+            *sender,
+            Timestamp::now(),
+            Kind::TextNote,
+            Vec::new(),
+            payload,
+        ))
+    }
+
     /// Send a NIP-17 private direct message as a NIP-59 gift wrap.
     ///
     /// If `reply_to` is provided, an `e` tag referencing the original rumor or
@@ -308,6 +378,26 @@ impl NostrClient {
             })?;
 
         Ok(event_id)
+    }
+
+    /// Send a kind:7 reaction to a private-message rumor.
+    pub async fn send_reaction(
+        &self,
+        signer: &dyn Signer,
+        recipient_npub: &str,
+        target_rumor_id: &str,
+        emoji: &str,
+    ) -> Result<EventId, DaemonError> {
+        let recipient = PublicKey::parse(recipient_npub)
+            .map_err(|error| DaemonError::Nostr(format!("invalid recipient npub: {error}")))?;
+        let unsigned = Self::build_dm_reaction_rumor(
+            &signer.public_key(),
+            &recipient,
+            target_rumor_id,
+            emoji,
+        )?;
+        let rumor = sign_unsigned_event(signer, unsigned).await?;
+        self.send_gift_wrap(signer, &recipient, &rumor).await
     }
 
     /// Build a NIP-59 gift wrap around a signed rumor and publish it to every
@@ -639,36 +729,9 @@ impl NostrClient {
         mls_engine: &MlsEngineHandle,
         signer: &dyn Signer,
         group_id: Vec<u8>,
-        content: String,
-        pacto_virtual_bucket: Option<String>,
+        rumor: UnsignedEvent,
     ) -> Result<EventId, DaemonError> {
         let bot_pubkey = signer.public_key();
-
-        // When a virtual bucket is provided, wrap the plaintext in the Pacto
-        // mention envelope so the receiving app can route replies back to the
-        // same virtual channel. Otherwise preserve legacy plain-text behavior.
-        let payload = match pacto_virtual_bucket {
-            Some(bucket) => serde_json::to_string(&json!({
-                "kind": MENTION_ENVELOPE_KIND,
-                "body": content,
-                "mentions": [],
-                "pacto_virtual_bucket": bucket,
-            }))
-            .map_err(DaemonError::Json)?,
-            None => content,
-        };
-
-        // Build the plaintext inner rumor event. The inner kind must differ from
-        // the kind:445 MLS wrapper so that decrypted group content is not mistaken
-        // for the wire-format wrapper itself.
-        let rumor = UnsignedEvent::new(
-            bot_pubkey,
-            Timestamp::now(),
-            Kind::TextNote,
-            Vec::new(),
-            payload,
-        );
-
         let wrapper = mls_engine
             .create_group_message(group_id, rumor)
             .await
@@ -696,6 +759,20 @@ impl NostrClient {
         })?;
 
         Ok(*output.id())
+    }
+
+    /// Send a kind:7 reaction inside an MLS group message.
+    pub async fn send_group_reaction(
+        &self,
+        mls_engine: &MlsEngineHandle,
+        signer: &dyn Signer,
+        group_id: Vec<u8>,
+        target_rumor_id: &str,
+        emoji: &str,
+    ) -> Result<EventId, DaemonError> {
+        let rumor = Self::build_group_reaction_rumor(&signer.public_key(), target_rumor_id, emoji)?;
+        self.send_group_message(mls_engine, signer, group_id, rumor)
+            .await
     }
 
     /// Publish a kind:0 metadata event for the bot.
@@ -790,13 +867,19 @@ impl NostrClient {
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
         let mls_engines = self.mls_engines.read().await.clone();
-        Self::process_gift_wrap(&snapshot, &mls_engines, event, self.diagnostics.as_ref())
-            .await?
-            .ok_or_else(|| {
-                DaemonError::Nostr(
-                    "rumor kind delivers no event (unrepresented kind or invalid reaction)".into(),
-                )
-            })
+        Self::process_gift_wrap(
+            &snapshot,
+            &mls_engines,
+            event,
+            self.diagnostics.as_ref(),
+            self.attachment_processor.as_deref(),
+        )
+        .await?
+        .ok_or_else(|| {
+            DaemonError::Nostr(
+                "rumor kind delivers no event (unrepresented kind or invalid reaction)".into(),
+            )
+        })
     }
 
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
@@ -806,6 +889,7 @@ impl NostrClient {
         let signers = Arc::clone(&self.signers);
         let mls_engines = Arc::clone(&self.mls_engines);
         let diagnostics = self.diagnostics.clone();
+        let attachment_processor = self.attachment_processor.clone();
 
         tokio::spawn(async move {
             let _ = client
@@ -814,6 +898,7 @@ impl NostrClient {
                     let signers = Arc::clone(&signers);
                     let mls_engines = Arc::clone(&mls_engines);
                     let diagnostics = diagnostics.clone();
+                    let attachment_processor = attachment_processor.clone();
                     async move {
                         match notification {
                             RelayPoolNotification::Event { event, .. } => {
@@ -825,6 +910,7 @@ impl NostrClient {
                                     let signers = Arc::clone(&signers);
                                     let mls_engines = Arc::clone(&mls_engines);
                                     let diagnostics = diagnostics.clone();
+                                    let attachment_processor = attachment_processor.clone();
                                     tokio::spawn(async move {
                                         let snapshot = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
@@ -833,6 +919,7 @@ impl NostrClient {
                                             &mls_engines,
                                             &event,
                                             diagnostics.as_ref(),
+                                            attachment_processor.as_deref(),
                                         )
                                         .await
                                         {
@@ -890,6 +977,7 @@ impl NostrClient {
         mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
         diagnostics: Option<&Diagnostics>,
+        attachment_processor: Option<&InboundAttachmentProcessor>,
     ) -> Result<Option<AgentEvent>, DaemonError> {
         info!(
             event_id = %event.id.to_hex(),
@@ -955,11 +1043,11 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("rumor missing id".into()))?
             .to_hex();
 
-        let (event_type, reaction) = match rumor.kind {
-            Kind::PrivateDirectMessage => (EventType::DmReceived, None),
-            Kind::MlsWelcome => (EventType::MlsWelcomeReceived, None),
+        let (event_type, reaction, attachment) = match rumor.kind {
+            Kind::PrivateDirectMessage => (EventType::DmReceived, None, None),
+            Kind::MlsWelcome => (EventType::MlsWelcomeReceived, None, None),
             Kind::Reaction => match Self::extract_reaction(&rumor) {
-                Some(payload) => (EventType::ReactionReceived, Some(payload)),
+                Some(payload) => (EventType::ReactionReceived, Some(payload), None),
                 None => {
                     debug!(
                         event_id = %event.id.to_hex(),
@@ -972,6 +1060,39 @@ impl NostrClient {
                     return Ok(None);
                 }
             },
+            Kind::Custom(15) => {
+                let Some(processor) = attachment_processor else {
+                    if let Some(diagnostics) = diagnostics {
+                        diagnostics.record_invalid_event().await;
+                        diagnostics.record_attachment_receive_failed().await;
+                    }
+                    return Ok(None);
+                };
+                match processor.process_rumor(&rumor).await {
+                    Ok(payload) => {
+                        if let Some(diagnostics) = diagnostics {
+                            diagnostics.record_attachment_receive().await;
+                        }
+                        (EventType::AttachmentReceived, None, Some(payload))
+                    }
+                    Err(error) => {
+                        warn!(
+                            event_id = %event.id.to_hex(),
+                            rumor_id = %rumor_id,
+                            error = %error,
+                            "rejecting invalid inbound attachment"
+                        );
+                        if let Some(diagnostics) = diagnostics {
+                            diagnostics.record_invalid_event().await;
+                            diagnostics.record_attachment_receive_failed().await;
+                            diagnostics
+                                .record_error(Some("attachment_invalid"), &error.to_string(), None)
+                                .await;
+                        }
+                        return Ok(None);
+                    }
+                }
+            }
             other => {
                 debug!(
                     event_id = %event.id.to_hex(),
@@ -1029,6 +1150,8 @@ impl NostrClient {
             author: seal_event.pubkey.to_hex(),
             timestamp: rumor.created_at.as_u64(),
             reaction,
+            attachment,
+            ..Default::default()
         }))
     }
 
@@ -1236,7 +1359,7 @@ impl NostrSubscribe for NostrClient {
 }
 
 /// Sign an unsigned event using the daemon [`Signer`] trait.
-async fn sign_unsigned_event(
+pub(crate) async fn sign_unsigned_event(
     signer: &dyn Signer,
     unsigned: UnsignedEvent,
 ) -> Result<Event, DaemonError> {
@@ -1519,6 +1642,56 @@ mod tests {
         let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
         assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
     }
+    #[test]
+    fn dm_reaction_rumor_has_app_compatible_tags() {
+        let sender = Keys::generate();
+        let recipient = Keys::generate();
+        let target =
+            EventId::from_hex("0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+        let rumor = NostrClient::build_dm_reaction_rumor(
+            &sender.public_key(),
+            &recipient.public_key(),
+            &target.to_hex(),
+            "👍",
+        )
+        .unwrap();
+
+        assert_eq!(rumor.kind, Kind::Reaction);
+        assert_eq!(rumor.content, "👍");
+        assert_eq!(
+            rumor.tags.find(TagKind::e()).and_then(Tag::content),
+            Some(target.to_hex().as_str())
+        );
+        assert_eq!(
+            rumor.tags.find(TagKind::p()).and_then(Tag::content),
+            Some(recipient.public_key().to_hex().as_str())
+        );
+        assert_eq!(
+            rumor.tags.find(TagKind::k()).and_then(Tag::content),
+            Some(Kind::PrivateDirectMessage.as_u16().to_string().as_str())
+        );
+    }
+
+    #[test]
+    fn group_reaction_rumor_has_only_target_event_tag() {
+        let sender = Keys::generate();
+        let target =
+            EventId::from_hex("0000000000000000000000000000000000000000000000000000000000000002")
+                .unwrap();
+        let rumor =
+            NostrClient::build_group_reaction_rumor(&sender.public_key(), &target.to_hex(), "👩‍💻")
+                .unwrap();
+
+        assert_eq!(rumor.kind, Kind::Reaction);
+        assert_eq!(rumor.content, "👩‍💻");
+        assert_eq!(rumor.tags.len(), 1);
+        assert_eq!(
+            rumor.tags.find(TagKind::e()).and_then(Tag::content),
+            Some(target.to_hex().as_str())
+        );
+    }
+
     #[tokio::test]
     async fn set_profile_builds_metadata_event() {
         let client = NostrClient::new(vec![dummy_relay()]).await.unwrap();
@@ -1559,10 +1732,11 @@ mod tests {
 
         let signers = client.signers.read().await.clone();
         let mls_engines = client.mls_engines.read().await.clone();
-        let agent_event = NostrClient::process_gift_wrap(&signers, &mls_engines, &event, None)
-            .await
-            .unwrap()
-            .expect("kind:14 rumor should deliver a dm_received event");
+        let agent_event =
+            NostrClient::process_gift_wrap(&signers, &mls_engines, &event, None, None)
+                .await
+                .unwrap()
+                .expect("kind:14 rumor should deliver a dm_received event");
         assert_eq!(agent_event.bot_id, "bot-1");
         assert_eq!(agent_event.event_type, EventType::DmReceived);
         assert_eq!(agent_event.content, "secret message");

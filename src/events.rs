@@ -9,6 +9,7 @@ pub enum EventType {
     MlsWelcomeReceived,
     MlsGroupMessageReceived,
     ReactionReceived,
+    AttachmentReceived,
 }
 
 impl EventType {
@@ -19,6 +20,7 @@ impl EventType {
             EventType::MlsWelcomeReceived => "mls_welcome_received",
             EventType::MlsGroupMessageReceived => "mls_group_message_received",
             EventType::ReactionReceived => "reaction_received",
+            EventType::AttachmentReceived => "attachment_received",
         }
     }
 }
@@ -29,6 +31,25 @@ impl EventType {
 pub struct ReactionPayload {
     pub target_rumor_id: String,
     pub emoji: String,
+}
+
+/// Detail carried by a decrypted and verified attachment event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentPayload {
+    pub mime_type: String,
+    /// Plaintext byte count, equal to the size of the file at [`Self::path`].
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blurhash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim: Option<String>,
+    pub path: String,
+    /// Unix timestamp after which the inbound spool file may be removed.
+    pub expires_at: u64,
 }
 
 /// Notification sent from daemon to handler when an event arrives for a bot.
@@ -59,4 +80,7 @@ pub struct AgentEvent {
     /// exclusive with any future sub-object per KTD1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reaction: Option<ReactionPayload>,
+    /// Present only on [`EventType::AttachmentReceived`] events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<AttachmentPayload>,
 }

@@ -6,5 +6,7 @@
 //! type from payload bytes. Later units add their own submodules
 //! (`inbound`, `outbound`, `blossom`) alongside these.
 
+pub mod blossom;
 pub mod crypto;
+pub mod inbound;
 pub mod mime;

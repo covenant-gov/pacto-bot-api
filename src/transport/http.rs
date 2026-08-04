@@ -594,11 +594,13 @@ fn is_mutating_method(method: Option<Method>) -> bool {
         method,
         Some(Method::HandlerUnregister)
             | Some(Method::AgentSendDm)
+            | Some(Method::AgentSendReaction)
             | Some(Method::AgentSetProfile)
             | Some(Method::AgentError)
             | Some(Method::AgentListHandlers)
             | Some(Method::AgentUnregisterHandler)
             | Some(Method::AgentSendGroupMessage)
+            | Some(Method::AgentSendGroupReaction)
             | Some(Method::AgentPublishKeyPackage)
             | Some(Method::AgentCreateMlsGroup)
             | Some(Method::AgentInviteToMlsGroup)

@@ -176,6 +176,29 @@
       }
     },
     {
+      "name": "agent.send_reaction",
+      "summary": "React to a direct-message rumor as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": { "type": "string", "description": "Bot identity that will send the reaction." },
+              "recipient": { "type": "string", "description": "Nostr public key (npub or hex) of the recipient." },
+              "target_rumor_id": { "type": "string", "description": "Hex id of the rumor being reacted to." },
+              "emoji": { "type": "string", "description": "Exactly one Unicode grapheme cluster." }
+            },
+            "required": ["bot_id", "recipient", "target_rumor_id", "emoji"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": { "type": "string", "description": "Hex id of the published gift-wrap event." }
+      }
+    },
+    {
       "name": "agent.set_profile",
       "summary": "Update the bot's Nostr kind:0 profile.",
       "params": [
@@ -290,7 +313,7 @@
               },
               "type": {
                 "type": "string",
-                "enum": ["dm_received", "mls_welcome_received", "mls_group_message_received", "reaction_received"],
+                "enum": ["dm_received", "mls_welcome_received", "mls_group_message_received", "reaction_received", "attachment_received"],
                 "description": "Event type."
               },
               "chat_id": {
@@ -343,6 +366,21 @@
                   "emoji": { "type": "string", "description": "The reaction emoji." }
                 },
                 "required": ["target_rumor_id", "emoji"]
+              },
+              "attachment": {
+                "type": "object",
+                "description": "Present only when type is attachment_received; a verified plaintext file in the inbound spool.",
+                "properties": {
+                  "mime_type": { "type": "string", "description": "Mime type from the file-type rumor tag." },
+                  "size": { "type": "integer", "minimum": 0, "description": "Plaintext byte count, equal to the file size at path." },
+                  "ox": { "type": "string", "description": "Optional sender-declared plaintext SHA-256." },
+                  "filename": { "type": "string", "description": "Optional untouched sender filename; never used for the spool path." },
+                  "blurhash": { "type": "string", "description": "Optional sender-provided image blurhash." },
+                  "dim": { "type": "string", "description": "Optional sender-provided image dimensions." },
+                  "path": { "type": "string", "description": "Absolute path to the verified plaintext spool file." },
+                  "expires_at": { "type": "integer", "minimum": 0, "description": "Unix timestamp after which the spool file may be removed." }
+                },
+                "required": ["mime_type", "size", "path", "expires_at"]
               }
             },
             "required": ["bot_id", "event_id", "type", "content", "rumor_id", "author", "timestamp"]
@@ -638,6 +676,29 @@
           "type": "string",
           "description": "Hex id of the published kind:445 MLS group message event."
         }
+      }
+    },
+    {
+      "name": "agent.send_group_reaction",
+      "summary": "React to an encrypted MLS group rumor as the specified bot.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": { "type": "string", "description": "Bot identity that will send the reaction." },
+              "group_id": { "type": "string", "description": "Hex-encoded MLS group ID." },
+              "target_rumor_id": { "type": "string", "description": "Hex id of the group rumor being reacted to." },
+              "emoji": { "type": "string", "description": "Exactly one Unicode grapheme cluster." }
+            },
+            "required": ["bot_id", "group_id", "target_rumor_id", "emoji"]
+          }
+        }
+      ],
+      "result": {
+        "name": "event_id",
+        "schema": { "type": "string", "description": "Hex id of the published kind:445 MLS group message event." }
       }
     },
     {
