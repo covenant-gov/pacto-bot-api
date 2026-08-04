@@ -11,6 +11,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use pacto_bot_api::config::DaemonConfig;
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::spool::{INBOUND_RETENTION, Spool};
 
@@ -353,4 +354,31 @@ fn forced_inbound_sweep_ignores_cadence_gate() {
         !leftover.exists(),
         "a forced sweep must ignore the cadence gate"
     );
+}
+
+#[test]
+fn pre_attachment_config_loads_defaults_and_creates_spool() {
+    let dir = common::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let config_path = dir.path().join("pacto-bot-api.toml");
+    fs::write(
+        &config_path,
+        format!(
+            "[daemon]\ndata_dir = {:?}\nsocket_path = {:?}\n",
+            data_dir.to_string_lossy(),
+            data_dir.join("pacto-bot-api.sock").to_string_lossy(),
+        ),
+    )
+    .expect("write legacy config");
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))
+        .expect("secure legacy config");
+
+    let config = DaemonConfig::load(&config_path).expect("legacy config remains valid");
+    assert_eq!(config.daemon.attachment_max_bytes, 10_485_760);
+    assert_eq!(config.daemon.spool_outbound_retention_secs, 86_400);
+    assert_eq!(config.daemon.blob_servers, ["https://nostr.download"]);
+
+    let spool = Spool::open(config.data_dir()).expect("startup creates spool");
+    assert!(spool.inbound_root().is_dir());
+    assert!(spool.outbound_root().is_dir());
 }

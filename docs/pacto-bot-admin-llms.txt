@@ -42,7 +42,8 @@ Notes:
 - `--language` — handler language (default: `python`).
 - `--commands` — slash-command stubs to generate.
 - `--no-tests` — skip pytest files when using `--scaffold`.
-- In interactive mode, the wizard asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode.
+- In interactive mode, the wizard asks whether to scaffold a handler project and where to place it; the generated `pacto-bot-api.toml` is written into that directory.
+- The wizard also asks for a `display_name` (defaults to the bot id); `display_name` is required in the config and must be unique across bots. Other profile fields (`about`, `picture`) are optional and collected only in interactive mode.
 
 ### `scaffold`
 
@@ -259,6 +260,11 @@ The daemon reads bot identities from `pacto-bot-api.toml`. The file must be read
 Example config:
 
 ```toml
+[daemon]
+attachment_max_bytes = 10485760
+spool_outbound_retention_secs = 86400
+blob_servers = ["https://nostr.download"]
+
 [[bots]]
 id = "echo-bot"
 npub = "npub1..."
@@ -293,6 +299,9 @@ Bot identity fields:
 - `bunker_local` — NIP-46 bunker on the same machine.
 - `bunker_remote` — production NIP-46 bunker reachable over `wss://`.
 
+Attachment settings are optional: old configs use a 10 MiB cap, a one-day abandoned outbound retention, and the default Blossom host. Inbound plaintext expires after one hour.
+`$DATA_DIR/spool` contains decrypted plaintext; exclude it from backups, file-sync tools, indexing, and support bundles.
+
 Run the daemon with:
 
 ```bash
@@ -311,6 +320,8 @@ HTTP requests must include the `X-Pacto-Bot-Secret` header.
 ```json
 {"jsonrpc":"2.0","id":1,"method":"handler.register","params":{"bot_ids":["echo-bot"],"event_types":["dm_received"],"capabilities":["ReadMessages","SendMessages"]}}
 ```
+
+The registration result includes `spool_dir`, the only directory where handlers may stage large outbound attachments.
 
 ### Receive an event
 
@@ -355,11 +366,18 @@ All bots in the squad still receive the message (hybrid dispatch), but the Pytho
 
 Outgoing `agent.send_group_message` (and the Python SDK's `bot.send_group_message`) accepts an optional `pacto_virtual_bucket` parameter. When provided, the daemon wraps the `content` in the mention envelope before MLS encryption, so the receiving bot can correlate the response via the same virtual bucket.
 
+### Reactions and attachments
+
+Handlers subscribe independently to `reaction_received`, `attachment_received`, `mls_group_reaction_received`, and `mls_group_attachment_received`; text-only subscriptions do not receive these events.
+Attachments carry a verified plaintext `path` and `expires_at`. Copy needed data before expiry and never treat sender `filename` metadata as a path.
+Send with `agent.send_reaction`, `agent.send_group_reaction`, `agent.send_attachment`, or `agent.send_group_attachment`. Attachment sends use exactly one of `spool_path` or small `inline_base64`; the daemon performs encryption and upload.
+Handlers must declare the matching `SendReactions`, `SendAttachments`, `SendGroupReactions`, or `SendGroupAttachments` capability. Attachment subscriptions expose readable plaintext paths and should be granted only to handlers that need them.
+
 ## When to use which
 
 - **Admin CLI (`pacto-bot-admin`)** — use for lifecycle and diagnostics: creating bot identities, publishing profiles, testing bunkers, exporting/importing state, validating config, rotating tokens, checking status, running quick health checks (`doctor`), and tracing recent events (`trace-events`).
 - **Daemon (`pacto-bot-api`)** — use as the long-lived runtime: it owns relay connections, decrypts DMs, enforces capabilities, and persists cursors. Start it once and leave it running.
-- **Handler JSON-RPC** — use when writing bot logic in any language: connect a handler to the daemon's Unix socket or HTTP transport, register for events, and respond with `agent.send_dm` or `agent.set_profile`.
+- **Handler JSON-RPC** — use when writing bot logic in any language: connect over Unix or localhost HTTP, register for typed text/reaction/attachment events, and call only methods allowed by the handler's capabilities.
 
 Typical workflow:
 
