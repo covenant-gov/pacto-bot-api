@@ -43,6 +43,57 @@
         "event_id": "greet-py-0002",
         "action": "ignore"
       }
+    },
+    {
+      "name": "reaction_reply",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "greeting-bot",
+        "event_id": "greet-py-0003",
+        "type": "reaction_received",
+        "chat_id": "npub1sender",
+        "content": "\ud83d\udc4d",
+        "rumor_id": "abababababababababababababababababababababababababababababababab",
+        "author": "npub1sender",
+        "timestamp": 1700000002000,
+        "reaction": {
+          "target_rumor_id": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "emoji": "\ud83d\udc4d"
+        }
+      },
+      "expect_response": {
+        "event_id": "greet-py-0003",
+        "action": "reply",
+        "content": "Thanks for reacting \ud83d\udc4d!"
+      }
+    },
+    {
+      "name": "attachment_reply",
+      "type": "event_response",
+      "timeout_seconds": 5,
+      "inject_event": {
+        "bot_id": "greeting-bot",
+        "event_id": "greet-py-0004",
+        "type": "attachment_received",
+        "chat_id": "npub1sender",
+        "content": "https://cdn.example/file",
+        "rumor_id": "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+        "author": "npub1sender",
+        "timestamp": 1700000003000,
+        "attachment": {
+          "mime_type": "text/plain",
+          "size": 5,
+          "filename": "notes.txt",
+          "path": "/var/lib/pacto/spool/inbound/test.txt",
+          "expires_at": 1700003600
+        }
+      },
+      "expect_response": {
+        "event_id": "greet-py-0004",
+        "action": "reply",
+        "content": "Received notes.txt."
+      }
     }
   ]
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 import subprocess
 import sys
@@ -32,7 +33,7 @@ class HandlerRegisterParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "handler.register"
     # Bot identities this handler wants to serve.
     bot_ids: list[str]
-    # Capabilities the handler requests. Valid values include ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, and ExitMlsGroup.
+    # Capabilities the handler requests. Valid values are ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, ExitMlsGroup, SendReactions, SendAttachments, SendGroupReactions, SendGroupAttachments, and Admin.
     capabilities: list[str]
     # Event types the handler wants to receive.
     event_types: list[str]
@@ -141,3 +142,61 @@ def test_notification_method_has_no_timeout(run_generator):
         "async def"
     )[0]
     assert "timeout" not in notification_block
+
+def test_new_generated_client_method_signatures(run_generator):
+    """Reaction and attachment requests preserve required and optional params."""
+    from pacto_bot_sdk import PactoClient
+
+    expected = {
+        "agent_send_reaction": (
+            ["self", "bot_id", "emoji", "recipient", "target_rumor_id", "timeout"],
+            {"timeout"},
+        ),
+        "agent_send_group_reaction": (
+            ["self", "bot_id", "emoji", "group_id", "target_rumor_id", "timeout"],
+            {"timeout"},
+        ),
+        "agent_send_attachment": (
+            [
+                "self", "bot_id", "recipient", "blurhash", "dim", "filename",
+                "inline_base64", "reply_to", "spool_path", "timeout",
+            ],
+            {"blurhash", "dim", "filename", "inline_base64", "reply_to", "spool_path", "timeout"},
+        ),
+        "agent_send_group_attachment": (
+            [
+                "self", "bot_id", "group_id", "blurhash", "dim", "filename",
+                "inline_base64", "reply_to", "spool_path", "timeout",
+            ],
+            {"blurhash", "dim", "filename", "inline_base64", "reply_to", "spool_path", "timeout"},
+        ),
+    }
+    for method, (names, optional) in expected.items():
+        parameters = inspect.signature(getattr(PactoClient, method)).parameters
+        assert list(parameters) == names
+        assert {
+            name
+            for name, param in parameters.items()
+            if param.default is not inspect.Parameter.empty
+        } == optional
+
+
+def test_python_mutating_methods_match_rust_catalog():
+    """The HTTP handler-id gate cannot drift from Rust's mutating catalog."""
+    from pacto_bot_sdk.transports import HttpTransport
+
+    protocol = (ROOT / "src" / "transport" / "protocol.rs").read_text()
+    http = (ROOT / "src" / "transport" / "http.rs").read_text()
+    variant_to_wire = dict(
+        (variant, wire)
+        for wire, variant in re.findall(
+            r'"([a-z_.]+)"\s*=>\s*Ok\(Self::(\w+)\)', protocol
+        )
+    )
+    mutating_body = http.split("fn is_mutating_method", 1)[1].split(
+        "fn verify_secret", 1
+    )[0]
+    variants = set(re.findall(r"Some\(Method::(\w+)\)", mutating_body))
+    rust_methods = {variant_to_wire[variant] for variant in variants}
+    assert HttpTransport.MUTATING_METHODS == rust_methods
+    assert HttpTransport.HANDLER_SCOPED_METHODS == rust_methods | {"handler.response"}

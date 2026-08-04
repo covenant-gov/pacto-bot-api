@@ -268,6 +268,15 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
         metafunc.parametrize("bot_file", bots, ids=ids)
 
 
+
+
+def test_greeting_manifest_covers_reaction_and_attachment_events() -> None:
+    bot_file = Path(__file__).resolve().parent.parent / "examples" / "greeting_bot.py"
+    manifest = load_manifest(bot_file)
+    pieces = {piece["name"]: piece for piece in manifest["contract_pieces"]}
+    assert pieces["reaction_reply"]["inject_event"]["type"] == "reaction_received"
+    assert pieces["attachment_reply"]["inject_event"]["type"] == "attachment_received"
+
 @pytest.mark.asyncio
 async def test_example_contract(bot_file: Path, tmp_path: Path) -> None:
     manifest = load_manifest(bot_file)

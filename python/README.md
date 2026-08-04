@@ -183,6 +183,8 @@ sanitize content — scrub user input before calling it.
 - `@bot.event("type")` — register a handler for `agent.event` notifications of *type*.
 - `@bot.dm` — shorthand for `@bot.event("dm_received")`.
 - `@bot.on_squad_join` — shorthand for `@bot.event("mls_welcome_received")` and overrides the built-in auto-hello.
+- `@bot.on_reaction` / `@bot.on_attachment` — subscribe to typed DM reactions or verified attachments.
+- `@bot.on_squad_reaction` / `@bot.on_squad_attachment` — subscribe to the equivalent MLS Squad events.
 - `@bot.default` — fallback handler for unrecognized commands.
 - `@bot.status` — callback for `agent.status` notifications.
 - `@bot.rate_limited` — callback for `agent.rate_limited` notifications.
@@ -196,9 +198,31 @@ Use `parse_command(event.content)` to split a message into `command`, `args`, an
 - `bot.ignore(event)` — return a terminal `handler_response(action="ignore")` dict.
 - `bot.reply(event, content)` — return a terminal `handler_response(action="reply")` dict.
 - `await bot.send_dm(recipient, content, reply_to=None)` — send a DM as this bot.
+- `await bot.send_reaction(recipient, target_rumor_id, emoji)` — react to a DM rumor.
+- `await bot.send_attachment(recipient, spool_path=..., ...)` — encrypt, upload, and send a file. Use exactly one of `spool_path` or `inline_base64`.
 - `await bot.set_profile(name=None, about=None, picture=None)` — update the bot profile.
 - `bot.client` — access the low-level `PactoClient` for advanced use.
+- `bot.spool_dir` — outbound staging directory returned by registration; write large files here before passing their path to `send_attachment`.
 - `bot.is_degraded` — `True` when the circuit breaker is open and the bot is not dispatching.
+
+
+### Reaction and attachment events
+
+Reaction events expose `event.reaction.target_rumor_id` and `event.reaction.emoji`.
+Attachment events expose daemon-verified metadata and `event.attachment.path`, which is
+a readable plaintext file until `event.attachment.expires_at`. Copy anything you need
+to retain before that deadline. Sender-provided `filename` is metadata only; never use
+it as a trusted path.
+
+Large outbound files must be staged beneath `bot.spool_dir`. Inline standard-base64 is
+for small payloads only and remains subject to the unchanged 1 MiB JSON-RPC frame cap.
+The daemon owns MIME sniffing, hashing, encryption, and upload; SDK code must not
+construct attachment keys or nonces.
+
+Sending requires the matching least-privilege capability: `SendReactions`,
+`SendAttachments`, `SendGroupReactions`, or `SendGroupAttachments`. Receiving is
+controlled by the event-type subscription added by the decorators and does not require
+a send capability.
 
 ### Squad (MLS group) helpers
 
@@ -217,6 +241,8 @@ bot = Bot(
 Available helpers:
 
 - `await bot.send_group_message(group_id, content, pacto_virtual_bucket=None)` — send an encrypted message to the Squad. When `pacto_virtual_bucket` is provided, the daemon wraps `content` in the structured mention envelope before encryption, so the receiving bot can correlate the response via the same bucket.
+- `await bot.send_group_reaction(group_id, target_rumor_id, emoji)` — react to a Squad rumor.
+- `await bot.send_group_attachment(group_id, spool_path=..., ...)` — encrypt, upload, and send a Squad file.
 - `await bot.is_squad_member(group_id, member_pubkey)` — check whether a pubkey is a Squad member.
 - `await bot.exit_squad(group_id)` — publish a self-removal MLS proposal to leave the Squad. Returns the hex event id of the published kind:445 evolution event. The actual removal must be committed by a Squad admin.
 
