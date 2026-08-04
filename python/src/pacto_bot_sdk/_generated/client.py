@@ -378,6 +378,44 @@ class PactoClient:
         result = response.get('result')
         return result
 
+    async def agent_send_group_reaction(self, bot_id: str, emoji: str, group_id: str, target_rumor_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendGroupReactionResponse:
+        """
+        Call JSON-RPC method `agent.send_group_reaction`.
+
+        React to an encrypted MLS group rumor as the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_send_group_reaction(...)
+            >>> isinstance(result, AgentSendGroupReactionResponse)
+
+        jsonrpc_method: ``"agent.send_group_reaction"``
+        """
+        params = models.AgentSendGroupReactionParams(bot_id=bot_id, emoji=emoji, group_id=group_id, target_rumor_id=target_rumor_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.send_group_reaction", params_dict, timeout=timeout)
+        result = response.get('result')
+        return result
+
+    async def agent_send_reaction(self, bot_id: str, emoji: str, recipient: str, target_rumor_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSendReactionResponse:
+        """
+        Call JSON-RPC method `agent.send_reaction`.
+
+        React to a direct-message rumor as the specified bot.
+
+        Example:
+
+            >>> result = await client.agent_send_reaction(...)
+            >>> isinstance(result, AgentSendReactionResponse)
+
+        jsonrpc_method: ``"agent.send_reaction"``
+        """
+        params = models.AgentSendReactionParams(bot_id=bot_id, emoji=emoji, recipient=recipient, target_rumor_id=target_rumor_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.send_reaction", params_dict, timeout=timeout)
+        result = response.get('result')
+        return result
+
     async def agent_set_profile(self, bot_id: str, about: str | None = None, name: str | None = None, picture: str | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentSetProfileResponse:
         """
         Call JSON-RPC method `agent.set_profile`.

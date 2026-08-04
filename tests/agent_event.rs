@@ -83,6 +83,8 @@ fn serialize_agent_event_includes_new_fields() {
         rumor_id: "rumor-1".into(),
         author: "npub1author".into(),
         timestamp: 1234567890,
+        reaction: None,
+        attachment: None,
     };
 
     let value = serde_json::to_value(&event).unwrap();

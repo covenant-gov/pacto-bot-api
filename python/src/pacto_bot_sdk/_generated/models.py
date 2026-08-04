@@ -20,6 +20,12 @@ AgentSendDmResponse = str
 # Result type alias for `agent.send_group_message`.
 AgentSendGroupMessageResponse = str
 
+# Result type alias for `agent.send_group_reaction`.
+AgentSendGroupReactionResponse = str
+
+# Result type alias for `agent.send_reaction`.
+AgentSendReactionResponse = str
+
 # Result type alias for `agent.set_profile`.
 AgentSetProfileResponse = str
 
@@ -216,6 +222,8 @@ class AgentEventParams(BaseModel):
     jsonrpc_method: ``"agent.event"``
     """
     jsonrpc_method: ClassVar[str] = "agent.event"
+    # Present only when type is attachment_received; a verified plaintext file in the inbound spool.
+    attachment: AgentEventParamsAttachmentModel | None = None
     # Public key of the original message author.
     author: str
     # Bot identity the event is for.
@@ -242,6 +250,37 @@ class AgentEventParams(BaseModel):
     timestamp: int
     # Event type.
     type: str
+
+
+class AgentEventParamsAttachmentModel(BaseModel):
+    """
+    Model for JSON-RPC method `agent.event`.
+
+    Nested object for `attachment` of `agent.event`.
+
+    Example:
+
+        >>> AgentEventParamsAttachmentModel(expires_at=0, mime_type="...", path="...", size=0)
+
+    jsonrpc_method: ``"agent.event"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.event"
+    # Optional sender-provided image blurhash.
+    blurhash: str | None = None
+    # Optional sender-provided image dimensions.
+    dim: str | None = None
+    # Unix timestamp after which the spool file may be removed.
+    expires_at: int
+    # Optional untouched sender filename; never used for the spool path.
+    filename: str | None = None
+    # Mime type from the file-type rumor tag.
+    mime_type: str
+    # Optional sender-declared plaintext SHA-256.
+    ox: str | None = None
+    # Absolute path to the verified plaintext spool file.
+    path: str
+    # Plaintext byte count, equal to the file size at path.
+    size: int
 
 
 class AgentEventParamsReactionModel(BaseModel):
@@ -520,6 +559,52 @@ class AgentSendGroupMessageParams(BaseModel):
     pacto_virtual_bucket: str | None = None
 
 
+class AgentSendGroupReactionParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.send_group_reaction`.
+
+    React to an encrypted MLS group rumor as the specified bot.
+
+    Example:
+
+        >>> AgentSendGroupReactionParams(bot_id="...", emoji="...", group_id="...", target_rumor_id="...")
+
+    jsonrpc_method: ``"agent.send_group_reaction"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.send_group_reaction"
+    # Bot identity that will send the reaction.
+    bot_id: str
+    # Exactly one Unicode grapheme cluster.
+    emoji: str
+    # Hex-encoded MLS group ID.
+    group_id: str
+    # Hex id of the group rumor being reacted to.
+    target_rumor_id: str
+
+
+class AgentSendReactionParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.send_reaction`.
+
+    React to a direct-message rumor as the specified bot.
+
+    Example:
+
+        >>> AgentSendReactionParams(bot_id="...", emoji="...", recipient="...", target_rumor_id="...")
+
+    jsonrpc_method: ``"agent.send_reaction"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.send_reaction"
+    # Bot identity that will send the reaction.
+    bot_id: str
+    # Exactly one Unicode grapheme cluster.
+    emoji: str
+    # Nostr public key (npub or hex) of the recipient.
+    recipient: str
+    # Hex id of the rumor being reacted to.
+    target_rumor_id: str
+
+
 class AgentSetProfileParams(BaseModel):
     """
     Model for JSON-RPC method `agent.set_profile`.
@@ -762,4 +847,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendDmResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendDmParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

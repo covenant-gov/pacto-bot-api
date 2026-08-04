@@ -270,6 +270,8 @@ pub enum Method {
     HandlerUnregister,
     #[serde(rename = "agent.send_dm")]
     AgentSendDm,
+    #[serde(rename = "agent.send_reaction")]
+    AgentSendReaction,
     #[serde(rename = "agent.set_profile")]
     AgentSetProfile,
     #[serde(rename = "agent.error")]
@@ -300,6 +302,8 @@ pub enum Method {
     AgentExitMlsGroup,
     #[serde(rename = "agent.send_group_message")]
     AgentSendGroupMessage,
+    #[serde(rename = "agent.send_group_reaction")]
+    AgentSendGroupReaction,
     #[serde(rename = "agent.publish_key_package")]
     AgentPublishKeyPackage,
     #[serde(rename = "admin.send_test_dm")]
@@ -322,6 +326,7 @@ impl Method {
             Method::HandlerReconnect,
             Method::HandlerUnregister,
             Method::AgentSendDm,
+            Method::AgentSendReaction,
             Method::AgentSetProfile,
             Method::AgentError,
             Method::HandlerResponse,
@@ -337,6 +342,7 @@ impl Method {
             Method::AgentIsSquadMember,
             Method::AgentExitMlsGroup,
             Method::AgentSendGroupMessage,
+            Method::AgentSendGroupReaction,
             Method::AgentPublishKeyPackage,
             Method::AdminSendTestDm,
             Method::AdminCreateMlsGroup,
@@ -356,6 +362,7 @@ impl FromStr for Method {
             "handler.reconnect" => Ok(Self::HandlerReconnect),
             "handler.unregister" => Ok(Self::HandlerUnregister),
             "agent.send_dm" => Ok(Self::AgentSendDm),
+            "agent.send_reaction" => Ok(Self::AgentSendReaction),
             "agent.set_profile" => Ok(Self::AgentSetProfile),
             "agent.error" => Ok(Self::AgentError),
             "handler.response" => Ok(Self::HandlerResponse),
@@ -371,6 +378,7 @@ impl FromStr for Method {
             "agent.is_squad_member" => Ok(Self::AgentIsSquadMember),
             "agent.exit_mls_group" => Ok(Self::AgentExitMlsGroup),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
+            "agent.send_group_reaction" => Ok(Self::AgentSendGroupReaction),
             "agent.publish_key_package" => Ok(Self::AgentPublishKeyPackage),
             "admin.send_test_dm" => Ok(Self::AdminSendTestDm),
             "admin.create_mls_group" => Ok(Self::AdminCreateMlsGroup),
