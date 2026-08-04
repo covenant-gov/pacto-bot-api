@@ -8,6 +8,7 @@ pub enum EventType {
     DmReceived,
     MlsWelcomeReceived,
     MlsGroupMessageReceived,
+    ReactionReceived,
 }
 
 impl EventType {
@@ -17,8 +18,17 @@ impl EventType {
             EventType::DmReceived => "dm_received",
             EventType::MlsWelcomeReceived => "mls_welcome_received",
             EventType::MlsGroupMessageReceived => "mls_group_message_received",
+            EventType::ReactionReceived => "reaction_received",
         }
     }
+}
+
+/// Detail carried by a [`EventType::ReactionReceived`] event: the reacted-to
+/// rumor and the emoji the reaction used.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionPayload {
+    pub target_rumor_id: String,
+    pub emoji: String,
 }
 
 /// Notification sent from daemon to handler when an event arrives for a bot.
@@ -45,4 +55,8 @@ pub struct AgentEvent {
     pub rumor_id: String,
     pub author: String,
     pub timestamp: u64,
+    /// Present only on [`EventType::ReactionReceived`] events; mutually
+    /// exclusive with any future sub-object per KTD1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaction: Option<ReactionPayload>,
 }

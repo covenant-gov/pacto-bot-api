@@ -131,6 +131,29 @@ pub enum DaemonError {
     #[error("frame too large")]
     FrameTooLarge,
 
+    #[error("attachment exceeds the configured maximum of {limit} bytes")]
+    AttachmentTooLarge { limit: u64 },
+
+    #[error("attachment path rejected: outside the outbound spool root")]
+    AttachmentPathRejected,
+
+    /// The `category` string is a fixed classification such as `missing tag` or
+    /// `hash mismatch`. It never carries key material, a nonce, a path, or a
+    /// payload byte, per R33.
+    #[error("invalid attachment: {category}")]
+    AttachmentInvalid { category: String },
+
+    /// The `reason` string carries only the HTTP status and the server's
+    /// `X-Reason` header, never key material or payload bytes.
+    #[error("blob upload failed: {reason}")]
+    BlobUploadFailed { reason: String },
+
+    #[error("reaction content must be exactly one emoji")]
+    InvalidReaction,
+
+    #[error("spool entry not found")]
+    SpoolEntryMissing,
+
     #[error("failed to generate reconnect token: {0}")]
     TokenGeneration(#[from] getrandom::Error),
 }
@@ -150,6 +173,12 @@ impl DaemonError {
             DaemonError::StaleKeyPackage => -32016,
             DaemonError::KeyPackageNotFound { .. } => -32017,
             DaemonError::InvalidKeyPackage => -32018,
+            DaemonError::AttachmentTooLarge { .. } => -32019,
+            DaemonError::AttachmentPathRejected => -32020,
+            DaemonError::AttachmentInvalid { .. } => -32021,
+            DaemonError::BlobUploadFailed { .. } => -32022,
+            DaemonError::InvalidReaction => -32023,
+            DaemonError::SpoolEntryMissing => -32024,
             DaemonError::MlsEngineNotConfigured => -32013,
             DaemonError::MlsGroupAlreadyExists => -32014,
             DaemonError::MlsGroupNotFound => -32015,
@@ -260,5 +289,136 @@ mod tests {
         let rpc: JsonRpcError = err.into();
         assert_eq!(rpc.code, -32000);
         assert!(rpc.message.contains("echo-bot"));
+    }
+
+    #[test]
+    fn wave1_error_codes_match_plan() {
+        // KTD12: -32019 through -32024, allocated for the reaction/attachment
+        // parity wave.
+        assert_eq!(
+            DaemonError::AttachmentTooLarge { limit: 0 }.to_json_rpc_code(),
+            -32019
+        );
+        assert_eq!(
+            DaemonError::AttachmentPathRejected.to_json_rpc_code(),
+            -32020
+        );
+        assert_eq!(
+            DaemonError::AttachmentInvalid {
+                category: "x".into()
+            }
+            .to_json_rpc_code(),
+            -32021
+        );
+        assert_eq!(
+            DaemonError::BlobUploadFailed { reason: "x".into() }.to_json_rpc_code(),
+            -32022
+        );
+        assert_eq!(DaemonError::InvalidReaction.to_json_rpc_code(), -32023);
+        assert_eq!(DaemonError::SpoolEntryMissing.to_json_rpc_code(), -32024);
+    }
+
+    #[test]
+    fn daemon_specific_band_codes_are_unique_except_documented_collision() {
+        // Every `DaemonError` variant whose `to_json_rpc_code()` falls in the
+        // Pacto-specific server-error band (-32000..=-32099, per
+        // docs/solutions/best-practices/json-rpc-error-codes.md) must map to
+        // a unique code within that band, so a handler can distinguish error
+        // conditions by code alone. Variants mapped outside the band
+        // (-32600/-32601/-32602/-32603/-32700, or `JsonRpc`'s passthrough
+        // code) are excluded: those are JSON-RPC 2.0 standard codes the spec
+        // itself allows several conditions to share, not Pacto-specific
+        // allocations, and several require external crate error types
+        // (`toml::de::Error`, `refinery::Error`, `rusqlite::Error`, …) with
+        // no public constructor reachable from this test.
+        let band_variants: Vec<(&str, DaemonError)> = vec![
+            ("UnknownBot", DaemonError::UnknownBot("x".into())),
+            ("HandlerNotRegistered", DaemonError::HandlerNotRegistered),
+            (
+                "InvalidEventType",
+                DaemonError::InvalidEventType("x".into()),
+            ),
+            ("Bunker", DaemonError::Bunker("x".into())),
+            ("Nostr", DaemonError::Nostr("x".into())),
+            ("RateLimited", DaemonError::RateLimited),
+            ("UnauthorizedBot", DaemonError::UnauthorizedBot),
+            (
+                "HandlerAlreadyConnected",
+                DaemonError::HandlerAlreadyConnected,
+            ),
+            ("InvalidReconnectToken", DaemonError::InvalidReconnectToken),
+            (
+                "MethodNotSupported",
+                DaemonError::MethodNotSupported("x".into()),
+            ),
+            ("HandlerNotDispatched", DaemonError::HandlerNotDispatched),
+            ("HandlerBackpressure", DaemonError::HandlerBackpressure),
+            ("OperationTimedOut", DaemonError::OperationTimedOut),
+            (
+                "MlsEngineNotConfigured",
+                DaemonError::MlsEngineNotConfigured,
+            ),
+            ("MlsGroupAlreadyExists", DaemonError::MlsGroupAlreadyExists),
+            ("MlsGroupNotFound", DaemonError::MlsGroupNotFound),
+            ("StaleKeyPackage", DaemonError::StaleKeyPackage),
+            (
+                "KeyPackageNotFound",
+                DaemonError::KeyPackageNotFound {
+                    recipient: "npub1…".into(),
+                },
+            ),
+            ("InvalidKeyPackage", DaemonError::InvalidKeyPackage),
+            (
+                "AttachmentTooLarge",
+                DaemonError::AttachmentTooLarge { limit: 0 },
+            ),
+            (
+                "AttachmentPathRejected",
+                DaemonError::AttachmentPathRejected,
+            ),
+            (
+                "AttachmentInvalid",
+                DaemonError::AttachmentInvalid {
+                    category: "x".into(),
+                },
+            ),
+            (
+                "BlobUploadFailed",
+                DaemonError::BlobUploadFailed { reason: "x".into() },
+            ),
+            ("InvalidReaction", DaemonError::InvalidReaction),
+            ("SpoolEntryMissing", DaemonError::SpoolEntryMissing),
+        ];
+
+        let mut seen: std::collections::HashMap<i32, &str> = std::collections::HashMap::new();
+        for (name, err) in &band_variants {
+            let code = err.to_json_rpc_code();
+            assert!(
+                (-32099..=-32000).contains(&code),
+                "{name} code {code} is outside the Pacto-specific server-error band -32000..=-32099"
+            );
+            if let Some(existing) = seen.insert(code, name) {
+                panic!(
+                    "code {code} is shared by both {existing} and {name}; every daemon-specific \
+                     code must be unique within DaemonError"
+                );
+            }
+        }
+
+        // Documented pre-existing double allocation, deferred rather than
+        // fixed by this plan (see docs/plans/2026-08-03-001-feat-reactions-
+        // attachments-parity-plan.md line 210): `OperationTimedOut` (-32012)
+        // shares its code with the transport-level `HTTP_PAYLOAD_TOO_LARGE_CODE`
+        // constant in `src/transport/http.rs`, which has no corresponding
+        // `DaemonError` variant and therefore cannot appear in
+        // `band_variants` above. This assertion documents the collision
+        // instead of silently losing track of it.
+        const HTTP_PAYLOAD_TOO_LARGE_CODE_DOCUMENTED: i32 = -32012;
+        assert_eq!(
+            DaemonError::OperationTimedOut.to_json_rpc_code(),
+            HTTP_PAYLOAD_TOO_LARGE_CODE_DOCUMENTED,
+            "OperationTimedOut must keep -32012, the documented (deferred) collision with \
+             HTTP_PAYLOAD_TOO_LARGE_CODE in src/transport/http.rs"
+        );
     }
 }

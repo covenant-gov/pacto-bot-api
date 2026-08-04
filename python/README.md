@@ -471,11 +471,17 @@ Common capabilities a bot can request:
 
 - `ReadMessages` — receive `dm_received` and `mls_welcome_received` events.
 - `SendMessages` — reply or send DMs via `agent.send_dm`.
+- `ManageProfile` — update the bot's `kind:0` profile via `agent.set_profile`.
 - `SendGroupMessages` — send messages to Squads via `agent.send_group_message`.
 - `ReceiveGroupMessages` — receive `mls_group_message_received` events.
 - `CreateMlsGroup` — create new Squads via `agent.create_mls_group`.
 - `InviteToMlsGroup` — invite members to existing Squads via `agent.invite_to_mls_group`.
 - `ExitMlsGroup` — leave a Squad via `agent.exit_mls_group`.
+- `SendReactions` — send reactions via `agent.send_reaction`.
+- `SendAttachments` — send attachments via `agent.send_attachment`.
+- `SendGroupReactions` — send reactions to Squads via `agent.send_group_reaction`.
+- `SendGroupAttachments` — send attachments to Squads via `agent.send_group_attachment`.
+- `Admin` — perform privileged operations such as `agent.unregister_handler` on another handler.
 
 Request only the capabilities your bot needs.
 

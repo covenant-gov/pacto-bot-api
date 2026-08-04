@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 /// Daemon-wide settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DaemonConfigGenerated {
+    /// Maximum plaintext attachment size in bytes, applied to inbound payloads before spooling and to outbound payloads before encryption
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_max_bytes: Option<u64>,
+    /// Ordered list of Blossom hosts attachment ciphertext is uploaded to; entries are tried in order until one accepts the blob
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_servers: Option<Vec<String>>,
     /// data_dir
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
@@ -27,6 +33,9 @@ pub struct DaemonConfigGenerated {
     /// socket_path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<String>,
+    /// Seconds an abandoned outbound spool entry is retained before the retention sweep deletes it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_outbound_retention_secs: Option<u64>,
 }
 
 /// Per-bot identity configuration.

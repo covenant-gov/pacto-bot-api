@@ -2,9 +2,12 @@ mod common;
 
 /// req(R9, R11)
 use assert_cmd::Command;
+use pacto_bot_api::config::{DaemonConfig, VALID_CAPABILITIES};
 use predicates::prelude::*;
 use std::error::Error;
 use std::fs;
+use std::io::Write as _;
+use std::path::PathBuf;
 
 #[test]
 fn new_outputs_valid_nsec_snippet() -> Result<(), Box<dyn Error>> {
@@ -242,5 +245,153 @@ fn publish_profile_builds_kind0_event() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(event_id.len(), 64);
     assert!(event_id.chars().all(|c| c.is_ascii_hexdigit()));
+    Ok(())
+}
+
+/// U2: `validate_capability` accepts every string in `VALID_CAPABILITIES`,
+/// with the accepted set derived from the constant rather than retyped.
+#[test]
+fn new_accepts_every_valid_capability() -> Result<(), Box<dyn Error>> {
+    for (i, cap) in VALID_CAPABILITIES.iter().enumerate() {
+        let dir = common::tempdir()?;
+        let output = dir.path().join("pacto-bot-api.toml");
+
+        let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+        cmd.arg("new")
+            .arg(format!("cap-bot-{i}"))
+            .arg("--backend")
+            .arg("nsec")
+            .arg("--relays")
+            .arg("wss://relay.example.com")
+            .arg("--capabilities")
+            .arg(*cap)
+            .arg("--output")
+            .arg(&output);
+        cmd.assert().success();
+
+        let snippet = fs::read_to_string(&output)?;
+        assert!(
+            snippet.contains(&format!("capabilities = [\"{cap}\"]")),
+            "capability {cap} was rejected by validate_capability: {snippet}"
+        );
+    }
+    Ok(())
+}
+
+/// U2: `validate_capability` rejects an unknown capability string.
+#[test]
+fn new_rejects_unknown_capability() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let output = dir.path().join("pacto-bot-api.toml");
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("new")
+        .arg("bad-cap-bot")
+        .arg("--backend")
+        .arg("nsec")
+        .arg("--relays")
+        .arg("wss://relay.example.com")
+        .arg("--capabilities")
+        .arg("NotACapability")
+        .arg("--output")
+        .arg(&output);
+    let assert = cmd.assert().failure();
+    let stderr = std::str::from_utf8(&assert.get_output().stderr)?;
+
+    assert!(
+        stderr.contains("unknown capability: NotACapability"),
+        "{stderr}"
+    );
+    assert!(!output.exists());
+    Ok(())
+}
+
+/// U2: `prompt_capabilities`' interactive help text mentions every string in
+/// `VALID_CAPABILITIES`, so an operator running the wizard sees the full set
+/// even though only three used to be listed (KTD17).
+#[test]
+fn new_interactive_capability_prompt_mentions_every_capability() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let output = dir.path().join("pacto-bot-api.toml");
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("new")
+        .arg("--output")
+        .arg(&output)
+        .write_stdin("cap-prompt-bot\n\n\n\n\n\n\nn\nn\n");
+    let assert = cmd.assert().success();
+    let stdout = std::str::from_utf8(&assert.get_output().stdout)?;
+
+    for cap in VALID_CAPABILITIES {
+        assert!(
+            stdout.contains(cap),
+            "prompt_capabilities help text is missing {cap}: {stdout}"
+        );
+    }
+    Ok(())
+}
+
+/// U2: the `capabilities` description in `schemas/jsonrpc.json` mentions
+/// every string in `VALID_CAPABILITIES`.
+#[test]
+fn jsonrpc_schema_capabilities_description_mentions_every_capability() -> Result<(), Box<dyn Error>>
+{
+    let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("schemas/jsonrpc.json");
+    let raw = fs::read_to_string(&schema_path)?;
+    let schema: serde_json::Value = serde_json::from_str(&raw)?;
+    let methods = schema["methods"]
+        .as_array()
+        .ok_or("schemas/jsonrpc.json: methods must be an array")?;
+    let register = methods
+        .iter()
+        .find(|m| m["name"] == "handler.register")
+        .ok_or("schemas/jsonrpc.json: handler.register method is missing")?;
+    let description = register["params"][0]["schema"]["properties"]["capabilities"]["description"]
+        .as_str()
+        .ok_or("schemas/jsonrpc.json: handler.register capabilities description is missing")?;
+
+    for cap in VALID_CAPABILITIES {
+        assert!(
+            description.contains(cap),
+            "jsonrpc.json capabilities description is missing {cap}: {description}"
+        );
+    }
+    Ok(())
+}
+
+/// U2: a bot configured with each of the four new wave-1 capabilities loads
+/// without a validation error. `SendGroupReactions` and `SendGroupAttachments`
+/// are in `MLS_CAPABILITIES`, so they also need `mls_db_path` set.
+#[test]
+fn bot_with_each_new_capability_loads_without_validation_error() -> Result<(), Box<dyn Error>> {
+    for cap in [
+        "SendReactions",
+        "SendAttachments",
+        "SendGroupReactions",
+        "SendGroupAttachments",
+    ] {
+        let dir = common::tempdir()?;
+        let (mut bot, _nsec) = common::generate_nsec_bot("cap-bot")?;
+        bot.capabilities = vec![cap.to_string()];
+        let needs_mls = matches!(cap, "SendGroupReactions" | "SendGroupAttachments");
+        if needs_mls {
+            bot.mls_db_path = Some(PathBuf::from("mls.db"));
+        }
+
+        let config_path = common::make_config(&dir, vec![bot])?;
+        if needs_mls {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&config_path)?
+                .write_all(b"mls_db_path = \"mls.db\"\n")?;
+        }
+
+        let loaded = DaemonConfig::load(&config_path);
+        assert!(
+            loaded.is_ok(),
+            "bot granting {cap} failed to load: {:?}",
+            loaded.err()
+        );
+    }
     Ok(())
 }

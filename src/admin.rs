@@ -11,7 +11,8 @@ use nix::unistd::Pid;
 use nostr::key::Keys;
 use nostr::{PublicKey, ToBech32};
 use pacto_bot_api::config::{
-    BotConfig, DaemonConfig, SigningConfig, enforce_config_permissions, validate_bot_id,
+    BotConfig, DaemonConfig, SigningConfig, VALID_CAPABILITIES, enforce_config_permissions,
+    validate_bot_id,
 };
 use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::diagnostics::{
@@ -1252,19 +1253,18 @@ fn validate_relay_url(url: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
+/// Validate a single capability string against the daemon's canonical set.
+///
+/// Accepts exactly the strings in [`VALID_CAPABILITIES`]; the error message
+/// lists that set so it cannot drift from the source of truth (KTD17).
 fn validate_capability(cap: &str) -> Result<(), DaemonError> {
-    match cap {
-        "ReadMessages"
-        | "SendMessages"
-        | "ManageProfile"
-        | "SendGroupMessages"
-        | "ReceiveGroupMessages"
-        | "CreateMlsGroup"
-        | "InviteToMlsGroup"
-        | "ExitMlsGroup" => Ok(()),
-        _ => Err(DaemonError::Config(format!(
-            "unknown capability: {cap}; expected ReadMessages, SendMessages, ManageProfile, SendGroupMessages, ReceiveGroupMessages, CreateMlsGroup, InviteToMlsGroup, or ExitMlsGroup"
-        ))),
+    if VALID_CAPABILITIES.contains(&cap) {
+        Ok(())
+    } else {
+        Err(DaemonError::Config(format!(
+            "unknown capability: {cap}; expected one of: {}",
+            VALID_CAPABILITIES.join(", ")
+        )))
     }
 }
 
@@ -1364,9 +1364,7 @@ fn prompt_relays() -> Result<Vec<String>, DaemonError> {
 
 fn prompt_capabilities() -> Result<Vec<String>, DaemonError> {
     println!("\nCapabilities grant handlers permission to act on behalf of this bot.");
-    println!("  ReadMessages   - receive decrypted DMs and group messages");
-    println!("  SendMessages   - send replies as the bot");
-    println!("  ManageProfile  - update the bot's kind:0 profile");
+    println!("  Valid capabilities: {}", VALID_CAPABILITIES.join(", "));
 
     loop {
         let input = prompt_line("Capabilities (comma-separated) [ReadMessages, SendMessages]: ")?;

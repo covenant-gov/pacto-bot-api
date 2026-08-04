@@ -29,7 +29,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
-use crate::events::{AgentEvent, EventType};
+use crate::events::{AgentEvent, EventType, ReactionPayload};
 use crate::mls::MlsEngineHandle;
 use crate::signer::Signer;
 
@@ -778,10 +778,25 @@ impl NostrClient {
     }
 
     /// Decrypt a single incoming gift-wrap event using the registered bot signer.
+    ///
+    /// Errors when the decrypted rumor's kind delivers no event (an
+    /// unrepresented kind, or an invalid reaction missing its target `e` tag
+    /// or content) — this single-shot helper has no cursor to advance past a
+    /// skipped rumor, unlike the inbound loop. Callers that need to tell "no
+    /// event for this rumor kind" apart from a decrypt failure, or that need
+    /// to advance past a skip without erroring (the inbound notification
+    /// loop, and any future kind such as attachments or MLS group variants),
+    /// should call `process_gift_wrap` directly instead.
     pub async fn decrypt_event(&self, event: &Event) -> Result<AgentEvent, DaemonError> {
         let snapshot = self.signers.read().await.clone();
         let mls_engines = self.mls_engines.read().await.clone();
-        Self::process_gift_wrap(&snapshot, &mls_engines, event, self.diagnostics.as_ref()).await
+        Self::process_gift_wrap(&snapshot, &mls_engines, event, self.diagnostics.as_ref())
+            .await?
+            .ok_or_else(|| {
+                DaemonError::Nostr(
+                    "rumor kind delivers no event (unrepresented kind or invalid reaction)".into(),
+                )
+            })
     }
 
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
@@ -813,14 +828,22 @@ impl NostrClient {
                                     tokio::spawn(async move {
                                         let snapshot = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
-                                        let result = Self::process_gift_wrap(
+                                        match Self::process_gift_wrap(
                                             &snapshot,
                                             &mls_engines,
                                             &event,
                                             diagnostics.as_ref(),
                                         )
-                                        .await;
-                                        let _ = tx.send(result);
+                                        .await
+                                        {
+                                            Ok(Some(agent_event)) => {
+                                                let _ = tx.send(Ok(agent_event));
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e));
+                                            }
+                                        }
                                     });
                                 } else if event.kind == Kind::MlsGroupMessage {
                                     // Spawn each group message decryption in its own task so that
@@ -867,7 +890,7 @@ impl NostrClient {
         mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
         diagnostics: Option<&Diagnostics>,
-    ) -> Result<AgentEvent, DaemonError> {
+    ) -> Result<Option<AgentEvent>, DaemonError> {
         info!(
             event_id = %event.id.to_hex(),
             kind = %event.kind.as_u16(),
@@ -932,10 +955,32 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("rumor missing id".into()))?
             .to_hex();
 
-        let event_type = if rumor.kind == Kind::MlsWelcome {
-            EventType::MlsWelcomeReceived
-        } else {
-            EventType::DmReceived
+        let (event_type, reaction) = match rumor.kind {
+            Kind::PrivateDirectMessage => (EventType::DmReceived, None),
+            Kind::MlsWelcome => (EventType::MlsWelcomeReceived, None),
+            Kind::Reaction => match Self::extract_reaction(&rumor) {
+                Some(payload) => (EventType::ReactionReceived, Some(payload)),
+                None => {
+                    debug!(
+                        event_id = %event.id.to_hex(),
+                        rumor_id = %rumor_id,
+                        "reaction rumor missing target e tag or content; recording invalid event"
+                    );
+                    if let Some(d) = diagnostics {
+                        d.record_invalid_event().await;
+                    }
+                    return Ok(None);
+                }
+            },
+            other => {
+                debug!(
+                    event_id = %event.id.to_hex(),
+                    rumor_id = %rumor_id,
+                    kind = %other.as_u16(),
+                    "skipping unrepresented rumor kind"
+                );
+                return Ok(None);
+            }
         };
 
         // For MLS Welcome messages, process the welcome using the bot's
@@ -974,7 +1019,7 @@ impl NostrClient {
             d.record_event_decrypted().await;
         }
 
-        Ok(AgentEvent {
+        Ok(Some(AgentEvent {
             bot_id: bot_id.clone(),
             event_id: event.id.to_hex(),
             event_type,
@@ -983,7 +1028,30 @@ impl NostrClient {
             rumor_id,
             author: seal_event.pubkey.to_hex(),
             timestamp: rumor.created_at.as_u64(),
-            ..Default::default()
+            reaction,
+        }))
+    }
+
+    /// Extract a [`ReactionPayload`] from a decrypted kind:7 rumor, matching
+    /// the tag layout `EventBuilder::reaction_extended` writes: the last `e`
+    /// tag names the target rumor and the content is the reaction emoji.
+    ///
+    /// Returns `None` when the rumor has no target `e` tag or empty content,
+    /// in which case the caller records an invalid event and delivers
+    /// nothing rather than erroring the whole gift-wrap decrypt.
+    fn extract_reaction(rumor: &UnsignedEvent) -> Option<ReactionPayload> {
+        if rumor.content.is_empty() {
+            return None;
+        }
+        let target_rumor_id = rumor
+            .tags
+            .filter(TagKind::e())
+            .last()?
+            .content()?
+            .to_string();
+        Some(ReactionPayload {
+            target_rumor_id,
+            emoji: rumor.content.clone(),
         })
     }
 
@@ -1493,7 +1561,8 @@ mod tests {
         let mls_engines = client.mls_engines.read().await.clone();
         let agent_event = NostrClient::process_gift_wrap(&signers, &mls_engines, &event, None)
             .await
-            .unwrap();
+            .unwrap()
+            .expect("kind:14 rumor should deliver a dm_received event");
         assert_eq!(agent_event.bot_id, "bot-1");
         assert_eq!(agent_event.event_type, EventType::DmReceived);
         assert_eq!(agent_event.content, "secret message");
