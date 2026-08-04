@@ -443,6 +443,8 @@ pub struct HandlerReconnectResponse {
     pub registered_events: Vec<String>,
     #[serde(default)]
     pub own_pubkeys: BTreeMap<String, String>,
+    #[serde(default)]
+    pub spool_dir: String,
 }
 
 /// Typed payload returned by the `agent.metrics` JSON-RPC method.
@@ -920,6 +922,7 @@ mod tests {
             handler_id: "h1".into(),
             registered_events: vec!["dm_received".into()],
             own_pubkeys: BTreeMap::from([("echo-bot".into(), "npub1test".into())]),
+            spool_dir: "/var/lib/pacto/spool/outbound".into(),
         };
         let json = serde_json::to_value(&response).unwrap();
         let own_pubkeys = json.get("own_pubkeys").unwrap().as_object().unwrap();

@@ -109,9 +109,13 @@
               "additionalProperties": { "type": "string" },
               "default": {},
               "description": "Map from daemon-local bot_id to the bot's Nostr public key (npub)."
+            },
+            "spool_dir": {
+              "type": "string",
+              "description": "Absolute outbound spool directory where handlers may stage attachment payloads."
             }
           },
-          "required": ["handler_id", "registered_events"]
+          "required": ["handler_id", "registered_events", "spool_dir"]
         }
       }
     },

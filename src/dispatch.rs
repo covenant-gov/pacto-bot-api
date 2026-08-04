@@ -1045,6 +1045,11 @@ impl Dispatch {
             handler_id,
             registered_events,
             own_pubkeys,
+            spool_dir: self
+                .outbound_attachments
+                .as_ref()
+                .map(|processor| processor.spool_dir().to_string_lossy().into_owned())
+                .unwrap_or_default(),
         })?))
     }
 

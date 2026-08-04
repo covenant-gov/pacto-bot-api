@@ -787,7 +787,7 @@ class HandlerReconnectResponse(BaseModel):
 
     Example:
 
-        >>> HandlerReconnectResponse(handler_id="...", registered_events=[])
+        >>> HandlerReconnectResponse(handler_id="...", registered_events=[], spool_dir="...")
 
     jsonrpc_method: ``"handler.reconnect"``
     """
@@ -798,6 +798,8 @@ class HandlerReconnectResponse(BaseModel):
     own_pubkeys: dict[str, str] = None
     # Event types the handler is now subscribed to.
     registered_events: list[str]
+    # Absolute outbound spool directory where handlers may stage attachment payloads.
+    spool_dir: str
 
 
 class HandlerRegisterParams(BaseModel):

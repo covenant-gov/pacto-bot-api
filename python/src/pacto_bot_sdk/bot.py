@@ -149,6 +149,7 @@ class Bot:
                 )
 
         self._own_pubkeys: dict[str, str] | None = None
+        self._spool_dir: str | None = None
         self._decorator_state_lock = asyncio.Lock()
         self._throttle_state: dict[str, float] = {}
         self._lock_state: dict[str, asyncio.Lock] = {}
@@ -341,6 +342,30 @@ class Bot:
         self._event_handlers["mls_welcome_received"] = handler
         return handler
 
+    def on_reaction(self, handler: CommandHandler) -> CommandHandler:
+        """Register a callback for direct-message reaction events."""
+        return self._register_event_handler("reaction_received", handler)
+
+    def on_attachment(self, handler: CommandHandler) -> CommandHandler:
+        """Register a callback for verified direct-message attachment events."""
+        return self._register_event_handler("attachment_received", handler)
+
+    def on_squad_reaction(self, handler: CommandHandler) -> CommandHandler:
+        """Register a callback for MLS squad reaction events."""
+        return self._register_event_handler("mls_group_reaction_received", handler)
+
+    def on_squad_attachment(self, handler: CommandHandler) -> CommandHandler:
+        """Register a callback for verified MLS squad attachment events."""
+        return self._register_event_handler("mls_group_attachment_received", handler)
+
+    def _register_event_handler(
+        self, event_type: str, handler: CommandHandler
+    ) -> CommandHandler:
+        if event_type not in self.event_types:
+            self.event_types.append(event_type)
+        self._event_handlers[event_type] = handler
+        return handler
+
     def hears(
         self, token: str, *, require_mention: bool | None = None
     ) -> Callable[[CommandHandler], CommandHandler]:
@@ -510,6 +535,40 @@ class Bot:
             reply_to=reply_to,
         )
 
+    async def send_reaction(
+        self, recipient: str, target_rumor_id: str, emoji: str
+    ) -> str:
+        """React to a direct-message rumor as this bot."""
+        return await self._client.agent_send_reaction(
+            bot_id=self.bot_id,
+            recipient=recipient,
+            target_rumor_id=target_rumor_id,
+            emoji=emoji,
+        )
+
+    async def send_attachment(
+        self,
+        recipient: str,
+        *,
+        spool_path: str | None = None,
+        inline_base64: str | None = None,
+        filename: str | None = None,
+        blurhash: str | None = None,
+        dim: str | None = None,
+        reply_to: str | None = None,
+    ) -> str:
+        """Encrypt, upload, and send a direct-message attachment."""
+        return await self._client.agent_send_attachment(
+            bot_id=self.bot_id,
+            recipient=recipient,
+            spool_path=spool_path,
+            inline_base64=inline_base64,
+            filename=filename,
+            blurhash=blurhash,
+            dim=dim,
+            reply_to=reply_to,
+        )
+
     async def set_profile(
         self,
         name: str | None = None,
@@ -533,6 +592,11 @@ class Bot:
         if self._own_pubkeys is None:
             return None
         return self._own_pubkeys.get(self.bot_id)
+
+    @property
+    def spool_dir(self) -> str | None:
+        """Absolute outbound spool directory reported during registration."""
+        return self._spool_dir
 
     def ignore(self, event: AgentEventParams) -> dict[str, Any]:
         """Return a terminal ``handler_response(action=\"ignore\")`` dict."""
@@ -563,6 +627,40 @@ class Bot:
             group_id=group_id,
             content=content,
             pacto_virtual_bucket=pacto_virtual_bucket,
+        )
+
+    async def send_group_reaction(
+        self, group_id: str, target_rumor_id: str, emoji: str
+    ) -> str:
+        """React to a rumor in an MLS squad as this bot."""
+        return await self._client.agent_send_group_reaction(
+            bot_id=self.bot_id,
+            group_id=group_id,
+            target_rumor_id=target_rumor_id,
+            emoji=emoji,
+        )
+
+    async def send_group_attachment(
+        self,
+        group_id: str,
+        *,
+        spool_path: str | None = None,
+        inline_base64: str | None = None,
+        filename: str | None = None,
+        blurhash: str | None = None,
+        dim: str | None = None,
+        reply_to: str | None = None,
+    ) -> str:
+        """Encrypt, upload, and send an attachment to an MLS squad."""
+        return await self._client.agent_send_group_attachment(
+            bot_id=self.bot_id,
+            group_id=group_id,
+            spool_path=spool_path,
+            inline_base64=inline_base64,
+            filename=filename,
+            blurhash=blurhash,
+            dim=dim,
+            reply_to=reply_to,
         )
 
     async def _default_squad_join_handler(
@@ -872,6 +970,7 @@ class Bot:
 
         self._handler_id = result.handler_id
         self._own_pubkeys = result.own_pubkeys
+        self._spool_dir = result.spool_dir
         self._logger.info(
             f"registered handler_id={self._handler_id} events={result.registered_events}"
         )

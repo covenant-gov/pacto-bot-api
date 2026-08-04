@@ -182,13 +182,29 @@ class HttpTransport:
     """HTTP+SSE localhost transport using plain asyncio TCP streams.
 
     Outbound frames are sent as ``POST /`` with ``X-Pacto-Bot-Secret``.
-    Mutating methods (``agent.send_dm``, ``agent.set_profile``,
-    ``agent.error``) and the handler response notification (``handler.response``)
-    also include ``X-Pacto-Handler-Id``. Inbound daemon notifications are
+    Mutating agent methods and the handler response notification
+    (``handler.response``) also include ``X-Pacto-Handler-Id``. Inbound daemon notifications are
     consumed from ``GET /events?handler_id=<id>`` as a text/event-stream.
     """
 
-    MUTATING_METHODS = {"agent.send_dm", "agent.set_profile", "agent.error", "handler.response"}
+    MUTATING_METHODS = {
+        "handler.unregister",
+        "agent.send_dm",
+        "agent.send_reaction",
+        "agent.send_attachment",
+        "agent.set_profile",
+        "agent.error",
+        "agent.list_handlers",
+        "agent.unregister_handler",
+        "agent.send_group_message",
+        "agent.send_group_reaction",
+        "agent.send_group_attachment",
+        "agent.publish_key_package",
+        "agent.create_mls_group",
+        "agent.invite_to_mls_group",
+        "agent.exit_mls_group",
+    }
+    HANDLER_SCOPED_METHODS = MUTATING_METHODS | {"handler.response"}
 
     def __init__(
         self,
@@ -300,7 +316,7 @@ class HttpTransport:
             f"Content-Length: {len(body.encode('utf-8'))}",
             "Connection: close",
         ]
-        if method in self.MUTATING_METHODS and self.handler_id:
+        if method in self.HANDLER_SCOPED_METHODS and self.handler_id:
             header_lines.append(f"X-Pacto-Handler-Id: {self.handler_id}")
         request = "\r\n".join(header_lines) + "\r\n\r\n" + body
 

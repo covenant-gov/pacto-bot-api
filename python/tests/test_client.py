@@ -54,6 +54,7 @@ async def test_handler_register_sends_frame_and_awaits_result(client, transport)
                 "handler_id": "h-123",
                 "reconnect_token": "rt-123",
                 "registered_events": ["dm_received"],
+                "spool_dir": "/tmp/pacto-spool",
             },
         }
     )
@@ -62,6 +63,7 @@ async def test_handler_register_sends_frame_and_awaits_result(client, transport)
     assert isinstance(result, HandlerRegisterResponse)
     assert result.handler_id == "h-123"
     assert result.registered_events == ["dm_received"]
+    assert result.spool_dir == "/tmp/pacto-spool"
 
 
 @pytest.mark.asyncio
@@ -136,7 +138,7 @@ async def test_mismatched_response_id_ignored(client, transport):
         {
             "jsonrpc": "2.0",
             "id": "unknown-id",
-            "result": {"handler_id": "h-999", "registered_events": []},
+            "result": {"handler_id": "h-999", "registered_events": [], "spool_dir": "/tmp/pacto-spool"},
         }
     )
     await asyncio.sleep(0)
@@ -165,7 +167,10 @@ async def test_handler_register_params_model_construction():
 async def test_handler_register_result_model_construction():
     """The generated result model validates and exposes its fields."""
     result = HandlerRegisterResponse(
-        handler_id="h-1", reconnect_token="rt-1", registered_events=["dm_received"]
+        handler_id="h-1",
+        reconnect_token="rt-1",
+        registered_events=["dm_received"],
+        spool_dir="/tmp/pacto-spool",
     )
     assert result.handler_id == "h-1"
     assert result.jsonrpc_method == "handler.register"
@@ -250,6 +255,7 @@ async def test_per_call_timeout_overrides_default(mock_transport):
                     "handler_id": "h-1",
                     "reconnect_token": "rt-1",
                     "registered_events": ["dm_received"],
+                    "spool_dir": "/tmp/pacto-spool",
                 },
             }
         )
@@ -283,6 +289,7 @@ async def test_call_timeout_none_disables_default(mock_transport):
                     "handler_id": "h-1",
                     "reconnect_token": "rt-1",
                     "registered_events": ["dm_received"],
+                    "spool_dir": "/tmp/pacto-spool",
                 },
             }
         )

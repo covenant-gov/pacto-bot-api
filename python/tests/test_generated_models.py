@@ -12,8 +12,16 @@ from pacto_bot_sdk import (
     AgentEventParams,
     AgentMetricsParams,
     AgentMetricsResponse,
+    AgentSendAttachmentParams,
+    AgentSendAttachmentResponse,
     AgentSendDmParams,
     AgentSendDmResponse,
+    AgentSendGroupAttachmentParams,
+    AgentSendGroupAttachmentResponse,
+    AgentSendGroupReactionParams,
+    AgentSendGroupReactionResponse,
+    AgentSendReactionParams,
+    AgentSendReactionResponse,
     AgentSetProfileParams,
     AgentSetProfileResponse,
     AgentStatusParams,
@@ -282,19 +290,25 @@ def test_handler_register_result_constructs_with_valid_data():
         handler_id="h-123",
         reconnect_token="rt-123",
         registered_events=["dm_received"],
+        spool_dir="/var/lib/pacto/spool/outbound",
     )
     assert result.handler_id == "h-123"
     assert result.registered_events == ["dm_received"]
+    assert result.spool_dir == "/var/lib/pacto/spool/outbound"
     assert result.jsonrpc_method == "handler.register"
 
 
 def test_handler_register_result_requires_all_fields():
     sample = {
         "handler_id": "h-123",
+        "reconnect_token": "rt-123",
         "registered_events": ["dm_received"],
+        "spool_dir": "/var/lib/pacto/spool/outbound",
     }
     _assert_required_fields(
-        HandlerRegisterResponse, sample, ["handler_id", "registered_events"]
+        HandlerRegisterResponse,
+        sample,
+        ["handler_id", "reconnect_token", "registered_events", "spool_dir"],
     )
 
 
@@ -359,3 +373,82 @@ def test_agent_version_params_constructs():
 def test_handler_unregister_params_constructs():
     params = HandlerUnregisterParams()
     assert isinstance(params, HandlerUnregisterParams)
+
+# ---------------------------------------------------------------------------
+# Reaction and attachment wire surface
+# ---------------------------------------------------------------------------
+
+
+def test_new_event_type_wire_names_round_trip():
+    for event_type in [
+        "reaction_received",
+        "attachment_received",
+        "mls_group_reaction_received",
+        "mls_group_attachment_received",
+    ]:
+        params = AgentEventParams(
+            bot_id="test-bot",
+            event_id="e-1",
+            type=event_type,
+            content="",
+            rumor_id="r-1",
+            author="npub1author",
+            timestamp=1,
+        )
+        assert AgentEventParams.model_validate(params.model_dump()).type == event_type
+
+
+def test_reaction_params_require_complete_targets():
+    dm = {
+        "bot_id": "test-bot",
+        "recipient": "npub1recipient",
+        "target_rumor_id": "ab" * 32,
+        "emoji": "👍",
+    }
+    group = {
+        "bot_id": "test-bot",
+        "group_id": "cd" * 32,
+        "target_rumor_id": "ab" * 32,
+        "emoji": "👍",
+    }
+    _assert_required_fields(AgentSendReactionParams, dm, list(dm))
+    _assert_required_fields(AgentSendGroupReactionParams, group, list(group))
+    assert AgentSendReactionResponse is str
+    assert AgentSendGroupReactionResponse is str
+
+
+def test_attachment_params_require_target_and_default_metadata():
+    dm = {"bot_id": "test-bot", "recipient": "npub1recipient"}
+    group = {"bot_id": "test-bot", "group_id": "cd" * 32}
+    optional = [
+        "blurhash",
+        "dim",
+        "filename",
+        "inline_base64",
+        "reply_to",
+        "spool_path",
+    ]
+    _assert_required_fields(AgentSendAttachmentParams, dm, list(dm))
+    _assert_required_fields(AgentSendGroupAttachmentParams, group, list(group))
+    _assert_optional_defaults_to_none(AgentSendAttachmentParams, dm, optional)
+    _assert_optional_defaults_to_none(AgentSendGroupAttachmentParams, group, optional)
+    assert AgentSendAttachmentResponse is str
+    assert AgentSendGroupAttachmentResponse is str
+
+
+def test_generated_models_all_exports_new_surface():
+    from pacto_bot_sdk._generated import models
+
+    expected = {
+        "AgentEventParamsAttachmentModel",
+        "AgentEventParamsReactionModel",
+        "AgentSendAttachmentParams",
+        "AgentSendAttachmentResponse",
+        "AgentSendGroupAttachmentParams",
+        "AgentSendGroupAttachmentResponse",
+        "AgentSendGroupReactionParams",
+        "AgentSendGroupReactionResponse",
+        "AgentSendReactionParams",
+        "AgentSendReactionResponse",
+    }
+    assert expected <= set(models.__all__)

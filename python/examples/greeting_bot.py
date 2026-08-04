@@ -34,6 +34,18 @@ async def hello(event, bot):
     return response
 
 
+@bot.on_reaction
+async def reaction(event, bot):
+    """Acknowledge a typed reaction without treating its emoji as a command."""
+    return bot.reply(event, f"Thanks for reacting {event.reaction.emoji}!")
+
+
+@bot.on_attachment
+async def attachment(event, bot):
+    """Acknowledge a verified attachment path supplied by the daemon."""
+    return bot.reply(event, f"Received {event.attachment.filename or 'your file'}.")
+
+
 @bot.default
 async def unknown(event, bot):
     bot.log("handling unknown command", level="debug")

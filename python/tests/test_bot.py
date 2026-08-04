@@ -160,7 +160,7 @@ async def test_command_handler_receives_parsed_args_and_sends_response(bot, tran
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -285,7 +285,7 @@ async def test_unknown_command_routes_to_default(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -327,7 +327,7 @@ async def test_unknown_command_without_default_ignores(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -425,7 +425,7 @@ async def test_bot_degraded_logs_recovery_when_circuit_closes(
     transport.inject({
         "jsonrpc": "2.0",
         "id": register_frame["id"],
-        "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
     })
 
     await asyncio.sleep(0.1)
@@ -489,7 +489,7 @@ async def test_bot_reconnect_after_transient_disconnect(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
     await asyncio.sleep(0.05)
@@ -511,7 +511,7 @@ async def test_bot_reconnect_after_transient_disconnect(
     transport.inject({
         "jsonrpc": "2.0",
         "id": reconnect_frame["id"],
-        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
     })
 
     await asyncio.sleep(0.05)
@@ -547,7 +547,7 @@ async def test_bot_reconnect_falls_back_to_register_when_token_rejected(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
     await asyncio.sleep(0.05)
@@ -586,7 +586,7 @@ async def test_bot_reconnect_falls_back_to_register_when_token_rejected(
     transport.inject({
         "jsonrpc": "2.0",
         "id": register_frame["id"],
-        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
     })
 
     await asyncio.sleep(0.05)
@@ -622,7 +622,7 @@ async def test_bot_reconnect_falls_back_to_register_on_invalid_reconnect_token(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
     await asyncio.sleep(0.05)
@@ -661,7 +661,7 @@ async def test_bot_reconnect_falls_back_to_register_on_invalid_reconnect_token(
     transport.inject({
         "jsonrpc": "2.0",
         "id": register_frame["id"],
-        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-2", "reconnect_token": "rt-2", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
     })
 
     await asyncio.sleep(0.05)
@@ -779,7 +779,7 @@ async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
     await asyncio.sleep(0.05)
@@ -799,7 +799,7 @@ async def test_bot_custom_transport_instance_is_reused_and_reconnectable(
     transport.inject({
         "jsonrpc": "2.0",
         "id": reconnect_frame["id"],
-        "result": {"handler_id": "h-1", "registered_events": ["dm_received"]},
+        "result": {"handler_id": "h-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
     })
 
     await asyncio.sleep(0.05)
@@ -856,7 +856,7 @@ async def test_handler_exception_replies_with_friendly_error_by_default(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -908,7 +908,7 @@ async def test_handler_exception_is_silent_when_reply_on_error_disabled(
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -954,7 +954,7 @@ async def test_registration_sends_correct_capabilities(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -992,7 +992,7 @@ async def test_status_handler_called(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -1035,7 +1035,7 @@ async def test_rate_limited_handler_called(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -1070,7 +1070,7 @@ async def test_rate_limited_handler_optional(bot, transport):
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -2068,7 +2068,7 @@ async def test_unknown_notification_warns_once_per_type(transport: MockTransport
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -2104,7 +2104,7 @@ async def test_unknown_notification_warns_once_per_distinct_type(transport: Mock
             transport.inject({
                 "jsonrpc": "2.0",
                 "id": frame["id"],
-                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"]},
+                "result": {"handler_id": "h-1", "reconnect_token": "rt-1", "registered_events": ["dm_received"], "spool_dir": "/tmp/pacto-spool"},
             })
             break
 
@@ -2185,6 +2185,7 @@ async def _start_registered_bot(bot: Bot, transport: MockTransport) -> asyncio.T
                     "handler_id": "h-1",
                     "reconnect_token": "rt-1",
                     "registered_events": list(bot.event_types),
+                    "spool_dir": "/tmp/pacto-spool",
                 },
             })
             break
@@ -2647,3 +2648,89 @@ async def test_mention_metadata_reaches_squad_handler(
     bot._request_shutdown()
     await task
 
+@pytest.mark.parametrize(
+    ("decorator_name", "event_type"),
+    [
+        ("on_reaction", "reaction_received"),
+        ("on_attachment", "attachment_received"),
+        ("on_squad_reaction", "mls_group_reaction_received"),
+        ("on_squad_attachment", "mls_group_attachment_received"),
+    ],
+)
+def test_content_decorators_subscribe_and_register_handlers(
+    decorator_name, event_type
+):
+    bot = Bot("test-bot", transport=MockTransport())
+
+    async def handler(event, current_bot):
+        return current_bot.ignore(event)
+
+    decorated = getattr(bot, decorator_name)(handler)
+    assert decorated is handler
+    assert event_type in bot.event_types
+    assert bot._event_handlers[event_type] is handler
+
+
+@pytest.mark.asyncio
+async def test_reaction_send_helpers_prefill_bot_id():
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_send_reaction.return_value = "dm-event"
+    bot._client.agent_send_group_reaction.return_value = "group-event"
+
+    assert await bot.send_reaction("npub1recipient", "ab" * 32, "👍") == "dm-event"
+    assert await bot.send_group_reaction("cd" * 32, "ab" * 32, "👍") == "group-event"
+    bot._client.agent_send_reaction.assert_awaited_once_with(
+        bot_id="test-bot",
+        recipient="npub1recipient",
+        target_rumor_id="ab" * 32,
+        emoji="👍",
+    )
+    bot._client.agent_send_group_reaction.assert_awaited_once_with(
+        bot_id="test-bot",
+        group_id="cd" * 32,
+        target_rumor_id="ab" * 32,
+        emoji="👍",
+    )
+
+
+@pytest.mark.asyncio
+async def test_attachment_send_helpers_forward_sources_and_metadata():
+    bot = Bot("test-bot", transport=MockTransport())
+    bot._client = AsyncMock()
+    bot._client.agent_send_attachment.return_value = "dm-event"
+    bot._client.agent_send_group_attachment.return_value = "group-event"
+
+    assert await bot.send_attachment(
+        "npub1recipient", spool_path="report.pdf", filename="report.pdf"
+    ) == "dm-event"
+    assert await bot.send_group_attachment(
+        "cd" * 32, inline_base64="aGk=", filename="hello.txt"
+    ) == "group-event"
+    bot._client.agent_send_attachment.assert_awaited_once_with(
+        bot_id="test-bot",
+        recipient="npub1recipient",
+        spool_path="report.pdf",
+        inline_base64=None,
+        filename="report.pdf",
+        blurhash=None,
+        dim=None,
+        reply_to=None,
+    )
+    bot._client.agent_send_group_attachment.assert_awaited_once_with(
+        bot_id="test-bot",
+        group_id="cd" * 32,
+        spool_path=None,
+        inline_base64="aGk=",
+        filename="hello.txt",
+        blurhash=None,
+        dim=None,
+        reply_to=None,
+    )
+
+
+def test_spool_dir_property_tracks_registration_result():
+    bot = Bot("test-bot", transport=MockTransport())
+    assert bot.spool_dir is None
+    bot._spool_dir = "/var/lib/pacto/spool/outbound"
+    assert bot.spool_dir == "/var/lib/pacto/spool/outbound"
