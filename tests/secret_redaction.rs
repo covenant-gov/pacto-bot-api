@@ -1,5 +1,6 @@
 #![allow(clippy::panic, clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod support;
 
 /// req(R34)
@@ -74,7 +75,7 @@ fn capture_logs_during_helper_records_events_without_leaks() {
 #[test]
 fn startup_logs_warn_about_nsec_without_leaking_marker() {
     let fixture = SensitiveFixture::new();
-    let dir = TempDir::new().unwrap();
+    let dir = common::tempdir().unwrap();
     let config = format!(
         r#"
 [daemon]
@@ -420,8 +421,6 @@ async fn raw_http_post(
 // ---------------------------------------------------------------------------
 // MLS group admin secret-redaction tests
 // ---------------------------------------------------------------------------
-
-mod common;
 
 use std::sync::Arc;
 

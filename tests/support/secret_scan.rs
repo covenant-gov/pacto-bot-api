@@ -247,6 +247,18 @@ impl SensitiveFixture {
                 self.http_token_marker.as_ptr() as usize,
                 self.http_token_marker.len(),
             ),
+            (
+                self.attachment_key_marker.as_ptr() as usize,
+                self.attachment_key_marker.len(),
+            ),
+            (
+                self.attachment_nonce_marker.as_ptr() as usize,
+                self.attachment_nonce_marker.len(),
+            ),
+            (
+                self.attachment_plaintext_marker.as_ptr() as usize,
+                self.attachment_plaintext_marker.len(),
+            ),
         ];
         read_proc_mem_writable(&exclusions)
     }
