@@ -195,10 +195,14 @@ def _generate_bot_keys(tmp_path: Path, bot_id: str = "echo-bot") -> dict[str, st
 def _short_tmp_dir(tmp_path: Path, suffix: str = "") -> Path:
     """Return a short path usable for Unix sockets.
 
-    macOS temp paths can exceed the 104-byte AF_UNIX limit, so we create a
-    short directory under /tmp and symlink it from the pytest tmp_path.
+    macOS and CI temp paths can exceed the 104-108-byte AF_UNIX limit, so we
+    need a short base directory -- but the daemon's spool guard rejects any
+    data dir that resolves under /tmp or /dev/shm (src/spool.rs), so /tmp
+    can no longer be that base. The user cache directory is short, stable
+    across a test run, and outside both rejected roots.
     """
-    short = Path(f"/tmp/pacto{suffix}-{uuid.uuid4().hex[:8]}")
+    cache_home = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    short = cache_home / "pacto-bot-api-tests" / f"pacto{suffix}-{uuid.uuid4().hex[:8]}"
     short.mkdir(parents=True, exist_ok=True)
     if sys.platform != "win32":
         short.chmod(0o700)
