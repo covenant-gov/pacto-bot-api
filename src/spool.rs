@@ -166,6 +166,17 @@ impl Spool {
             return Err(DaemonError::AttachmentPathRejected);
         }
 
+        // Reject anything that is not a regular file *before* opening it.
+        // Opening a FIFO read-only blocks until a writer appears, which for a
+        // path inside the staging directory a handler writes to would pin a
+        // blocking-pool thread indefinitely. The fd-based check below still
+        // runs, so a type swap racing this stat is caught before any read.
+        let pre =
+            fs::symlink_metadata(&canonical).map_err(|_| DaemonError::AttachmentPathRejected)?;
+        if !pre.is_file() {
+            return Err(DaemonError::AttachmentPathRejected);
+        }
+
         let file = fs::File::open(&canonical).map_err(|_| DaemonError::AttachmentPathRejected)?;
         let metadata = file
             .metadata()

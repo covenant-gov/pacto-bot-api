@@ -20,6 +20,9 @@ use crate::signer::Signer;
 
 const AUTHORIZATION_TTL: Duration = Duration::from_secs(300);
 const X_REASON: &str = "x-reason";
+/// Per-host deadline for a single upload attempt. Bounds each try so an
+/// unresponsive host costs one timeout instead of stalling the failover walk.
+const UPLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Upload ciphertext to the first configured Blossom host that accepts it.
 ///
@@ -37,7 +40,15 @@ pub async fn upload(
     let hash_hex = sha256_hex(ciphertext);
     let hash = Sha256Hash::from_str(&hash_hex)
         .map_err(|_| failed("ciphertext hash construction failed"))?;
-    let client = reqwest::Client::new();
+    // Every attempt needs its own deadline, otherwise a host that completes the
+    // TCP handshake and then never responds blocks `send()` forever and the
+    // ordered failover below never reaches the next host at all -- defeating
+    // the whole point of accepting a list. The inbound fetcher bounds itself
+    // the same way (`src/attachment/inbound.rs`).
+    let client = reqwest::Client::builder()
+        .timeout(UPLOAD_ATTEMPT_TIMEOUT)
+        .build()
+        .map_err(|_| failed("Blossom client setup failed"))?;
     let mut last_reason = "all Blossom hosts failed".to_string();
 
     for (index, server) in servers.iter().enumerate() {

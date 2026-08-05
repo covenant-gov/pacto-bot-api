@@ -448,6 +448,35 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
             biased;
             _ = &mut shutdown_rx => break,
             _ = flush_interval.tick() => {
+                // Housekeeping the traffic-driven paths cannot cover. The
+                // amortized sweep inside the inbound processor only runs when
+                // an inbound attachment arrives, so a send-only bot would never
+                // retire an abandoned outbound entry; and the spool gauges are
+                // sampled here because nothing else observes the directories.
+                let spool_for_tick = Arc::clone(&spool);
+                let retention =
+                    Duration::from_secs(config.daemon.spool_outbound_retention_secs);
+                match tokio::task::spawn_blocking(move || {
+                    let swept = spool_for_tick.sweep(retention);
+                    let counts = (
+                        spool_for_tick.inbound_entry_count(),
+                        spool_for_tick.outbound_entry_count(),
+                    );
+                    (swept, counts)
+                })
+                .await
+                {
+                    Ok((swept, (inbound, outbound))) => {
+                        if let Err(e) = swept {
+                            warn!(error = %e, "failed to sweep spool on periodic tick");
+                        }
+                        diagnostics
+                            .set_spool_entries(inbound as u64, outbound as u64)
+                            .await;
+                    }
+                    Err(e) => warn!(error = %e, "spool periodic sweep task failed"),
+                }
+
                 if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)).await {
                     warn!(error = %e, "failed to flush diagnostics report");
                 }

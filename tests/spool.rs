@@ -212,6 +212,33 @@ fn resolve_outbound_rejects_directory_target() {
     assert!(matches!(err, DaemonError::AttachmentPathRejected));
 }
 
+/// A FIFO staged inside the outbound root must be rejected without opening it.
+/// `File::open` on a read-only FIFO blocks until a writer appears, so opening
+/// before checking the file type let any handler pin a Tokio blocking-pool
+/// thread indefinitely with a single `mkfifo` plus one send.
+#[test]
+fn resolve_outbound_rejects_fifo_without_blocking() {
+    use std::process::Command;
+
+    let dir = common::tempdir().expect("tempdir");
+    let spool = Spool::open(dir.path()).expect("open spool");
+
+    let fifo = spool.outbound_root().join("pipe.bin");
+    let status = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo must succeed");
+    assert!(fifo.exists(), "fifo must exist");
+
+    // If the guard regressed to opening before the type check, this call never
+    // returns and the test times out rather than failing cleanly.
+    let err = spool
+        .resolve_outbound("pipe.bin")
+        .expect_err("a FIFO target must be rejected");
+    assert!(matches!(err, DaemonError::AttachmentPathRejected));
+}
+
 /// The guard must reject a spool component an attacker pre-planted as a
 /// symlink, because that would redirect decrypted payloads out of the tree.
 #[test]
