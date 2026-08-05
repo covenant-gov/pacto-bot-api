@@ -13,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use nostr::{TagKind, Tags, UnsignedEvent};
 use reqwest::redirect::Policy;
+use tracing::warn;
 
 use crate::attachment::crypto::{AttachmentKey, decrypt, sha256_hex};
 use crate::attachment::mime::extension_for_mime;
@@ -69,7 +70,14 @@ impl BlobFetcher for HardenedBlobFetcher {
         let port = url
             .port_or_known_default()
             .ok_or_else(|| invalid("blob URL missing port"))?;
-        let addrs = resolve_safe_addrs(host, port).await?;
+        // `lookup_host` runs the OS resolver on the shared blocking pool with
+        // no deadline of its own. A counterparty naming a host whose
+        // authoritative server never answers would otherwise pin one of those
+        // threads for the resolver's full retry budget, and that pool also
+        // backs MLS SQLite work and outbound spool reads.
+        let addrs = tokio::time::timeout(self.timeout, resolve_safe_addrs(host, port))
+            .await
+            .map_err(|_| invalid("blob host resolution timed out"))??;
 
         // Pin this request to the addresses we checked. This both preserves TLS
         // hostname verification and closes the DNS-rebinding gap between a
@@ -96,8 +104,20 @@ impl BlobFetcher for HardenedBlobFetcher {
             return Err(DaemonError::AttachmentTooLarge { limit: max_bytes });
         }
 
-        let capacity =
-            usize::try_from(response.content_length().unwrap_or(0).min(max_bytes)).unwrap_or(0);
+        // Preallocate from the advertised length only up to a bounded amount.
+        // `content_length` is counterparty-controlled, so trusting it up to
+        // `max_bytes` lets one unsent request reserve the whole cap before any
+        // body byte arrives; the streaming loop below still enforces the real
+        // ceiling as bytes land.
+        const MAX_PREALLOC: u64 = 64 * 1024;
+        let capacity = usize::try_from(
+            response
+                .content_length()
+                .unwrap_or(0)
+                .min(max_bytes)
+                .min(MAX_PREALLOC),
+        )
+        .unwrap_or(0);
         let mut body = Vec::with_capacity(capacity);
         while let Some(chunk) = response
             .chunk()
@@ -210,9 +230,14 @@ impl InboundAttachmentProcessor {
 
             // Sweep only after the new file is complete. The amortized gate
             // makes this cheap on the common path.
+            //
+            // A sweep failure is unrelated housekeeping -- it means a
+            // directory listing failed, not that this payload is bad. Log it
+            // and still deliver; discarding the file we just wrote and
+            // verified would fail the delivery as though the attachment
+            // itself were invalid.
             if let Err(error) = spool.sweep(outbound_retention) {
-                spool.discard_inbound(&path);
-                return Err(error);
+                warn!(error = %error, "attachment spool retention sweep failed");
             }
 
             Ok(AttachmentPayload {
@@ -296,8 +321,17 @@ async fn resolve_safe_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, Da
     Ok(addrs)
 }
 
+/// Reject an address a counterparty must never be able to make the daemon
+/// reach: loopback, link-local (including the cloud metadata endpoint),
+/// private, unspecified, multicast, and broadcast.
+///
+/// The address is canonicalized first. An IPv4-mapped IPv6 literal such as
+/// `::ffff:169.254.169.254` answers `false` to every `Ipv6Addr` predicate
+/// below while a dual-stack socket still routes it to the embedded IPv4
+/// target, so checking the v6 form directly would let a counterparty-supplied
+/// AAAA record or bracketed URL host walk straight past this filter.
 fn forbidden_ip(ip: IpAddr) -> bool {
-    match ip {
+    match ip.to_canonical() {
         IpAddr::V4(ip) => {
             ip.is_private()
                 || ip.is_loopback()
@@ -343,5 +377,34 @@ mod tests {
         }
         let public: IpAddr = "1.1.1.1".parse().expect("valid test IP");
         assert!(!forbidden_ip(public));
+    }
+
+    /// An IPv4-mapped IPv6 address answers `false` to every `Ipv6Addr`
+    /// predicate while a dual-stack socket still routes it to the embedded
+    /// IPv4 target. Before `forbidden_ip` canonicalized, a counterparty could
+    /// publish an AAAA record of `::ffff:169.254.169.254` (or use that as a
+    /// bracketed URL host) and drive the daemon straight at the cloud
+    /// metadata endpoint, fully bypassing the SSRF filter.
+    #[test]
+    fn forbids_ipv4_mapped_ipv6_forms_of_private_addresses() {
+        for address in [
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::ffff:10.0.0.1",
+            "::ffff:172.16.0.1",
+            "::ffff:192.168.1.1",
+            "::ffff:0.0.0.0",
+        ] {
+            let ip: IpAddr = address.parse().expect("valid test IP");
+            assert!(
+                forbidden_ip(ip),
+                "{address} is an IPv4-mapped private address and must be forbidden"
+            );
+        }
+        let mapped_public: IpAddr = "::ffff:1.1.1.1".parse().expect("valid test IP");
+        assert!(
+            !forbidden_ip(mapped_public),
+            "a mapped public address must still be allowed"
+        );
     }
 }

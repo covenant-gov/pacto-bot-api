@@ -2066,14 +2066,23 @@ impl Dispatch {
             return Err(DaemonError::RateLimited);
         }
 
-        let cm = self.client_manager.read().await;
-        let bot = cm
-            .get_bot_by_id(bot_id)
-            .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
-        let mls_engine = bot
-            .mls
-            .as_ref()
-            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+        // Clone the handles and release the lock before any network await.
+        // `client_manager` is a write-preferring RwLock, so holding a read
+        // guard across a relay publish lets one slow send block a routine
+        // handler register/unregister writer, and every subsequent reader then
+        // queues behind that writer -- freezing RPC dispatch daemon-wide.
+        // `MlsEngineHandle` clones a channel sender, not the engine.
+        let (signer, mls_engine, client) = {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+            let mls_engine = bot
+                .mls
+                .clone()
+                .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            (bot.signer.clone(), mls_engine, cm.nostr_client.clone())
+        };
         let mls_group_id =
             mls_engine
                 .resolve_wire_id(group_id)
@@ -2082,9 +2091,8 @@ impl Dispatch {
                     crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
                     other => DaemonError::Mls(other),
                 })?;
-        let event_id = cm
-            .nostr_client
-            .send_group_reaction(mls_engine, &bot.signer, mls_group_id, target, emoji)
+        let event_id = client
+            .send_group_reaction(&mls_engine, &signer, mls_group_id, target, emoji)
             .await?;
         Ok(Some(Value::String(event_id.to_hex())))
     }
@@ -2125,14 +2133,20 @@ impl Dispatch {
 
         self.diagnostics.record_attachment_send().await;
         let result = async {
-            let cm = self.client_manager.read().await;
-            let bot = cm
-                .get_bot_by_id(bot_id)
-                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
-            let mls_engine = bot
-                .mls
-                .as_ref()
-                .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            // Release the lock before the upload and publish. `prepare` uploads
+            // to a Blossom host, so holding a read guard here would let one
+            // slow host block handler registration and then all readers.
+            let (signer, mls_engine, client) = {
+                let cm = self.client_manager.read().await;
+                let bot = cm
+                    .get_bot_by_id(bot_id)
+                    .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+                let mls_engine = bot
+                    .mls
+                    .clone()
+                    .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+                (bot.signer.clone(), mls_engine, cm.nostr_client.clone())
+            };
             let mls_group_id = mls_engine
                 .resolve_wire_id(group_id)
                 .await
@@ -2140,17 +2154,9 @@ impl Dispatch {
                     crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
                     other => DaemonError::Mls(other),
                 })?;
-            let prepared = processor
-                .prepare(&bot.signer, source, metadata, None)
-                .await?;
-            let event_id = cm
-                .nostr_client
-                .send_group_message(
-                    mls_engine,
-                    &bot.signer,
-                    mls_group_id,
-                    prepared.rumor.clone(),
-                )
+            let prepared = processor.prepare(&signer, source, metadata, None).await?;
+            let event_id = client
+                .send_group_message(&mls_engine, &signer, mls_group_id, prepared.rumor.clone())
                 .await?;
             processor.complete(&prepared);
             Ok::<EventId, DaemonError>(event_id)
