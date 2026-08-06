@@ -6,12 +6,11 @@ use std::error::Error;
 use std::time::Duration;
 
 use assert_cmd::Command;
-use nostr::NostrSigner as NostrSignerTrait;
 use nostr::{Keys, Kind, Timestamp, ToBech32, UnsignedEvent};
 use pacto_bot_api::config::{BotConfig, SigningConfig};
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::secrecy::SecretString;
-use pacto_bot_api::signer::{BunkerConnection, BunkerKind, Signer, SignerBackend};
+use pacto_bot_api::signer::{BunkerConnection, BunkerKind, LocalKeyCrypto, Signer, SignerBackend};
 use predicates::prelude::*;
 use serde_json::json;
 use support::mock_bunker::MockBunker;

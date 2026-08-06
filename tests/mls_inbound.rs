@@ -833,14 +833,17 @@ async fn daemon_skips_own_group_message() -> Result<(), Box<dyn std::error::Erro
         let bot = cm_guard.get_bot_by_id("mls-bot").expect("bot exists");
         bot.signer.public_key()
     };
-    let own_message = nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "ignored")
-        .tags([nostr::Tag::parse([
-            "h",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        ])
-        .expect("h tag")])
-        .sign_with_keys(&keys)
-        .expect("sign own message");
+    let own_message = pacto_bot_api::nostr_json::sign_builder(
+        nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "ignored").tags([
+            nostr::Tag::parse([
+                "h",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ])
+            .expect("h tag"),
+        ]),
+        &keys,
+    )
+    .expect("sign own message");
     assert_eq!(own_message.pubkey, own_pubkey);
     relay.inject_event(own_message).await;
 
@@ -869,14 +872,17 @@ async fn non_member_group_message_is_dropped() -> Result<(), Box<dyn std::error:
 
     // A message from a random sender with a group id the daemon does not know.
     let sender = Keys::generate();
-    let fake_message = nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "not a member")
-        .tags([nostr::Tag::parse([
-            "h",
-            "0000000000000000000000000000000000000000000000000000000000000001",
-        ])
-        .expect("h tag")])
-        .sign_with_keys(&sender)
-        .expect("sign fake message");
+    let fake_message = pacto_bot_api::nostr_json::sign_builder(
+        nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "not a member").tags([
+            nostr::Tag::parse([
+                "h",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+            ])
+            .expect("h tag"),
+        ]),
+        &sender,
+    )
+    .expect("sign fake message");
     relay.inject_event(fake_message).await;
 
     let stream = client.receive_events();
@@ -906,14 +912,17 @@ async fn malformed_group_message_is_dropped() -> Result<(), Box<dyn std::error::
     .await?;
 
     let sender = Keys::generate();
-    let fake_message = nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "not valid mls")
-        .tags([nostr::Tag::parse([
-            "h",
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        ])
-        .expect("h tag")])
-        .sign_with_keys(&sender)
-        .expect("sign fake message");
+    let fake_message = pacto_bot_api::nostr_json::sign_builder(
+        nostr::EventBuilder::new(nostr::Kind::MlsGroupMessage, "not valid mls").tags([
+            nostr::Tag::parse([
+                "h",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ])
+            .expect("h tag"),
+        ]),
+        &sender,
+    )
+    .expect("sign fake message");
     relay.inject_event(fake_message).await;
 
     let stream = client.receive_events();

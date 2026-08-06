@@ -2,9 +2,7 @@ use chrono::Utc;
 use fs2::FileExt;
 use futures::{SinkExt, StreamExt};
 use nostr::nips::nip44;
-use nostr::{
-    EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32, UnsignedEvent,
-};
+use nostr::{EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32, UnsignedEvent};
 use pacto_bot_api::config::{BotConfig, SigningConfig};
 use pacto_bot_api::db::Database;
 use pacto_bot_api::events::EventType;
@@ -761,7 +759,7 @@ pub async fn build_gift_wrap_with_timestamp(
     let gift_content = nip44::encrypt(
         ephemeral.secret_key(),
         &recipient,
-        seal.as_json(),
+        pacto_bot_api::nostr_json::event_to_json(&seal),
         nip44::Version::default(),
     )?;
     let gift = UnsignedEvent::new(
@@ -771,7 +769,7 @@ pub async fn build_gift_wrap_with_timestamp(
         [Tag::public_key(recipient)],
         gift_content,
     );
-    Ok(gift.sign_with_keys(&ephemeral)?)
+    Ok(pacto_bot_api::nostr_json::sign_unsigned(gift, &ephemeral)?)
 }
 
 // ---------------------------------------------------------------------------

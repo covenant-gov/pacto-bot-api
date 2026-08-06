@@ -4,7 +4,6 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use nostr::{Event, JsonUtil};
 use pacto_bot_api::attachment::blossom::upload;
 use pacto_bot_api::attachment::crypto::sha256_hex;
 use pacto_bot_api::errors::DaemonError;
@@ -71,7 +70,7 @@ async fn created_response_returns_url_and_sends_exact_authorized_ciphertext() {
         .expect("Nostr scheme");
     let event_json = String::from_utf8(STANDARD.decode(authorization).expect("standard base64"))
         .expect("event JSON utf8");
-    let event = Event::from_json(event_json).expect("valid signed event");
+    let event = pacto_bot_api::nostr_json::event_from_json(event_json).expect("valid signed event");
     assert_eq!(event.kind.as_u16(), 24_242);
     assert!(event.verify().is_ok());
 

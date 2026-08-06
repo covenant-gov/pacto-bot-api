@@ -8,19 +8,19 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use nostr::event::tag::{Tag, TagKind};
+use nostr::event::tag::Tag;
 use nostr::nips::nip44::Version;
 use nostr::nips::{nip44, nip59};
 use nostr::secp256k1::schnorr::Signature;
 use nostr::{
-    Event, EventBuilder, EventId, Filter, JsonUtil, Keys, Kind, PublicKey, SubscriptionId,
-    Timestamp, ToBech32, UnsignedEvent,
+    Event, EventBuilder, EventId, Filter, Keys, Kind, PublicKey, SubscriptionId, Timestamp,
+    ToBech32, UnsignedEvent,
 };
 use nostr_sdk::{Client, RelayPoolNotification};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::{RwLock, Semaphore};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -32,6 +32,7 @@ use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType, ReactionPayload};
 use crate::mls::MlsEngineHandle;
+use crate::nostr_tags;
 use crate::signer::Signer;
 
 /// Bot signer storage: maps recipient public key to bot id and signer.
@@ -71,6 +72,20 @@ struct MentionEntry {
 }
 
 const MENTION_ENVELOPE_KIND: &str = "pacto.mentions.envelope.v1";
+
+/// Maximum number of gift-wrap decrypt/parse tasks allowed to run
+/// concurrently. An inbound `kind:1059` event spawns a task that acquires a
+/// permit before running; once the constant's worth of tasks are in
+/// flight, further intake notifications back-pressure on the semaphore
+/// rather than spawning unboundedly, bounding memory and file-descriptor
+/// growth from a hostile burst (R33).
+pub const MAX_CONCURRENT_GIFT_WRAP_TASKS: usize = 32;
+
+/// Per-event ceiling on the gift-wrap decrypt-and-parse critical path (seal
+/// decrypt, rumor decode, and author-match check). A stuck or hostile
+/// payload past this deadline is dropped — never retried inline — so one
+/// bad event cannot stall the intake loop (R33, R48).
+pub const GIFT_WRAP_PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Attempt to parse the decrypted MLS group message content as a structured
 /// `{ kind, body, mentions, pacto_virtual_bucket }` envelope. Only succeeds
@@ -266,12 +281,9 @@ impl NostrClient {
         if let Some(reply_id) = reply_to {
             let event_id = EventId::parse(reply_id)
                 .map_err(|e| DaemonError::Nostr(format!("invalid reply_to event id: {e}")))?;
-            rumor_builder = rumor_builder.tags([Tag::custom(
-                TagKind::e(),
-                [event_id.to_hex(), String::new(), String::from("reply")],
-            )]);
+            rumor_builder = rumor_builder.tags([nostr_tags::reply_e_tag(event_id)]);
         }
-        rumor_builder = rumor_builder.tag(Tag::custom(TagKind::custom("ms"), [ms]));
+        rumor_builder = rumor_builder.tag(nostr_tags::ms_tag(ms));
         Ok(rumor_builder.build(*sender))
     }
 
@@ -283,13 +295,10 @@ impl NostrClient {
     ) -> Result<UnsignedEvent, DaemonError> {
         let target = EventId::parse(target_rumor_id)
             .map_err(|error| DaemonError::Nostr(format!("invalid target event id: {error}")))?;
-        Ok(EventBuilder::reaction_extended(
-            target,
-            *recipient,
-            Some(Kind::PrivateDirectMessage),
-            emoji,
+        Ok(
+            nostr_tags::reaction_event(target, *recipient, Some(Kind::PrivateDirectMessage), emoji)
+                .build(*sender),
         )
-        .build(*sender))
     }
 
     fn build_group_reaction_rumor(
@@ -428,7 +437,7 @@ impl NostrClient {
         rumor: &Event,
     ) -> Result<EventId, DaemonError> {
         let seal_content = signer
-            .nip44_encrypt(recipient, &rumor.as_json())
+            .nip44_encrypt(recipient, &crate::nostr_json::event_to_json(rumor))
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to encrypt seal: {e}")))?;
         let seal = UnsignedEvent::new(
@@ -444,7 +453,7 @@ impl NostrClient {
         let gift_content = nip44::encrypt(
             ephemeral.secret_key(),
             recipient,
-            seal_event.as_json(),
+            crate::nostr_json::event_to_json(&seal_event),
             Version::default(),
         )
         .map_err(|e| DaemonError::Nostr(format!("failed to encrypt gift wrap: {e}")))?;
@@ -455,8 +464,7 @@ impl NostrClient {
             [Tag::public_key(*recipient)],
             gift_content,
         );
-        let gift_event = gift
-            .sign_with_keys(&ephemeral)
+        let gift_event = crate::nostr_json::sign_unsigned(gift, &ephemeral)
             .map_err(|e| DaemonError::Nostr(format!("failed to sign gift wrap: {e}")))?;
 
         let output = self
@@ -906,7 +914,7 @@ impl NostrClient {
         let mls_engines = Arc::clone(&self.mls_engines);
         let diagnostics = self.diagnostics.clone();
         let attachment_processor = self.attachment_processor.clone();
-
+        let gift_wrap_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_GIFT_WRAP_TASKS));
         tokio::spawn(async move {
             let _ = client
                 .handle_notifications(|notification| {
@@ -915,10 +923,29 @@ impl NostrClient {
                     let mls_engines = Arc::clone(&mls_engines);
                     let diagnostics = diagnostics.clone();
                     let attachment_processor = attachment_processor.clone();
+                    let gift_wrap_semaphore = Arc::clone(&gift_wrap_semaphore);
                     async move {
                         match notification {
                             RelayPoolNotification::Event { event, .. } => {
                                 if event.kind == Kind::GiftWrap {
+                                    // Acquire a permit before spawning so a burst of inbound
+                                    // gift wraps backs off on the semaphore instead of spawning
+                                    // unboundedly; MAX_CONCURRENT_GIFT_WRAP_TASKS bounds memory
+                                    // and file-descriptor growth from a hostile spray (R33).
+                                    let permit =
+                                        match Arc::clone(&gift_wrap_semaphore).acquire_owned().await
+                                        {
+                                            Ok(permit) => permit,
+                                            Err(_) => {
+                                                // The semaphore is never closed, so this branch
+                                                // is unreachable in practice; drop the event
+                                                // rather than spawn unbounded.
+                                                error!(
+                                                    "gift wrap semaphore unexpectedly closed; dropping event"
+                                                );
+                                                return Ok(false);
+                                            }
+                                        };
                                     // Spawn each gift-wrap decryption in its own task so that
                                     // one bot's slow signer (e.g. a NIP-46 bunker) does not block
                                     // other bots from receiving DMs.
@@ -928,23 +955,42 @@ impl NostrClient {
                                     let diagnostics = diagnostics.clone();
                                     let attachment_processor = attachment_processor.clone();
                                     tokio::spawn(async move {
+                                        // Held for the task's lifetime; releases the permit
+                                        // back to the semaphore on drop.
+                                        let _permit = permit;
                                         let snapshot = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
-                                        match Self::process_gift_wrap(
-                                            &snapshot,
-                                            &mls_engines,
-                                            &event,
-                                            diagnostics.as_ref(),
-                                            attachment_processor.as_deref(),
+                                        match tokio::time::timeout(
+                                            GIFT_WRAP_PROCESS_TIMEOUT,
+                                            Self::process_gift_wrap(
+                                                &snapshot,
+                                                &mls_engines,
+                                                &event,
+                                                diagnostics.as_ref(),
+                                                attachment_processor.as_deref(),
+                                            ),
                                         )
                                         .await
                                         {
-                                            Ok(Some(agent_event)) => {
+                                            Ok(Ok(Some(agent_event))) => {
                                                 let _ = tx.send(Ok(agent_event));
                                             }
-                                            Ok(None) => {}
-                                            Err(e) => {
+                                            Ok(Ok(None)) => {}
+                                            Ok(Err(e)) => {
                                                 let _ = tx.send(Err(e));
+                                            }
+                                            Err(_elapsed) => {
+                                                // Drop the event rather than stall the intake
+                                                // loop; count it in the same aggregated,
+                                                // ring-safe category `process_gift_wrap` uses
+                                                // for its own rejections (R33, R48).
+                                                if let Some(d) = &diagnostics {
+                                                    d.record_gift_wrap_rejected().await;
+                                                }
+                                                warn!(
+                                                    event_id = %event.id.to_hex(),
+                                                    "gift wrap decrypt/parse timed out; dropping event"
+                                                );
                                             }
                                         }
                                     });
@@ -1007,10 +1053,10 @@ impl NostrClient {
 
         if let Err(e) = event.verify() {
             let message = format!("gift wrap signature verification failed: {e}");
+            warn!(event_id = %event.id.to_hex(), reason = %message, "rejecting gift wrap");
             if let Some(d) = diagnostics {
                 d.record_invalid_event().await;
-                d.record_error(Some("gift_wrap_verify_failed"), &message, None)
-                    .await;
+                d.record_gift_wrap_rejected().await;
             }
             return Err(DaemonError::Nostr(message));
         }
@@ -1037,15 +1083,15 @@ impl NostrClient {
             .nip44_decrypt(&event.pubkey, &event.content)
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt gift wrap: {e}")))?;
-        let seal_event = Event::from_json(&seal_json)
+        let seal_event = crate::nostr_json::event_from_json(&seal_json)
             .map_err(|e| DaemonError::Nostr(format!("invalid seal event: {e}")))?;
 
         if let Err(e) = seal_event.verify() {
             let message = format!("seal signature verification failed: {e}");
+            warn!(event_id = %event.id.to_hex(), reason = %message, "rejecting gift wrap");
             if let Some(d) = diagnostics {
                 d.record_invalid_event().await;
-                d.record_error(Some("seal_verify_failed"), &message, None)
-                    .await;
+                d.record_gift_wrap_rejected().await;
             }
             return Err(DaemonError::Nostr(message));
         }
@@ -1055,13 +1101,31 @@ impl NostrClient {
             .nip44_decrypt(&seal_event.pubkey, &seal_event.content)
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt seal: {e}")))?;
-        let rumor = UnsignedEvent::from_json(&rumor_json)
+        let rumor = crate::nostr_json::unsigned_event_from_json(&rumor_json)
             .map_err(|e| DaemonError::Nostr(format!("invalid rumor event: {e}")))?;
 
         let rumor_id = rumor
             .id
             .ok_or_else(|| DaemonError::Nostr("rumor missing id".into()))?
             .to_hex();
+
+        // The daemon attributes `author` from the seal's pubkey below; reject
+        // a rumor that claims a different author than the seal that carried
+        // it rather than silently trusting the seal's attribution (R30).
+        if rumor.pubkey != seal_event.pubkey {
+            let message = "rumor author does not match seal author".to_string();
+            warn!(
+                event_id = %event.id.to_hex(),
+                rumor_id = %rumor_id,
+                reason = %message,
+                "rejecting gift wrap"
+            );
+            if let Some(d) = diagnostics {
+                d.record_invalid_event().await;
+                d.record_gift_wrap_rejected().await;
+            }
+            return Err(DaemonError::Nostr(message));
+        }
 
         let (event_type, reaction, attachment) = match rumor.kind {
             Kind::PrivateDirectMessage => (EventType::DmReceived, None, None),
@@ -1175,26 +1239,18 @@ impl NostrClient {
         }))
     }
 
-    /// Extract a [`ReactionPayload`] from a decrypted kind:7 rumor, matching
-    /// the tag layout `EventBuilder::reaction_extended` writes: the last `e`
-    /// tag names the target rumor and the content is the reaction emoji.
+    /// Extract a [`ReactionPayload`] from a decrypted kind:7 rumor by
+    /// delegating to [`nostr_tags::decode_reaction`], matching the tag
+    /// layout [`nostr_tags::reaction_event`] writes.
     ///
     /// Returns `None` when the rumor has no target `e` tag or empty content,
     /// in which case the caller records an invalid event and delivers
     /// nothing rather than erroring the whole gift-wrap decrypt.
     fn extract_reaction(rumor: &UnsignedEvent) -> Option<ReactionPayload> {
-        if rumor.content.is_empty() {
-            return None;
-        }
-        let target_rumor_id = rumor
-            .tags
-            .filter(TagKind::e())
-            .last()?
-            .content()?
-            .to_string();
+        let (target_rumor_id, emoji) = nostr_tags::decode_reaction(&rumor.tags, &rumor.content)?;
         Some(ReactionPayload {
-            target_rumor_id,
-            emoji: rumor.content.clone(),
+            target_rumor_id: target_rumor_id.to_string(),
+            emoji: emoji.to_string(),
         })
     }
 
@@ -1225,12 +1281,7 @@ impl NostrClient {
         // Group messages are addressed to a Squad, not to a specific bot, so
         // identify every configured bot that is a member of the group identified
         // by the h tag.
-        let group_id = event
-            .tags
-            .iter()
-            .find(|t| t.kind() == nostr::TagKind::h())
-            .and_then(|t| t.content())
-            .map(|s| s.to_string())
+        let group_id = nostr_tags::h_tag_content(&event.tags)
             .ok_or_else(|| DaemonError::Nostr("group message missing h tag".into()))?;
 
         let mut recipients = Vec::new();
@@ -1584,7 +1635,7 @@ mod tests {
             Vec::new(),
             content.to_string(),
         );
-        unsigned.sign_with_keys(keys).unwrap()
+        crate::nostr_json::sign_unsigned(unsigned, keys).unwrap()
     }
 
     fn build_key_package_bad_sig(
@@ -1599,7 +1650,7 @@ mod tests {
             Vec::new(),
             content.to_string(),
         );
-        let valid_event = unsigned.sign_with_keys(keys).unwrap();
+        let valid_event = crate::nostr_json::sign_unsigned(unsigned, keys).unwrap();
         let bad_sig = Signature::from_str(
             "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         )
@@ -1628,7 +1679,7 @@ mod tests {
             Vec::new(),
             content.to_string(),
         );
-        unsigned.sign_with_keys(&other_keys).unwrap()
+        crate::nostr_json::sign_unsigned(unsigned, &other_keys).unwrap()
     }
 
     #[tokio::test]
@@ -1739,17 +1790,12 @@ mod tests {
         )
         .unwrap();
 
-        let e_tag = rumor
-            .tags
-            .find(TagKind::e())
-            .expect("rumor should have an e tag");
+        let e_tag = nostr_tags::find_e_tag(&rumor.tags).expect("rumor should have an e tag");
         assert!(e_tag.is_reply(), "e tag should be marked as reply");
         assert_eq!(e_tag.content().unwrap(), reply_id.to_hex());
 
-        let ms_tag = rumor
-            .tags
-            .find(TagKind::custom("ms"))
-            .expect("rumor should have an ms tag");
+        let ms_tag =
+            nostr_tags::find_custom_tag(&rumor.tags, "ms").expect("rumor should have an ms tag");
         let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
         assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
     }
@@ -1768,13 +1814,11 @@ mod tests {
         .unwrap();
 
         assert!(
-            rumor.tags.find(TagKind::e()).is_none(),
+            nostr_tags::find_e_tag(&rumor.tags).is_none(),
             "rumor should not have an e tag"
         );
-        let ms_tag = rumor
-            .tags
-            .find(TagKind::custom("ms"))
-            .expect("rumor should have an ms tag");
+        let ms_tag =
+            nostr_tags::find_custom_tag(&rumor.tags, "ms").expect("rumor should have an ms tag");
         let ms_value: u64 = ms_tag.content().unwrap().parse().unwrap();
         assert!(ms_value < 1000, "ms tag must be a millisecond offset 0-999");
     }
@@ -1796,15 +1840,15 @@ mod tests {
         assert_eq!(rumor.kind, Kind::Reaction);
         assert_eq!(rumor.content, "👍");
         assert_eq!(
-            rumor.tags.find(TagKind::e()).and_then(Tag::content),
+            nostr_tags::find_e_tag(&rumor.tags).and_then(Tag::content),
             Some(target.to_hex().as_str())
         );
         assert_eq!(
-            rumor.tags.find(TagKind::p()).and_then(Tag::content),
+            nostr_tags::find_p_tag(&rumor.tags).and_then(Tag::content),
             Some(recipient.public_key().to_hex().as_str())
         );
         assert_eq!(
-            rumor.tags.find(TagKind::k()).and_then(Tag::content),
+            nostr_tags::find_k_tag(&rumor.tags).and_then(Tag::content),
             Some(Kind::PrivateDirectMessage.as_u16().to_string().as_str())
         );
     }
@@ -1823,7 +1867,7 @@ mod tests {
         assert_eq!(rumor.content, "👩‍💻");
         assert_eq!(rumor.tags.len(), 1);
         assert_eq!(
-            rumor.tags.find(TagKind::e()).and_then(Tag::content),
+            nostr_tags::find_e_tag(&rumor.tags).and_then(Tag::content),
             Some(target.to_hex().as_str())
         );
     }

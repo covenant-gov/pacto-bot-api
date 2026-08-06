@@ -11,7 +11,8 @@ mod support;
 /// configured npub.
 use std::time::Duration;
 
-use nostr::{JsonUtil, Keys, Kind, NostrSigner, PublicKey};
+use nostr::{Keys, Kind, PublicKey};
+use pacto_bot_api::signer::LocalKeyCrypto;
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use serde_json::Value;
 use support::mock_bunker::MockBunker;
@@ -60,19 +61,18 @@ async fn decrypt_reply_content(
     gift_wrap: &nostr::Event,
 ) -> Result<(PublicKey, String), Box<dyn std::error::Error>> {
     // The gift-wrap content is encrypted from the ephemeral pubkey to the recipient.
-    let seal_json = recipient
-        .nip44_decrypt(&gift_wrap.pubkey, &gift_wrap.content)
-        .await?;
-    let seal: nostr::Event = nostr::Event::from_json(&seal_json)?;
+    let seal_json =
+        LocalKeyCrypto::nip44_decrypt(recipient, &gift_wrap.pubkey, &gift_wrap.content).await?;
+    let seal: nostr::Event = pacto_bot_api::nostr_json::event_from_json(&seal_json)?;
 
     // The seal's pubkey identifies the bot that authored the reply.
     let sender_pubkey = seal.pubkey;
 
     // The seal content is the encrypted rumor carrying the DM plaintext.
-    let rumor_json = recipient
-        .nip44_decrypt(&sender_pubkey, &seal.content)
-        .await?;
-    let rumor: nostr::UnsignedEvent = nostr::UnsignedEvent::from_json(&rumor_json)?;
+    let rumor_json =
+        LocalKeyCrypto::nip44_decrypt(recipient, &sender_pubkey, &seal.content).await?;
+    let rumor: nostr::UnsignedEvent =
+        pacto_bot_api::nostr_json::unsigned_event_from_json(&rumor_json)?;
 
     Ok((sender_pubkey, rumor.content))
 }

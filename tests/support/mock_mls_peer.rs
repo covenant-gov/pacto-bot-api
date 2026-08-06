@@ -8,10 +8,8 @@
 
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
-use nostr::{
-    Event, EventBuilder, JsonUtil, Keys, Kind, NostrSigner, RelayUrl, Tag, TagKind, Timestamp,
-    UnsignedEvent,
-};
+use nostr::{Event, EventBuilder, Keys, Kind, RelayUrl, Tag, Timestamp, UnsignedEvent};
+use pacto_bot_api::signer::LocalKeyCrypto;
 
 /// A peer that can create an MLS group and invite a daemon bot.
 pub struct MockMlsPeer {
@@ -234,10 +232,11 @@ impl MockMlsPeer {
             .get_messages(&group.mls_group_id)
             .expect("get messages");
         let msg = messages.first().expect("at least one message");
-        EventBuilder::new(msg.kind, msg.content.clone())
-            .build(self.keys.public_key())
-            .sign_with_keys(&self.keys)
-            .expect("sign message")
+        pacto_bot_api::nostr_json::sign_unsigned(
+            EventBuilder::new(msg.kind, msg.content.clone()).build(self.keys.public_key()),
+            &self.keys,
+        )
+        .expect("sign message")
     }
 
     /// Sign an unsigned event with the peer's keys.
@@ -280,7 +279,10 @@ pub async fn gift_wrap_welcome(
         .expect("sign welcome rumor");
 
     let seal_content = sender_keys
-        .nip44_encrypt(recipient, &rumor_event.as_json())
+        .nip44_encrypt(
+            recipient,
+            &pacto_bot_api::nostr_json::event_to_json(&rumor_event),
+        )
         .await
         .expect("encrypt seal");
     let seal = nostr::UnsignedEvent::new(
@@ -298,7 +300,7 @@ pub async fn gift_wrap_welcome(
     let gift_content = nostr::nips::nip44::encrypt(
         ephemeral.secret_key(),
         recipient,
-        seal.as_json(),
+        pacto_bot_api::nostr_json::event_to_json(&seal),
         nostr::nips::nip44::Version::default(),
     )
     .expect("encrypt gift wrap");
@@ -310,15 +312,10 @@ pub async fn gift_wrap_welcome(
         [nostr::Tag::public_key(*recipient)],
         gift_content,
     );
-    gift.sign_with_keys(&ephemeral).expect("sign gift wrap")
+    pacto_bot_api::nostr_json::sign_unsigned(gift, &ephemeral).expect("sign gift wrap")
 }
 
 /// Extract the group wire id (h tag) from a kind:445 MLS group message wrapper.
 pub fn group_wire_id(message_event: &Event) -> Option<String> {
-    message_event
-        .tags
-        .iter()
-        .find(|t| t.kind() == TagKind::h())
-        .and_then(|t| t.content())
-        .map(|s| s.to_string())
+    pacto_bot_api::nostr_tags::h_tag_content(&message_event.tags)
 }

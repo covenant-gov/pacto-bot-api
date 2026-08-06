@@ -533,12 +533,7 @@ impl MlsEngineHandle {
                     MlsCommand::DecryptGroupMessage { event, tx } => {
                         let result: Result<Option<DecryptedMessage>, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let group_id = event
-                                    .tags
-                                    .iter()
-                                    .find(|t| t.kind() == nostr::TagKind::h())
-                                    .and_then(|t| t.content())
-                                    .map(|s| s.to_string());
+                                let group_id = crate::nostr_tags::h_tag_content(&event.tags);
 
                                 match group_id {
                                     Some(group_id) => match engine.process_message(&event) {
@@ -1066,10 +1061,11 @@ mod tests {
             .publish_key_package(&keys.public_key(), relays)
             .await
             .expect("publish_key_package");
-        EventBuilder::new(Kind::MlsKeyPackage, content)
-            .tags(tags)
-            .sign_with_keys(keys)
-            .expect("sign key package")
+        crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags),
+            keys,
+        )
+        .expect("sign key package")
     }
 
     #[test]
@@ -1277,9 +1273,11 @@ mod tests {
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
             .expect("new_persistent");
 
-        let wrong_kind = EventBuilder::new(Kind::TextNote, "not a key package")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let wrong_kind = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::TextNote, "not a key package"),
+            &recipient_keys,
+        )
+        .expect("sign");
         let result = engine
             .create_group(
                 creator_keys.public_key(),
@@ -1291,9 +1289,11 @@ mod tests {
             .await;
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
 
-        let empty_content = EventBuilder::new(Kind::MlsKeyPackage, "")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let empty_content = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, ""),
+            &recipient_keys,
+        )
+        .expect("sign");
         let result = engine
             .create_group(
                 creator_keys.public_key(),
@@ -1310,10 +1310,11 @@ mod tests {
             .publish_key_package(&other_keys.public_key(), vec![])
             .await
             .expect("publish_key_package");
-        let wrong_author = EventBuilder::new(Kind::MlsKeyPackage, content)
-            .tags(tags)
-            .sign_with_keys(&other_keys)
-            .expect("sign");
+        let wrong_author = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags),
+            &other_keys,
+        )
+        .expect("sign");
         let result = engine
             .create_group(
                 creator_keys.public_key(),
@@ -1331,10 +1332,11 @@ mod tests {
             .publish_key_package(&recipient_keys.public_key(), vec![])
             .await
             .expect("publish_key_package");
-        let mut forged_signature = EventBuilder::new(Kind::MlsKeyPackage, content)
-            .tags(tags)
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let mut forged_signature = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags),
+            &recipient_keys,
+        )
+        .expect("sign");
         forged_signature.sig = Signature::from_slice(&[0u8; 64]).expect("signature bytes");
         let result = engine
             .create_group(
@@ -1356,9 +1358,11 @@ mod tests {
         let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
             .expect("new_persistent");
 
-        let bad_key_package = EventBuilder::new(Kind::MlsKeyPackage, "invalid-key-package-content")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let bad_key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, "invalid-key-package-content"),
+            &recipient_keys,
+        )
+        .expect("sign");
         let result = engine
             .create_group(
                 creator_keys.public_key(),
@@ -1408,9 +1412,11 @@ mod tests {
     #[tokio::test]
     async fn validate_key_package_accepts_valid_key_package() {
         let recipient_keys = Keys::generate();
-        let key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, "valid key package"),
+            &recipient_keys,
+        )
+        .expect("sign");
 
         let result = validate_key_package(&key_package, &recipient_keys.public_key());
         assert!(result.is_ok());
@@ -1419,9 +1425,11 @@ mod tests {
     #[tokio::test]
     async fn validate_key_package_rejects_invalid_signature() {
         let recipient_keys = Keys::generate();
-        let mut key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let mut key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, "valid key package"),
+            &recipient_keys,
+        )
+        .expect("sign");
         key_package.sig = Signature::from_slice(&[0u8; 64]).expect("signature bytes");
 
         let result = validate_key_package(&key_package, &recipient_keys.public_key());
@@ -1435,9 +1443,11 @@ mod tests {
     #[tokio::test]
     async fn validate_key_package_rejects_wrong_kind() {
         let recipient_keys = Keys::generate();
-        let key_package = EventBuilder::new(Kind::TextNote, "not a key package")
-            .sign_with_keys(&recipient_keys)
-            .expect("sign");
+        let key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::TextNote, "not a key package"),
+            &recipient_keys,
+        )
+        .expect("sign");
 
         let result = validate_key_package(&key_package, &recipient_keys.public_key());
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
@@ -1451,9 +1461,11 @@ mod tests {
     async fn validate_key_package_rejects_wrong_author() {
         let author_keys = Keys::generate();
         let recipient_keys = Keys::generate();
-        let key_package = EventBuilder::new(Kind::MlsKeyPackage, "valid key package")
-            .sign_with_keys(&author_keys)
-            .expect("sign");
+        let key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, "valid key package"),
+            &author_keys,
+        )
+        .expect("sign");
 
         let result = validate_key_package(&key_package, &recipient_keys.public_key());
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));

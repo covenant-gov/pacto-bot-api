@@ -2,7 +2,7 @@
 
 use futures::{SinkExt, StreamExt};
 use nostr::filter::MatchEventOptions;
-use nostr::{Event, Filter, JsonUtil};
+use nostr::{Event, Filter};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -198,7 +198,7 @@ impl MockRelay {
         match cmd {
             "EVENT" => {
                 if let Some(event_value) = arr.get(1) {
-                    match Event::from_json(event_value.to_string()) {
+                    match crate::nostr_json::event_from_json(event_value.to_string()) {
                         Ok(event) => {
                             let event_id = event.id.to_hex();
                             self.store_event(&event).await;
@@ -230,10 +230,11 @@ impl MockRelay {
                     None => return,
                 };
                 let filter_value = arr[2].clone();
-                let filter: Filter = match Filter::from_json(filter_value.to_string()) {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
+                let filter: Filter =
+                    match crate::nostr_json::filter_from_json(filter_value.to_string()) {
+                        Ok(f) => f,
+                        Err(_) => return,
+                    };
 
                 subscriptions.insert(sub_id.clone(), filter.clone());
 

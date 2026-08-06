@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use nostr::{EventBuilder, EventId, Kind, PublicKey, Tag, TagKind, UnsignedEvent};
+use nostr::{EventBuilder, EventId, Kind, PublicKey, Tag, UnsignedEvent};
 use tracing::warn;
 
 use crate::attachment::blossom;
@@ -142,10 +142,7 @@ impl OutboundAttachmentProcessor {
         if let Some(reply_to) = metadata.reply_to {
             let event_id = EventId::parse(&reply_to)
                 .map_err(|_| invalid_params("reply_to must be a hex event id"))?;
-            builder = builder.tag(Tag::custom(
-                TagKind::e(),
-                [event_id.to_hex(), String::new(), "reply".to_string()],
-            ));
+            builder = builder.tag(crate::nostr_tags::reply_e_tag(event_id));
         }
 
         Ok(PreparedAttachment {
@@ -204,7 +201,7 @@ impl OutboundAttachmentProcessor {
 }
 
 fn custom_tag(name: &'static str, value: impl Into<String>) -> Tag {
-    Tag::custom(TagKind::custom(name), [value.into()])
+    crate::nostr_tags::attachment_tag(name, value)
 }
 
 fn invalid_params(message: &'static str) -> DaemonError {

@@ -48,6 +48,58 @@ pub trait Signer: Send + Sync {
     ) -> Result<String, DaemonError>;
 }
 
+/// NIP-44 encrypt/decrypt directly against a raw [`Keys`] pair.
+///
+/// `nostr` 0.45 removes [`nostr::NostrSigner`] from its public API.
+/// [`LocalKey`] is the one production caller that needs to use a raw
+/// [`Keys`] pair as a signer rather than going through the daemon's own
+/// [`Signer`] abstraction; this trait is the sole place in the crate that
+/// still names [`nostr::NostrSigner`], so the eventual removal is contained
+/// to this file.
+#[async_trait::async_trait]
+pub trait LocalKeyCrypto {
+    /// Encrypt `content` for `public_key` using NIP-44.
+    async fn nip44_encrypt(
+        &self,
+        public_key: &PublicKey,
+        content: &str,
+    ) -> Result<String, DaemonError>;
+
+    /// Decrypt a NIP-44 `payload` received from `public_key`.
+    async fn nip44_decrypt(
+        &self,
+        public_key: &PublicKey,
+        payload: &str,
+    ) -> Result<String, DaemonError>;
+}
+
+#[async_trait::async_trait]
+impl LocalKeyCrypto for Keys {
+    async fn nip44_encrypt(
+        &self,
+        public_key: &PublicKey,
+        content: &str,
+    ) -> Result<String, DaemonError> {
+        let signer: &dyn NostrSigner = self;
+        signer
+            .nip44_encrypt(public_key, content)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("NIP-44 encryption failed: {e}")))
+    }
+
+    async fn nip44_decrypt(
+        &self,
+        public_key: &PublicKey,
+        payload: &str,
+    ) -> Result<String, DaemonError> {
+        let signer: &dyn NostrSigner = self;
+        signer
+            .nip44_decrypt(public_key, payload)
+            .await
+            .map_err(|e| DaemonError::Nostr(format!("NIP-44 decryption failed: {e}")))
+    }
+}
+
 /// Concrete signer backend selected from configuration.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone)]
@@ -261,11 +313,7 @@ impl Signer for LocalKey {
         content: &str,
     ) -> Result<String, DaemonError> {
         let keys = self.keys()?;
-        let signer: &dyn nostr::NostrSigner = &keys;
-        signer
-            .nip44_encrypt(public_key, content)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("NIP-44 encryption failed: {e}")))
+        LocalKeyCrypto::nip44_encrypt(&keys, public_key, content).await
     }
 
     async fn nip44_decrypt(
@@ -274,11 +322,7 @@ impl Signer for LocalKey {
         payload: &str,
     ) -> Result<String, DaemonError> {
         let keys = self.keys()?;
-        let signer: &dyn nostr::NostrSigner = &keys;
-        signer
-            .nip44_decrypt(public_key, payload)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("NIP-44 decryption failed: {e}")))
+        LocalKeyCrypto::nip44_decrypt(&keys, public_key, payload).await
     }
 }
 
@@ -770,6 +814,21 @@ mod tests {
 
         bunker.stop().await;
         relay.stop().await;
+    }
+
+    #[tokio::test]
+    async fn local_key_crypto_nip44_roundtrip() {
+        let keys = test_keys();
+        let recipient = test_keys();
+        let content = "hello from a raw Keys pair";
+
+        let encrypted = LocalKeyCrypto::nip44_encrypt(&keys, &recipient.public_key(), content)
+            .await
+            .unwrap();
+        let decrypted = LocalKeyCrypto::nip44_decrypt(&recipient, &keys.public_key(), &encrypted)
+            .await
+            .unwrap();
+        assert_eq!(decrypted, content);
     }
 
     #[tokio::test]

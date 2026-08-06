@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use nostr::{Keys, TagKind};
+use nostr::Keys;
 use pacto_bot_api::attachment::crypto::{AttachmentKey, decrypt};
 use pacto_bot_api::attachment::outbound::{
     AttachmentMetadata, AttachmentSource, OutboundAttachmentProcessor,
@@ -94,11 +94,7 @@ async fn inline_payload_uploads_ciphertext_and_builds_exact_kind_15_tags() {
     assert_eq!(custom_tag(&prepared.rumor, "filename"), Some("photo.jpg"));
     assert_eq!(custom_tag(&prepared.rumor, "dim"), Some("640x480"));
     assert_eq!(
-        prepared
-            .rumor
-            .tags
-            .find(TagKind::p())
-            .and_then(|tag| tag.content()),
+        pacto_bot_api::nostr_tags::find_p_tag(&prepared.rumor.tags).and_then(|tag| tag.content()),
         Some(recipient.to_hex().as_str())
     );
 
