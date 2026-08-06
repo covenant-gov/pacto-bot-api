@@ -6,7 +6,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use nostr::hashes::sha256::Hash as Sha256Hash;
-use nostr::{EventBuilder, JsonUtil, Timestamp};
+use nostr::{EventBuilder, Timestamp};
 use nostr_blossom::bud01::{
     BlossomAuthorization, BlossomAuthorizationScope, BlossomAuthorizationVerb,
     BlossomBuilderExtension,
@@ -72,7 +72,7 @@ pub async fn upload(
             .custom_created_at(created_at)
             .build(signer.public_key());
         let event = sign_unsigned_event(signer, unsigned).await?;
-        let encoded = STANDARD.encode(event.as_json());
+        let encoded = STANDARD.encode(crate::nostr_json::event_to_json(&event));
 
         let response = match client
             .put(upload_url)

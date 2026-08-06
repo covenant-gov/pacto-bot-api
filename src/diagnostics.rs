@@ -114,6 +114,14 @@ pub struct HealthSnapshot {
     pub attachment_receive_total: u64,
     /// Total inbound attachments rejected before delivery.
     pub attachment_receive_failed_total: u64,
+    /// Total inbound gift-wrap events rejected during decrypt/parse
+    /// (signature verification, seal verification, rumor/seal author
+    /// mismatch, or a per-event decrypt timeout). The gift-wrap sender is
+    /// unauthenticated and attacker-mintable, so these are counted in one
+    /// aggregated total rather than recorded per event in `errors`, which
+    /// would let a spray of malformed wraps evict genuine diagnostic
+    /// entries from the fixed-size ring (R33, R42).
+    pub gift_wrap_rejected_total: u64,
     /// Current number of files in the inbound spool directory.
     pub spool_inbound_entries: u64,
     /// Current number of files in the outbound spool directory.
@@ -152,6 +160,7 @@ impl Default for HealthSnapshot {
             blob_upload_failed_total: 0,
             attachment_receive_total: 0,
             attachment_receive_failed_total: 0,
+            gift_wrap_rejected_total: 0,
             spool_inbound_entries: 0,
             spool_outbound_entries: 0,
             group_messages_rate_limited_total: 0,
@@ -472,6 +481,20 @@ impl Diagnostics {
     /// Increment the counter for inbound attachments rejected before delivery.
     pub async fn record_attachment_receive_failed(&self) {
         self.with_snapshot(|snapshot| snapshot.attachment_receive_failed_total += 1)
+            .await;
+    }
+
+    /// Increment the aggregated counter for inbound gift-wrap events
+    /// rejected during decrypt/parse.
+    ///
+    /// Deliberately does not push an [`ErrorRecord`] into the diagnostics
+    /// ring: an inbound gift wrap is unauthenticated and its sender is
+    /// attacker-mintable, so a spray of malformed wraps recorded one
+    /// [`ErrorRecord`] per event would evict genuine entries from the
+    /// fixed-size `errors` buffer (R33, R42). Callers that want a
+    /// human-readable reason should log it via `tracing` instead.
+    pub async fn record_gift_wrap_rejected(&self) {
+        self.with_snapshot(|snapshot| snapshot.gift_wrap_rejected_total += 1)
             .await;
     }
 

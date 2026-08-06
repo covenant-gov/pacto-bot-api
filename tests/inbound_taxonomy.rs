@@ -12,9 +12,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use nostr::nips::{nip44, nip59};
-use nostr::{
-    Event, EventBuilder, JsonUtil, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32, UnsignedEvent,
-};
+use nostr::{Event, EventBuilder, Keys, Kind, PublicKey, Tag, Timestamp, ToBech32, UnsignedEvent};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
 use pacto_bot_api::db::Db;
@@ -25,6 +23,7 @@ use pacto_bot_api::events::{AgentEvent, EventType};
 use pacto_bot_api::handlers::ConnectionHandle;
 use pacto_bot_api::mls::MlsEngineHandle;
 use pacto_bot_api::nostr::NostrClient;
+use pacto_bot_api::nostr_tags;
 use pacto_bot_api::signer::{Signer, SignerBackend};
 use pacto_bot_api::transport::protocol::JsonRpcMessage;
 use secrecy::SecretString;
@@ -198,7 +197,7 @@ async fn gift_wrap_rumor(
     let gift_content = nip44::encrypt(
         ephemeral.secret_key(),
         &recipient,
-        seal.as_json(),
+        pacto_bot_api::nostr_json::event_to_json(&seal),
         nip44::Version::default(),
     )?;
     let gift = UnsignedEvent::new(
@@ -208,7 +207,7 @@ async fn gift_wrap_rumor(
         [Tag::public_key(recipient)],
         gift_content,
     );
-    Ok(gift.sign_with_keys(&ephemeral)?)
+    Ok(pacto_bot_api::nostr_json::sign_unsigned(gift, &ephemeral)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +227,7 @@ async fn reaction_reaches_subscribed_handler() -> Result<(), Box<dyn std::error:
         .build(target_keys.public_key());
     let target_id = target.id.ok_or("target rumor missing id")?;
 
-    let rumor = EventBuilder::reaction_extended(
+    let rumor = nostr_tags::reaction_event(
         target_id,
         target_keys.public_key(),
         Some(Kind::PrivateDirectMessage),
@@ -271,7 +270,7 @@ async fn dm_only_handler_receives_nothing_for_reaction() -> Result<(), Box<dyn s
     let target = EventBuilder::new(Kind::PrivateDirectMessage, "original message")
         .build(target_keys.public_key());
     let target_id = target.id.ok_or("target rumor missing id")?;
-    let rumor = EventBuilder::reaction_extended(
+    let rumor = nostr_tags::reaction_event(
         target_id,
         target_keys.public_key(),
         Some(Kind::PrivateDirectMessage),
@@ -524,7 +523,7 @@ async fn reaction_with_empty_content_delivers_nothing() -> Result<(), Box<dyn st
         EventBuilder::new(Kind::PrivateDirectMessage, "original").build(target_keys.public_key());
     let target_id = target.id.ok_or("target rumor missing id")?;
     // A well-formed target `e` tag, but empty reaction content.
-    let rumor = EventBuilder::reaction_extended(
+    let rumor = nostr_tags::reaction_event(
         target_id,
         target_keys.public_key(),
         Some(Kind::PrivateDirectMessage),

@@ -2709,10 +2709,11 @@ mod tests {
             .publish_key_package(&recipient_keys.public_key(), relays)
             .await
             .unwrap();
-        nostr::EventBuilder::new(nostr::Kind::MlsKeyPackage, content)
-            .tags(tags)
-            .sign_with_keys(recipient_keys)
-            .unwrap()
+        crate::nostr_json::sign_builder(
+            nostr::EventBuilder::new(nostr::Kind::MlsKeyPackage, content).tags(tags),
+            recipient_keys,
+        )
+        .unwrap()
     }
 
     async fn dispatch_with_bots(
@@ -4665,7 +4666,7 @@ mod tests {
             tags,
             content,
         );
-        rumor.sign_with_keys(recipient_keys).unwrap()
+        crate::nostr_json::sign_unsigned(rumor, recipient_keys).unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread")]

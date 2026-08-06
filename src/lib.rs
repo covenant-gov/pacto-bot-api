@@ -22,6 +22,8 @@ pub mod handlers;
 pub mod mls;
 pub mod mls_path;
 pub mod nostr;
+pub mod nostr_json;
+pub mod nostr_tags;
 pub mod service_compatibility_generated;
 pub mod signer;
 pub mod spool;

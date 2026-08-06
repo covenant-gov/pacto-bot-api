@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use nostr::{TagKind, Tags, UnsignedEvent};
+use nostr::{Tags, UnsignedEvent};
 use reqwest::redirect::Policy;
 use tracing::warn;
 
@@ -305,9 +305,7 @@ impl AttachmentTags {
 }
 
 fn custom_tag<'a>(tags: &'a Tags, name: &str) -> Option<&'a str> {
-    tags.iter()
-        .find(|tag| tag.kind() == TagKind::custom(name))
-        .and_then(|tag| tag.content())
+    crate::nostr_tags::find_attachment_tag(tags, name)
 }
 
 async fn resolve_safe_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, DaemonError> {
