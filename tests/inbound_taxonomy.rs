@@ -389,7 +389,10 @@ async fn welcome_kind_still_delivers_as_mls_welcome_received()
     let bot_pubkey = keys.public_key();
 
     let key_package = mls
-        .publish_key_package(&bot_pubkey, vec![])
+        .publish_key_package(
+            &bot_pubkey,
+            vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+        )
         .await
         .expect("publish key package");
     let unsigned_kp = UnsignedEvent::new(
@@ -435,7 +438,7 @@ async fn unrepresented_kind_is_skipped_and_cursor_still_advances()
 
     let dm_rumor = EventBuilder::private_msg_rumor(bot_pubkey, "after the skip")
         .build(sender_keys.public_key());
-    let dm_timestamp = dm_rumor.created_at.as_u64();
+    let dm_timestamp = dm_rumor.created_at.as_secs();
     let dm_gift = gift_wrap_rumor(&sender_keys, bot_pubkey, dm_rumor).await?;
     relay.inject_event(dm_gift).await;
 

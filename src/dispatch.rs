@@ -4146,11 +4146,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn authorized_exit_mls_group_returns_event_id_and_publishes_evolution() {
+        // MDK 0.8.0 enforces MIP-03: an admin must self-demote before it can
+        // send a SelfRemove proposal, and a sole admin has no one to demote
+        // to. `admin.create_mls_group` always makes the creator the sole
+        // admin (tracked as KD7/R11, deferred to a later unit), so this test
+        // exercises the bot as an invited (non-admin) member of a group
+        // created by an external Squad admin, joined by feeding the bot's
+        // MLS engine a welcome directly instead of round-tripping a gift
+        // wrap through the relay.
         let relay = MockRelay::start().await.expect("mock relay should start");
         let keys = test_keys();
-        let recipient_keys = nostr::Keys::generate();
-        let recipient_npub = recipient_keys.public_key().to_bech32().unwrap();
-        let (dispatch, _cm) = dispatch_with_bots_on_relay(
+        let (dispatch, cm) = dispatch_with_bots_on_relay(
             vec![bot_config_with_mls(
                 "mls-bot",
                 &keys,
@@ -4164,36 +4170,52 @@ mod tests {
         let handler_id =
             register_handler(&dispatch, &["mls-bot"], &["Admin", "ExitMlsGroup"]).await;
 
-        let key_package = build_key_package_event(&recipient_keys).await;
-        relay.inject_event(key_package).await;
-
-        // Create the group so the bot is a member.
-        let create_req = JsonRpcMessage::request(
-            2.into(),
-            "admin.create_mls_group",
-            Some(serde_json::json!({
-                "bot_id": "mls-bot",
-                "group_name": "test-group",
-                "recipient": recipient_npub,
-            })),
-        );
-        let create_resp = dispatch
-            .handle_message(create_req, Some(&handler_id), None)
-            .await
-            .unwrap()
-            .unwrap();
-        let JsonRpcMessage::Response { result, .. } = create_resp else {
-            panic!("expected response");
+        let bot_mls = {
+            let cm = cm.read().await;
+            cm.get_bot_by_id("mls-bot")
+                .unwrap()
+                .mls
+                .clone()
+                .expect("mls engine configured")
         };
-        let result: MlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
-        let wire_id = result.wire_id;
+
+        // Publish the bot's own KeyPackage so an external admin can invite it.
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = bot_mls
+            .publish_key_package(&keys.public_key(), relays.clone())
+            .await
+            .expect("publish_key_package");
+        let bot_key_package_event = crate::nostr_json::sign_builder(
+            nostr::EventBuilder::new(nostr::Kind::MlsKeyPackage, content).tags(tags),
+            &keys,
+        )
+        .unwrap();
+
+        // An external Squad admin creates the group with the bot as the sole
+        // invited (non-admin) member.
+        let admin_keys = nostr::Keys::generate();
+        let admin_temp = test_tempdir();
+        let admin_engine =
+            MlsEngineHandle::new_persistent(admin_temp.path().join("admin-mls.db")).unwrap();
+        let (wire_id, welcome_rumor) = admin_engine
+            .create_group(
+                admin_keys.public_key(),
+                keys.public_key(),
+                bot_key_package_event,
+                "test-group".to_string(),
+                relays,
+            )
+            .await
+            .expect("create_group failed");
         assert_eq!(wire_id.len(), 64);
 
-        // Wait for the welcome gift-wrap before exiting.
-        relay
-            .wait_for_event(|e| e.kind == Kind::GiftWrap, Duration::from_secs(5))
+        // Feed the welcome directly into the bot's own MLS engine, standing
+        // in for the gift-wrap-decrypt step the daemon performs in
+        // production.
+        bot_mls
+            .process_welcome_and_return_wire_id(EventId::all_zeros(), welcome_rumor)
             .await
-            .expect("welcome gift-wrap should be published");
+            .expect("process_welcome_and_return_wire_id failed");
 
         let exit_req = JsonRpcMessage::request(
             3.into(),

@@ -31,6 +31,7 @@ use crate::config::BotConfig;
 use crate::diagnostics::Diagnostics;
 use crate::errors::DaemonError;
 use crate::events::{AgentEvent, EventType, ReactionPayload};
+use crate::mls;
 use crate::mls::MlsEngineHandle;
 use crate::nostr_tags;
 use crate::signer::Signer;
@@ -517,7 +518,7 @@ impl NostrClient {
         freshness: Duration,
     ) -> Result<(Event, Duration), DaemonError> {
         let now = Timestamp::now();
-        let now_secs = now.as_u64();
+        let now_secs = now.as_secs();
         let freshness_secs = freshness.as_secs();
         let since = now - freshness_secs;
 
@@ -569,7 +570,7 @@ impl NostrClient {
                 continue;
             }
 
-            let event_ts = event.created_at.as_u64();
+            let event_ts = event.created_at.as_secs();
             if event_ts > now_secs + 60 {
                 warn!(
                     event_id = %event_id,
@@ -918,6 +919,7 @@ impl NostrClient {
         tokio::spawn(async move {
             let _ = client
                 .handle_notifications(|notification| {
+                    let client = client.clone();
                     let tx: UnboundedSender<Result<AgentEvent, DaemonError>> = tx.clone();
                     let signers = Arc::clone(&signers);
                     let mls_engines = Arc::clone(&mls_engines);
@@ -998,6 +1000,7 @@ impl NostrClient {
                                     // Spawn each group message decryption in its own task so that
                                     // one bot's slow MLS engine does not block other bots.
                                     let tx = tx.clone();
+                                    let client = client.clone();
                                     let signers = Arc::clone(&signers);
                                     let mls_engines = Arc::clone(&mls_engines);
                                     let diagnostics = diagnostics.clone();
@@ -1006,6 +1009,7 @@ impl NostrClient {
                                         let signers = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
                                         match Self::process_group_message(
+                                            &client,
                                             &signers,
                                             &mls_engines,
                                             &event,
@@ -1232,7 +1236,7 @@ impl NostrClient {
             content: rumor.content,
             rumor_id,
             author: seal_event.pubkey.to_hex(),
-            timestamp: rumor.created_at.as_u64(),
+            timestamp: rumor.created_at.as_secs(),
             reaction,
             attachment,
             ..Default::default()
@@ -1260,6 +1264,7 @@ impl NostrClient {
     /// the parsed mention envelope; protocol-only messages (proposals, commits,
     /// etc.) return an empty vector so they do not fan out to handlers.
     async fn process_group_message(
+        client: &Client,
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
         mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
@@ -1325,14 +1330,29 @@ impl NostrClient {
             .ok_or_else(|| DaemonError::Nostr("first recipient engine missing".into()))?
             .1
             .clone();
-        let decrypted = first_mls
+        let outcome = first_mls
             .decrypt_group_message(event)
             .await
             .map_err(|e| DaemonError::Nostr(format!("failed to decrypt group message: {e}")))?;
 
-        let decrypted = match decrypted {
-            Some(d) => d,
-            None => return Ok(vec![]),
+        let decrypted = match outcome {
+            mls::GroupMessageOutcome::Message(d) => d,
+            mls::GroupMessageOutcome::PublishEvolution(evolution_event) => {
+                // MDK auto-committed a self-remove proposal on this bot's
+                // behalf; the commit must reach the group's relays or every
+                // peer's epoch diverges from this bot's and stops
+                // decrypting (R11 makes the bot a co-admin of every squad
+                // it creates, so this path is common, not exotic).
+                if let Err(e) = client.send_event(&evolution_event).await {
+                    error!(
+                        event_id = %event.id.to_hex(),
+                        error = %e,
+                        "failed to publish MLS evolution event from auto-committed proposal"
+                    );
+                }
+                return Ok(vec![]);
+            }
+            mls::GroupMessageOutcome::None => return Ok(vec![]),
         };
 
         let inner = UnsignedEvent::new(
@@ -1444,15 +1464,29 @@ impl NostrClient {
 
             // Advance each recipient's engine state so subsequent messages can be
             // decrypted. The first recipient already processed the message above.
-            if *recipient != first_recipient
-                && let Err(e) = mls.decrypt_group_message(event).await
-            {
-                debug!(
-                    bot_id = %bot_id,
-                    error = %e,
-                    "failed to advance engine state for group message; skipping recipient"
-                );
-                continue;
+            if *recipient != first_recipient {
+                match mls.decrypt_group_message(event).await {
+                    Ok(mls::GroupMessageOutcome::PublishEvolution(evolution_event)) => {
+                        if let Err(e) = client.send_event(&evolution_event).await {
+                            error!(
+                                event_id = %event.id.to_hex(),
+                                bot_id = %bot_id,
+                                error = %e,
+                                "failed to publish MLS evolution event from auto-committed proposal"
+                            );
+                        }
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        debug!(
+                            bot_id = %bot_id,
+                            error = %e,
+                            "failed to advance engine state for group message; skipping recipient"
+                        );
+                        continue;
+                    }
+                }
             }
 
             agent_events.push(AgentEvent {
@@ -2095,7 +2129,7 @@ mod tests {
         // events in injection order, so a .limit(1) would return only the older
         // package and the client would select it incorrectly. With a generous
         // limit (or no limit), the client should select the fresh package.
-        let older_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 120);
+        let older_ts = Timestamp::from_secs(Timestamp::now().as_secs() - 120);
         let older_event = build_key_package(&recipient_keys, older_marker, older_ts);
         relay.inject_event(older_event).await;
 
@@ -2129,7 +2163,7 @@ mod tests {
         let recipient = recipient_keys.public_key();
         let secret_marker = "STALE_KP_CIPHERTEXT_abc123";
 
-        let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 301);
+        let stale_ts = Timestamp::from_secs(Timestamp::now().as_secs() - 301);
         let event = build_key_package(&recipient_keys, secret_marker, stale_ts);
         relay.inject_event(event).await;
 
@@ -2153,7 +2187,7 @@ mod tests {
         let recipient_keys = nostr::Keys::generate();
         let recipient = recipient_keys.public_key();
 
-        let future_ts = Timestamp::from_secs(Timestamp::now().as_u64() + 61);
+        let future_ts = Timestamp::from_secs(Timestamp::now().as_secs() + 61);
         let event = build_key_package(&recipient_keys, "FUTURE_KP_CIPHERTEXT", future_ts);
         relay.inject_event(event).await;
 
@@ -2193,7 +2227,7 @@ mod tests {
                 "DEBUG: relay event pubkey={} kind={} created_at={}",
                 e.pubkey.to_hex(),
                 e.kind.as_u16(),
-                e.created_at.as_u64()
+                e.created_at.as_secs()
             );
         }
 
@@ -2332,7 +2366,7 @@ mod tests {
         let recipient = recipient_keys.public_key();
 
         let kp_secret = "KP_SECRET_CIPHERTEXT_abc123";
-        let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 301);
+        let stale_ts = Timestamp::from_secs(Timestamp::now().as_secs() - 301);
         let kp_event = build_key_package(&recipient_keys, kp_secret, stale_ts);
         relay.inject_event(kp_event).await;
 

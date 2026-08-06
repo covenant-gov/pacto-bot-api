@@ -21,7 +21,7 @@ impl MockMlsPeer {
     /// Create a new peer with an ephemeral in-memory MLS engine.
     pub fn new() -> Self {
         let keys = Keys::generate();
-        let engine = MDK::new(MdkSqliteStorage::new(":memory:").expect("memory storage"));
+        let engine = MDK::new(MdkSqliteStorage::new_in_memory().expect("memory storage"));
         Self { keys, engine }
     }
 
@@ -48,10 +48,11 @@ impl MockMlsPeer {
             .into_iter()
             .filter_map(|r| RelayUrl::parse(&r).ok())
             .collect();
-        let (encoded, tags) = self
+        let key_package_data = self
             .engine
             .create_key_package_for_event(&self.keys.public_key(), relay_urls)
             .expect("create key package");
+        let (encoded, tags) = (key_package_data.content, key_package_data.tags_443);
         let unsigned = UnsignedEvent::new(
             self.keys.public_key(),
             created_at,
@@ -141,7 +142,7 @@ impl MockMlsPeer {
             Some(image_hash),
             Some(image_key),
             Some(image_nonce),
-            vec![],
+            vec![RelayUrl::parse("wss://test.relay").expect("valid relay url")],
             vec![self.keys.public_key()],
         );
 
@@ -214,7 +215,7 @@ impl MockMlsPeer {
         let groups = self.engine.get_groups().expect("get groups");
         let group = groups.first().expect("group exists");
         self.engine
-            .create_message(&group.mls_group_id, rumor)
+            .create_message(&group.mls_group_id, rumor, None)
             .expect("create group message")
     }
 
@@ -229,7 +230,7 @@ impl MockMlsPeer {
         let group = groups.first().expect("group exists");
         let messages = self
             .engine
-            .get_messages(&group.mls_group_id)
+            .get_messages(&group.mls_group_id, None)
             .expect("get messages");
         let msg = messages.first().expect("at least one message");
         pacto_bot_api::nostr_json::sign_unsigned(
