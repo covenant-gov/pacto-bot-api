@@ -793,6 +793,20 @@ static AUTHORIZATION_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     }
 });
 
+static MLS_STORE_FILENAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::expect_used, clippy::panic)]
+    {
+        // Any operator-chosen MLS store filename (`.db`, `.sqlite`,
+        // `.sqlite3`), its `-wal`/`-shm`/`-journal` sidecars, or the store's
+        // `.key` sidecar (see `src/mls_key.rs`). Matched by suffix rather
+        // than a fixed name so a store not named `vector-mls.db` -- or its
+        // key file, which never existed before MDK 0.8.0 made it mandatory
+        // -- is still redacted.
+        Regex::new(r"[\w.-]+\.(?:db|sqlite3?|key)(?:-wal|-shm|-journal)?")
+            .expect("mls store filename regex is valid")
+    }
+});
+
 /// Redact likely secret material from a diagnostic message.
 ///
 /// This is a best-effort filter; application code should avoid logging
@@ -821,26 +835,29 @@ fn redact_secrets(input: &str) -> String {
     redact_mls_paths(&out)
 }
 
-/// Redact the path to per-bot MLS databases so their content and location
-/// are not preserved in diagnostics.
+/// Redact the path to per-bot MLS stores -- the SQLCipher database, its
+/// `.key` sidecar, and their `-wal`/`-shm`/`-journal` siblings -- so their
+/// content and location are not preserved in diagnostics. Matches by
+/// filename suffix rather than one hardcoded name, so an operator-chosen
+/// store filename is redacted the same as the default.
 fn redact_mls_paths(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut rest = input;
-    const FILENAME: &str = "vector-mls.db";
 
-    while let Some(pos) = rest.find(FILENAME) {
+    while let Some(m) = MLS_STORE_FILENAME_REGEX.find(rest) {
+        let filename = m.as_str();
         // Find the beginning of the filesystem path by scanning backward over
         // path characters. This redacts the entire per-bot directory
         // (data_dir/<bot_id>/) rather than just the filename.
-        let path_start = rest[..pos]
+        let path_start = rest[..m.start()]
             .rfind(|c: char| !is_path_char(c))
             .map(|idx| idx + 1)
             .unwrap_or(0);
 
         result.push_str(&rest[..path_start]);
         result.push_str("[REDACTED]/");
-        result.push_str(FILENAME);
-        rest = &rest[pos + FILENAME.len()..];
+        result.push_str(filename);
+        rest = &rest[m.end()..];
     }
     result.push_str(rest);
     result
@@ -1250,6 +1267,28 @@ mod tests {
             "missing redaction marker: {out}"
         );
         assert_eq!(out, "storage error for [REDACTED]/vector-mls.db");
+    }
+
+    #[test]
+    fn redact_mls_paths_covers_operator_chosen_filenames_and_key_and_sidecars() {
+        // An operator-chosen store name, not the hardcoded default.
+        let out = redact_secrets("open failed for /data/bots/squad/team-alpha.sqlite");
+        assert_eq!(out, "open failed for [REDACTED]/team-alpha.sqlite");
+
+        // The store's key sidecar (introduced by MDK 0.8.0's mandatory
+        // encryption; the old hardcoded-filename check never saw this).
+        let out = redact_secrets("key rejected for /data/bots/squad/vector-mls.db.key");
+        assert_eq!(out, "key rejected for [REDACTED]/vector-mls.db.key");
+
+        // WAL/SHM/journal sidecars of an operator-chosen store name.
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let path = format!("/data/bots/squad/team-alpha.db{suffix}");
+            let out = redact_secrets(&format!("sidecar error for {path}"));
+            assert_eq!(
+                out,
+                format!("sidecar error for [REDACTED]/team-alpha.db{suffix}")
+            );
+        }
     }
 
     #[test]

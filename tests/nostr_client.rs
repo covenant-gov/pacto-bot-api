@@ -574,7 +574,7 @@ async fn fetch_key_package_selects_fresh_over_stale() -> Result<(), Box<dyn std:
     // Inject a stale package first, then a fresh one. A relay that respects
     // Filter::limit would return only the stale package if the filter had a
     // limit of 1; the client must collect all events and select the fresh one.
-    let stale_ts = Timestamp::from_secs(Timestamp::now().as_u64() - 3600);
+    let stale_ts = Timestamp::from_secs(Timestamp::now().as_secs() - 3600);
     let stale_event = build_key_package(&recipient_keys, stale_marker, stale_ts).await?;
     relay.inject_event(stale_event).await;
 

@@ -92,7 +92,7 @@ async fn created_response_returns_url_and_sends_exact_authorized_ciphertext() {
         .and_then(|value| value.parse::<u64>().ok());
     assert_eq!(action, Some("upload"));
     assert_eq!(hash, Some(sha256_hex(ciphertext).as_str()));
-    assert_eq!(expiration, Some(event.created_at.as_u64() + 300));
+    assert_eq!(expiration, Some(event.created_at.as_secs() + 300));
 }
 
 #[tokio::test]

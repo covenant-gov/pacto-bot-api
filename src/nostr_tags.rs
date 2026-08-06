@@ -79,7 +79,21 @@ pub fn reaction_event(
     reacted_to_kind: Option<Kind>,
     emoji: &str,
 ) -> EventBuilder {
-    EventBuilder::reaction_extended(target, recipient, reacted_to_kind, emoji)
+    // `EventBuilder::reaction_extended` was removed by the time nostr
+    // reached 0.44; `reaction` + `ReactionTarget` is the current NIP-25
+    // constructor. `ReactionTarget`'s fields are public specifically to
+    // support building one without a full target `Event` in hand -- the
+    // seam only ever has the target's id, author, and kind.
+    EventBuilder::reaction(
+        nostr::nips::nip25::ReactionTarget {
+            event_id: target,
+            public_key: recipient,
+            coordinate: None,
+            kind: reacted_to_kind,
+            relay_hint: None,
+        },
+        emoji,
+    )
 }
 
 /// Decode a reaction rumor's target event id and emoji from its tags and

@@ -113,12 +113,12 @@ async fn verified_attachment_is_spooled_with_metadata_and_owner_only_mode() {
     let fetcher = Arc::new(StaticFetcher::new(ciphertext));
     let (_dir, spool, processor) = processor(1024, fetcher);
 
-    let before = Timestamp::now().as_u64();
+    let before = Timestamp::now().as_secs();
     let payload = processor
         .process_rumor(&rumor)
         .await
         .expect("process rumor");
-    let after = Timestamp::now().as_u64();
+    let after = Timestamp::now().as_secs();
 
     assert_eq!(fs::read(&payload.path).expect("read spool file"), plaintext);
     assert_eq!(payload.mime_type, "image/png");

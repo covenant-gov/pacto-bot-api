@@ -85,7 +85,10 @@ async fn decrypt_event_accepts_welcome_and_returns_wire_id()
 
     // Publish the bot's KeyPackage via the daemon MLS engine.
     let key_package = mls
-        .publish_key_package(&bot_pubkey, vec![])
+        .publish_key_package(
+            &bot_pubkey,
+            vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+        )
         .await
         .expect("publish key package");
     let unsigned_kp = nostr::UnsignedEvent::new(
@@ -122,7 +125,10 @@ async fn decrypt_event_welcome_is_idempotent_on_replay() -> Result<(), Box<dyn s
     let bot_pubkey = keys.public_key();
 
     let key_package = mls
-        .publish_key_package(&bot_pubkey, vec![])
+        .publish_key_package(
+            &bot_pubkey,
+            vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+        )
         .await
         .expect("publish key package");
     let unsigned_kp = nostr::UnsignedEvent::new(

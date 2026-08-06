@@ -294,7 +294,10 @@ async fn multi_bot_peer_group_setup(
         let bot_keys = &keys[i];
         let daemon_pubkey = bot_keys.public_key();
         let bot_key_package = mls
-            .publish_key_package(&daemon_pubkey, vec![])
+            .publish_key_package(
+                &daemon_pubkey,
+                vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+            )
             .await
             .expect("publish key package");
         let unsigned = nostr::UnsignedEvent::new(
@@ -347,7 +350,10 @@ async fn peer_group_setup(
     let daemon_pubkey = bot.signer.public_key();
 
     let bot_key_package = mls
-        .publish_key_package(&daemon_pubkey, vec![])
+        .publish_key_package(
+            &daemon_pubkey,
+            vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+        )
         .await
         .expect("publish key package");
     let bot_key_package_event = {

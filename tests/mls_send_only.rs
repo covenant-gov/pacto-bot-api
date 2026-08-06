@@ -61,9 +61,12 @@ async fn daemon_bot_joins_mls_group_and_sends_message() {
         let cm = cm.read().await;
         let bot = cm.get_bot_by_id("mls-bot").expect("bot exists");
         let mls = bot.mls.as_ref().expect("mls enabled");
-        mls.publish_key_package(&daemon_pubkey, vec![])
-            .await
-            .expect("publish key package")
+        mls.publish_key_package(
+            &daemon_pubkey,
+            vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+        )
+        .await
+        .expect("publish key package")
     };
     let bot_key_package_event = {
         let unsigned = nostr::UnsignedEvent::new(
@@ -134,7 +137,7 @@ async fn daemon_bot_joins_mls_group_and_sends_message() {
         content: "welcome".into(),
         rumor_id: wrapper_event_id.to_hex(),
         author: peer.public_key().to_hex(),
-        timestamp: nostr::Timestamp::now().as_u64(),
+        timestamp: nostr::Timestamp::now().as_secs(),
         ..Default::default()
     };
     dispatch

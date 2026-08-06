@@ -64,7 +64,9 @@ async fn startup_reconciliation_restores_missing_mls_group_rows() {
     let peer = MockMlsPeer::new();
     let peer_pubkey = peer.public_key();
     let peer_npub = peer_pubkey.to_bech32().unwrap();
-    let key_package = peer.create_key_package_event(vec![]).await;
+    let key_package = peer
+        .create_key_package_event(vec!["wss://relay.example".to_string()])
+        .await;
 
     let (wire_id, _welcome) = {
         let cm_guard = cm.read().await;
@@ -196,7 +198,10 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
         let daemon_pubkey = bot_a.signer.public_key();
 
         let bot_a_key_package = mls_a
-            .publish_key_package(&daemon_pubkey, vec![])
+            .publish_key_package(
+                &daemon_pubkey,
+                vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+            )
             .await
             .expect("publish key package for bot-a");
         let bot_a_key_package_event = {
@@ -243,7 +248,10 @@ async fn startup_reconciliation_across_bots_with_shared_squad() {
         let daemon_pubkey = bot_b.signer.public_key();
 
         let bot_b_key_package = mls_b
-            .publish_key_package(&daemon_pubkey, vec![])
+            .publish_key_package(
+                &daemon_pubkey,
+                vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+            )
             .await
             .expect("publish key package for bot-b");
         let bot_b_key_package_event = {

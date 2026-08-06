@@ -8,8 +8,12 @@
 
 use std::path::{Path, PathBuf};
 
+use mdk_core::MdkConfig;
+use mdk_core::callback::MdkCallback;
+use mdk_core::callback::RollbackInfo;
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
+use mdk_sqlite_storage::encryption::EncryptionConfig;
 use mdk_storage_traits::GroupId;
 use nostr::{Event, Kind, PublicKey, RelayUrl, Tags, UnsignedEvent};
 use tokio::sync::{mpsc, oneshot};
@@ -62,6 +66,10 @@ pub enum MlsError {
     /// Channel communication error with the MLS worker thread.
     #[error("MLS worker communication error")]
     WorkerDisconnected,
+
+    /// Failed to load or create the store's SQLCipher encryption key.
+    #[error("MLS store key error")]
+    Key(#[from] crate::mls_key::MlsKeyError),
 }
 
 impl From<mdk_core::Error> for MlsError {
@@ -95,17 +103,111 @@ fn mdk_error_category(err: &mdk_core::Error) -> &'static str {
         mdk_core::Error::Group(_) => "group",
         mdk_core::Error::Message(_) => "message",
         mdk_core::Error::Welcome(_) => "welcome",
-        mdk_core::Error::ProcessMessageWrongEpoch
+        mdk_core::Error::ProcessMessageWrongEpoch(_, _)
         | mdk_core::Error::ProcessMessageWrongGroupId
         | mdk_core::Error::ProcessMessageUseAfterEviction
         | mdk_core::Error::ProcessMessageOther(_) => "process_message",
-        _ => "other",
+
+        // 0.8.0 typed variants named in the parity plan -- one stable
+        // category per variant. Several carry identity or group data in
+        // their payload, so no arm below renders the payload into the
+        // category string.
+        mdk_core::Error::NotAdmin => "not_admin",
+        mdk_core::Error::CommitFromNonAdmin => "commit_from_non_admin",
+        mdk_core::Error::WelcomePreviouslyFailed(_) => "welcome_previously_failed",
+        mdk_core::Error::CannotDecryptOwnMessage => "cannot_decrypt_own_message",
+        mdk_core::Error::KeyPackageIdentityMismatch { .. } => "key_package_identity_mismatch",
+        mdk_core::Error::IdentityChangeNotAllowed { .. } => "identity_change_not_allowed",
+        mdk_core::Error::InviteeMissingRequiredProposal => "invitee_missing_required_proposal",
+        mdk_core::Error::EmptyUpgradeSet => "empty_upgrade_set",
+        mdk_core::Error::ProposalNotInSupportedSet(_) => "proposal_not_in_supported_set",
+        mdk_core::Error::ProposalAlreadyRequired(_) => "proposal_already_required",
+        mdk_core::Error::ProposalNotAvailableForUpgrade { .. } => {
+            "proposal_not_available_for_upgrade"
+        }
+
+        // Everything else, grouped by kind. `syn`/CI has no way to remind us
+        // to revisit this grouping, so this match is deliberately
+        // non-exhaustive-proof: adding a new upstream variant is a compile
+        // error here, not a silent fall-through.
+        mdk_core::Error::Hex(_)
+        | mdk_core::Error::Keys(_)
+        | mdk_core::Error::Event(_)
+        | mdk_core::Error::EventBuilder(_)
+        | mdk_core::Error::RelayUrl(_)
+        | mdk_core::Error::Tls(_)
+        | mdk_core::Error::Utf8(_)
+        | mdk_core::Error::OpenMlsGeneric(_)
+        | mdk_core::Error::InvalidExtension(_)
+        | mdk_core::Error::CreateMessage(_)
+        | mdk_core::Error::BasicCredential(_) => "protocol",
+
+        mdk_core::Error::Storage(_) => "storage",
+        mdk_core::Error::Signer(_) | mdk_core::Error::CantLoadSigner => "signer",
+
+        mdk_core::Error::ExportSecret(_) | mdk_core::Error::GroupExporterSecretNotFound => {
+            "export_secret"
+        }
+
+        mdk_core::Error::MergePendingCommit(_)
+        | mdk_core::Error::CommitToPendingProposalsError
+        | mdk_core::Error::SelfUpdate(_)
+        | mdk_core::Error::OwnCommitPending => "commit",
+
+        mdk_core::Error::ProcessedWelcomeNotFound | mdk_core::Error::InvalidWelcomeMessage => {
+            "welcome"
+        }
+
+        mdk_core::Error::Provider(_) | mdk_core::Error::NotImplemented(_) => "provider",
+
+        mdk_core::Error::ProtocolMessage(_)
+        | mdk_core::Error::ProtocolGroupIdMismatch
+        | mdk_core::Error::OwnLeafNotFound
+        | mdk_core::Error::UnexpectedEvent { .. }
+        | mdk_core::Error::UnexpectedExtensionType
+        | mdk_core::Error::NostrGroupDataExtensionNotFound
+        | mdk_core::Error::MessageFromNonMember
+        | mdk_core::Error::MessageNotFound
+        | mdk_core::Error::UpdateGroupContextExts(_)
+        | mdk_core::Error::InvalidImageHashLength
+        | mdk_core::Error::InvalidImageKeyLength
+        | mdk_core::Error::InvalidImageNonceLength
+        | mdk_core::Error::InvalidImageUploadKeyLength
+        | mdk_core::Error::InvalidExtensionVersion(_)
+        | mdk_core::Error::ExtensionFormatError(_)
+        | mdk_core::Error::AuthorMismatch
+        | mdk_core::Error::MissingRumorEventId
+        | mdk_core::Error::InvalidTimestamp(_)
+        | mdk_core::Error::MissingGroupIdTag
+        | mdk_core::Error::InvalidGroupIdFormat(_)
+        | mdk_core::Error::MultipleGroupIdTags(_)
+        | mdk_core::Error::SnapshotCreationFailed(_) => "protocol",
     }
 }
 
 impl From<crate::mls_path::MlsPathError> for MlsError {
     fn from(err: crate::mls_path::MlsPathError) -> Self {
         MlsError::InsecurePath(err.to_string())
+    }
+}
+
+/// `MdkCallback` implementation registered on every engine for KTD8
+/// observability. `on_rollback` is invoked synchronously from inside
+/// `process_message` on the MLS worker thread, so this implementation must
+/// neither await nor re-enter `MlsEngineHandle` (that would deadlock the
+/// single-threaded worker). It only increments an aggregated counter --
+/// never the raw `GroupId` `RollbackInfo` carries, which R16 forbids
+/// logging.
+#[derive(Debug, Default)]
+struct MdkRollbackObserver {
+    count: std::sync::atomic::AtomicU64,
+}
+
+impl MdkCallback for MdkRollbackObserver {
+    fn on_rollback(&self, _info: &RollbackInfo) {
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!("MLS commit race resolution rolled back a group to an earlier epoch");
     }
 }
 
@@ -198,7 +300,7 @@ enum MlsCommand {
     },
     DecryptGroupMessage {
         event: nostr::Event,
-        tx: oneshot::Sender<Result<Option<DecryptedMessage>, MlsError>>,
+        tx: oneshot::Sender<Result<GroupMessageOutcome, MlsError>>,
     },
     HasGroupWithWireId {
         group_id: String,
@@ -217,6 +319,7 @@ enum MlsCommand {
 pub struct MlsEngineHandle {
     tx: mpsc::Sender<MlsCommand>,
     db_path: PathBuf,
+    rollback_observer: std::sync::Arc<MdkRollbackObserver>,
 }
 
 impl std::fmt::Debug for MlsEngineHandle {
@@ -256,25 +359,59 @@ impl MlsEngineHandle {
             )));
         }
 
-        // Enable WAL mode first. We hold a temporary connection open while
-        // `MdkSqliteStorage` initializes so the WAL file is not checkpointed
-        // and removed before the engine's own connections adopt WAL mode.
-        let wal_conn = rusqlite::Connection::open(&db_path)?;
-        wal_conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;",
-        )?;
-        wal_conn.execute(
-            "CREATE TABLE IF NOT EXISTS _pacto_mls_wal_trigger (x INTEGER)",
-            [],
-        )?;
+        // MDK 0.8.0 makes the store's SQLCipher encryption key mandatory in
+        // a production build. `new_with_key` must be the first thing that
+        // touches the path: unlike the pre-0.8.0 engine it pre-creates the
+        // file securely itself and hardens it and its sidecars, so the old
+        // priming connection and trigger-table dance is not just
+        // unnecessary but actively harmful here -- a plain `rusqlite`
+        // connection would write a plaintext `SQLite format 3\0` header,
+        // which `new_with_key` then rejects as an unencrypted database on
+        // the very next open.
+        let key = crate::mls_key::load_or_create(&db_path)?;
+        let storage = MdkSqliteStorage::new_with_key(&db_path, EncryptionConfig::new(*key))?;
         set_db_permissions(&db_path)?;
 
-        let storage = MdkSqliteStorage::new(&db_path)?;
-        set_db_permissions(&db_path)?;
-        wal_conn.execute("DROP TABLE IF EXISTS _pacto_mls_wal_trigger;", [])?;
+        // Explicitly enable WAL. MDK's own connections never set
+        // journal_mode (defaulting to SQLite's rollback journal); this
+        // connection reproduces the store's full keyed pragma prologue --
+        // `PRAGMA key` must be the first statement on any connection to an
+        // encrypted database, `cipher_compatibility` must match what
+        // `MdkSqliteStorage` itself pins, and `temp_store = MEMORY` avoids
+        // spilling decrypted temp data to a plaintext file on disk.
+        {
+            let wal_conn = rusqlite::Connection::open(&db_path)?;
+            let hex_key = hex::encode(*key);
+            wal_conn.execute_batch(&format!(
+                "PRAGMA key = \"x'{hex_key}'\";
+                 PRAGMA cipher_compatibility = 4;
+                 PRAGMA temp_store = MEMORY;
+                 PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = NORMAL;"
+            ))?;
+            set_db_permissions(&db_path)?;
+        }
 
-        let engine = MDK::new(storage);
+        // KTD8: name every value explicitly rather than inherit
+        // `MdkConfig::default()` silently, so a future retention-window
+        // question is a diff against this comment instead of an
+        // investigation. These numbers currently equal MDK's own defaults.
+        let config = MdkConfig {
+            max_event_age_secs: 3_888_000,   // 45 days
+            max_future_skew_secs: 300,       // 5 minutes
+            out_of_order_tolerance: 100,     // 100 past messages
+            maximum_forward_distance: 1_000, // 1000 forward messages
+            max_past_epochs: 5,
+            epoch_snapshot_retention: 5,
+            snapshot_ttl_seconds: 604_800, // 1 week
+        };
+        let rollback_observer = std::sync::Arc::new(MdkRollbackObserver::default());
+        let engine = MDK::builder(storage)
+            .with_config(config)
+            .with_callback(
+                std::sync::Arc::clone(&rollback_observer) as std::sync::Arc<dyn MdkCallback>
+            )
+            .build();
 
         // Spawn the worker thread that owns the engine
         let (tx, mut rx) = mpsc::channel::<MlsCommand>(32);
@@ -291,7 +428,7 @@ impl MlsEngineHandle {
                                 engine
                                     .create_key_package_for_event(&pubkey, relays)
                                     .map_err(MlsError::from)
-                                    .map(|(encoded, tags)| (encoded, tags.to_vec()))
+                                    .map(|data| (data.content, data.tags_443))
                             }))
                             .unwrap_or_else(|e| {
                                 tracing::error!(panic = ?e, "MLS worker panic");
@@ -313,7 +450,7 @@ impl MlsEngineHandle {
                                     // there may be no pending welcome but the group already
                                     // exists. Accept only when a pending welcome is present,
                                     // otherwise fall through to the existing group lookup.
-                                    let welcomes = engine.get_pending_welcomes()?;
+                                    let welcomes = engine.get_pending_welcomes(None)?;
                                     if let Some(welcome) = welcomes.first() {
                                         engine.accept_welcome(welcome)?;
                                     } else {
@@ -382,7 +519,7 @@ impl MlsEngineHandle {
                         let result: Result<GroupInfo, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
-                                    let welcomes = engine.get_pending_welcomes()?;
+                                    let welcomes = engine.get_pending_welcomes(None)?;
                                     if let Some(welcome) = welcomes.first() {
                                         engine.accept_welcome(welcome)?;
                                     } else {
@@ -520,7 +657,7 @@ impl MlsEngineHandle {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
                                     let group_id = GroupId::from_slice(&group_id);
-                                    let event = engine.create_message(&group_id, rumor)?;
+                                    let event = engine.create_message(&group_id, rumor, None)?;
                                     Ok(event)
                                 })()
                             }))
@@ -531,14 +668,14 @@ impl MlsEngineHandle {
                         let _ = tx.send(result);
                     }
                     MlsCommand::DecryptGroupMessage { event, tx } => {
-                        let result: Result<Option<DecryptedMessage>, MlsError> =
+                        let result: Result<GroupMessageOutcome, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let group_id = crate::nostr_tags::h_tag_content(&event.tags);
 
                                 match group_id {
                                     Some(group_id) => match engine.process_message(&event) {
                                         Ok(MessageProcessingResult::ApplicationMessage(msg)) => {
-                                            Ok(Some(DecryptedMessage {
+                                            Ok(GroupMessageOutcome::Message(DecryptedMessage {
                                                 content: msg.content,
                                                 kind: msg.kind,
                                                 tags: msg.tags,
@@ -546,17 +683,45 @@ impl MlsEngineHandle {
                                                 group_id,
                                                 author: msg.pubkey.to_hex(),
                                                 event_id: event.id.to_hex(),
-                                                timestamp: event.created_at.as_u64(),
+                                                timestamp: event.created_at.as_secs(),
                                             }))
                                         }
+                                        // MDK auto-committed a self-remove proposal because
+                                        // this bot is an admin. The evolution event must
+                                        // reach the group's relays or every peer's epoch
+                                        // diverges from this bot's and stops decrypting --
+                                        // surface it as a publish obligation rather than
+                                        // silently dropping it.
+                                        Ok(MessageProcessingResult::Proposal(update)) => {
+                                            engine.merge_pending_commit(&update.mls_group_id)?;
+                                            Ok(GroupMessageOutcome::PublishEvolution(
+                                                update.evolution_event,
+                                            ))
+                                        }
+                                        Ok(MessageProcessingResult::PendingProposal { .. }) => {
+                                            tracing::debug!(
+                                                "pending proposal stored, awaiting admin commit"
+                                            );
+                                            Ok(GroupMessageOutcome::None)
+                                        }
+                                        Ok(MessageProcessingResult::IgnoredProposal { .. }) => {
+                                            // Never log `reason` or `mls_group_id` here --
+                                            // both are engine-controlled payload text, not a
+                                            // fixed category.
+                                            tracing::debug!("proposal ignored");
+                                            Ok(GroupMessageOutcome::None)
+                                        }
                                         Ok(
-                                            MessageProcessingResult::Proposal(_)
+                                            MessageProcessingResult::ExternalJoinProposal { .. }
                                             | MessageProcessingResult::Commit { .. }
-                                            | MessageProcessingResult::ExternalJoinProposal {
-                                                ..
-                                            }
                                             | MessageProcessingResult::Unprocessable { .. },
-                                        ) => Ok(None),
+                                        ) => Ok(GroupMessageOutcome::None),
+                                        Ok(MessageProcessingResult::PreviouslyFailed) => {
+                                            tracing::debug!(
+                                                "group message previously failed to process; not retried"
+                                            );
+                                            Ok(GroupMessageOutcome::None)
+                                        }
                                         Err(_) => Err(MlsError::Engine(
                                             "failed to process group message".into(),
                                         )),
@@ -666,11 +831,11 @@ impl MlsEngineHandle {
             drop(engine);
         });
 
-        // The engine's own connections keep WAL active; the temporary connection
-        // can now be safely dropped.
-        drop(wal_conn);
-
-        Ok(Self { tx, db_path })
+        Ok(Self {
+            tx,
+            db_path,
+            rollback_observer,
+        })
     }
 
     /// Create a key package for the bot and return the encoded content and tags.
@@ -792,12 +957,11 @@ impl MlsEngineHandle {
 
     /// Decrypt an inbound MLS group message wrapper (kind:445).
     ///
-    /// Returns `Ok(None)` for protocol-only messages (proposals, commits, etc.)
-    /// and `Ok(Some(DecryptedMessage))` for application messages.
+    /// See [`GroupMessageOutcome`] for the three possible results.
     pub async fn decrypt_group_message(
         &self,
         event: &nostr::Event,
-    ) -> Result<Option<DecryptedMessage>, MlsError> {
+    ) -> Result<GroupMessageOutcome, MlsError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(MlsCommand::DecryptGroupMessage {
@@ -863,6 +1027,14 @@ impl MlsEngineHandle {
     /// Return the path to the underlying `vector-mls.db` file.
     pub fn db_path(&self) -> &Path {
         &self.db_path
+    }
+
+    /// Return the number of MLS commit-race rollbacks observed since this
+    /// engine was constructed (KTD8 observability counter).
+    pub fn rollback_count(&self) -> u64 {
+        self.rollback_observer
+            .count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Check whether the engine knows a group whose `nostr_group_id` hex-matches
@@ -968,6 +1140,24 @@ pub struct MlsGroupListEntry {
     pub mls_group_id: Vec<u8>,
 }
 
+/// Outcome of decrypting one kind:445 group message.
+#[derive(Debug, Clone)]
+pub enum GroupMessageOutcome {
+    /// An application message ready to fan out to handlers.
+    Message(DecryptedMessage),
+    /// MDK auto-committed a self-remove proposal on this bot's behalf
+    /// (this bot is an admin). The carried event is the signed evolution
+    /// event (kind:445) and **must** be published to the group's relays:
+    /// dropping it advances this bot's epoch locally while no peer sees
+    /// the commit, and every later message in the group then fails to
+    /// decrypt with no attributable error.
+    PublishEvolution(Event),
+    /// A protocol-only message (pending/ignored proposal, external-join
+    /// proposal, commit, unprocessable, or previously-failed) that
+    /// produces no handler event and needs no publish.
+    None,
+}
+
 /// A decrypted MLS application message.
 #[derive(Debug, Clone)]
 pub struct DecryptedMessage {
@@ -1066,6 +1256,24 @@ mod tests {
             keys,
         )
         .expect("sign key package")
+    }
+
+    #[test]
+    fn rollback_observer_increments_on_callback_and_starts_at_zero() {
+        let observer = MdkRollbackObserver::default();
+        assert_eq!(observer.count.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        let info = RollbackInfo {
+            group_id: GroupId::from_slice(&[0u8; 32]),
+            target_epoch: 3,
+            new_head_event: nostr::EventId::all_zeros(),
+            invalidated_messages: vec![nostr::EventId::all_zeros()],
+            messages_needing_refetch: vec![nostr::EventId::all_zeros()],
+        };
+        observer.on_rollback(&info);
+        observer.on_rollback(&info);
+
+        assert_eq!(observer.count.load(std::sync::atomic::Ordering::Relaxed), 2);
     }
 
     #[test]
@@ -1226,25 +1434,38 @@ mod tests {
 
     #[tokio::test]
     async fn leave_group_returns_evolution_event() {
+        // MDK 0.8.0 enforces MIP-03: an admin must self-demote before it can
+        // send a SelfRemove proposal, and a sole admin has no one to demote
+        // to. `MlsEngineHandle::create_group` always makes the creator the
+        // sole admin (tracked as KD7/R11, deferred to a later unit), so this
+        // test exercises the other side of the membership: the invited
+        // recipient, who joins as a plain (non-admin) member and can leave
+        // directly.
         let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let recipient_keys = Keys::generate();
-        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+        let creator_engine = MlsEngineHandle::new_persistent(temp.path().join("creator-mls.db"))
+            .expect("new_persistent");
+        let member_engine = MlsEngineHandle::new_persistent(temp.path().join("member-mls.db"))
             .expect("new_persistent");
 
-        let key_package = build_key_package(&engine, &recipient_keys).await;
-        let (wire_id, _) = engine
+        let key_package = build_key_package(&member_engine, &recipient_keys).await;
+        let (wire_id, welcome_rumor) = creator_engine
             .create_group(
                 creator_keys.public_key(),
                 recipient_keys.public_key(),
                 key_package,
                 "test-group".to_string(),
-                vec![],
+                vec![RelayUrl::parse("wss://test.relay").unwrap()],
             )
             .await
             .expect("create_group failed");
+        member_engine
+            .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), welcome_rumor)
+            .await
+            .expect("process_welcome_and_return_wire_id failed");
 
-        let evolution_event = engine
+        let evolution_event = member_engine
             .leave_group(&wire_id)
             .await
             .expect("leave_group failed");
@@ -1263,6 +1484,123 @@ mod tests {
         let result = engine.leave_group(&wire_id).await;
 
         assert!(matches!(result, Err(MlsError::GroupNotFound)));
+    }
+
+    #[tokio::test]
+    async fn admin_auto_commits_self_remove_proposal_and_publishes_evolution() {
+        // The scenario the parity plan calls out as the one silent failure
+        // mode in this migration: MDK auto-commits an inbound self-remove
+        // proposal when the receiver is a group admin, but only *stages*
+        // the commit -- same as `add_members`, the caller must explicitly
+        // merge it. If the daemon returns the evolution event to the caller
+        // without merging, the admin's own local state is stuck mid-commit;
+        // if it drops the evolution event outright instead of publishing
+        // it, every other member's epoch permanently diverges from the
+        // admin's with no attributable error. This test proves the
+        // daemon surfaces the evolution event (`PublishEvolution`), merges
+        // its own commit before returning, and that a third, uninvolved
+        // member can process the published evolution event without error.
+        let temp = test_tempdir();
+        let admin_keys = Keys::generate();
+        let leaving_keys = Keys::generate();
+        let staying_keys = Keys::generate();
+        let admin_engine = MlsEngineHandle::new_persistent(temp.path().join("admin-mls.db"))
+            .expect("new_persistent");
+        let leaving_engine = MlsEngineHandle::new_persistent(temp.path().join("leaving-mls.db"))
+            .expect("new_persistent");
+        let staying_engine = MlsEngineHandle::new_persistent(temp.path().join("staying-mls.db"))
+            .expect("new_persistent");
+        let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+
+        // Admin creates the group with the soon-to-leave member as the
+        // initial member.
+        let leaving_key_package = build_key_package(&leaving_engine, &leaving_keys).await;
+        let (wire_id, welcome_rumor) = admin_engine
+            .create_group(
+                admin_keys.public_key(),
+                leaving_keys.public_key(),
+                leaving_key_package,
+                "test-group".to_string(),
+                relays.clone(),
+            )
+            .await
+            .expect("create_group failed");
+        leaving_engine
+            .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), welcome_rumor)
+            .await
+            .expect("leaving member welcome failed");
+
+        // Admin adds a third, uninvolved member. The leaving member must
+        // process that addition to stay in sync before it leaves.
+        let staying_key_package = build_key_package(&staying_engine, &staying_keys).await;
+        let (staying_welcome, add_evolution_event) = admin_engine
+            .add_member(&wire_id, staying_keys.public_key(), staying_key_package)
+            .await
+            .expect("add_member failed");
+        staying_engine
+            .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), staying_welcome)
+            .await
+            .expect("staying member welcome failed");
+        leaving_engine
+            .decrypt_group_message(&add_evolution_event)
+            .await
+            .expect("leaving member failed to sync the add-member commit");
+
+        // The member leaves: MDK builds a SelfRemove proposal but does not
+        // merge it locally -- the departing member cannot commit its own
+        // removal, per MDK's `leave_group` contract.
+        let leave_event = leaving_engine
+            .leave_group(&wire_id)
+            .await
+            .expect("leave_group failed");
+
+        // Admin receives the proposal and, because it is an admin,
+        // auto-commits it. The daemon must surface the resulting evolution
+        // event as a publish obligation rather than silently drop it.
+        let outcome = admin_engine
+            .decrypt_group_message(&leave_event)
+            .await
+            .expect("admin failed to process the self-remove proposal");
+        let removal_evolution_event = match outcome {
+            GroupMessageOutcome::PublishEvolution(event) => event,
+            other => panic!("expected PublishEvolution, got {other:?}"),
+        };
+
+        // The evolution event is well-formed and processable by a third,
+        // uninvolved member without error -- if the daemon had silently
+        // dropped it instead of publishing it, that peer would never see it
+        // and would stay stuck at the pre-removal membership forever.
+        let outcome = staying_engine
+            .decrypt_group_message(&removal_evolution_event)
+            .await
+            .expect("staying member failed to process the evolution event");
+        assert!(
+            matches!(outcome, GroupMessageOutcome::None),
+            "a commit-only message should carry no handler payload, got {outcome:?}"
+        );
+
+        // Prove admin's own local state was genuinely merged, not just
+        // staged: building a further group message requires the prior
+        // commit to be applied, so this call fails if `merge_pending_commit`
+        // was skipped after the auto-commit.
+        let group_id_bytes = admin_engine
+            .resolve_wire_id(&wire_id)
+            .await
+            .expect("resolve_wire_id failed");
+        let rumor = nostr::UnsignedEvent::new(
+            admin_keys.public_key(),
+            nostr::Timestamp::now(),
+            Kind::TextNote,
+            Vec::new(),
+            "still here after the removal commit",
+        );
+        admin_engine
+            .create_group_message(group_id_bytes, rumor)
+            .await
+            .expect(
+                "admin failed to build a further group message; \
+                 the auto-committed proposal was not actually merged",
+            );
     }
 
     #[tokio::test]

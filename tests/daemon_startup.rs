@@ -275,7 +275,7 @@ async fn startup_receives_dm_with_gift_wrap_timestamp_before_persisted_cursor()
     // Seed a persisted cursor in the past.
     let cursor_time = Timestamp::now() - 300;
     let db = Database::open(&db_path)?;
-    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_u64() as i64)?;
+    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_secs() as i64)?;
     drop(db);
 
     let child = spawn_until_ready(&config).await?;
@@ -355,7 +355,7 @@ async fn startup_uses_persisted_cursor_for_since_filter() -> Result<(), Box<dyn 
     // Seed a persisted cursor in the past.
     let cursor_time = Timestamp::now() - 300;
     let db = Database::open(&db_path)?;
-    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_u64() as i64)?;
+    db.save_cursor(&bot.id, &bot.npub, cursor_time.as_secs() as i64)?;
     drop(db);
 
     let child = spawn_until_ready(&config).await?;
