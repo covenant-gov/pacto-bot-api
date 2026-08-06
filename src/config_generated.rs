@@ -30,6 +30,9 @@ pub struct DaemonConfigGenerated {
     /// Maximum concurrent HTTP connections
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_max_connections: Option<u64>,
+    /// Days to keep an archived legacy MLS store after a reset before it is pruned; 0 (default) deletes the legacy store immediately instead of archiving it. An encrypted store archived because its key was wrong or missing is always kept regardless of this setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mls_archive_retention_days: Option<u64>,
     /// socket_path
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket_path: Option<String>,

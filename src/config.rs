@@ -45,6 +45,13 @@ pub struct GlobalDaemonConfig {
     /// Entries are tried in order until one accepts the blob.
     #[serde(default = "default_blob_servers")]
     pub blob_servers: Vec<String>,
+    /// Days to keep an archived legacy MLS store after a reset before it is
+    /// pruned. `0` (the default) deletes the legacy store immediately
+    /// instead of archiving it. An encrypted store archived because its key
+    /// was wrong or missing (R26) is always kept regardless of this
+    /// setting.
+    #[serde(default = "default_mls_archive_retention_days")]
+    pub mls_archive_retention_days: u32,
 }
 
 impl Default for GlobalDaemonConfig {
@@ -60,6 +67,7 @@ impl Default for GlobalDaemonConfig {
             attachment_max_bytes: default_attachment_max_bytes(),
             spool_outbound_retention_secs: default_spool_outbound_retention_secs(),
             blob_servers: default_blob_servers(),
+            mls_archive_retention_days: default_mls_archive_retention_days(),
         }
     }
 }
@@ -102,6 +110,10 @@ fn default_spool_outbound_retention_secs() -> u64 {
 
 fn default_blob_servers() -> Vec<String> {
     vec!["https://nostr.download".into()]
+}
+
+fn default_mls_archive_retention_days() -> u32 {
+    0
 }
 
 /// Per-bot identity configuration.

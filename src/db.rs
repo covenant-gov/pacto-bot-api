@@ -548,6 +548,98 @@ impl Database {
         )?;
         Ok(changed > 0)
     }
+
+    /// Commit a reset-in-progress marker for `bot_id`, before any
+    /// destructive step against its MLS store. Idempotent: re-marking an
+    /// already-marked bot clears any prior `reset_at`/`archive_path` so a
+    /// second, later reset is not confused with the first's completion.
+    pub fn mark_mls_store_reset_start(
+        &self,
+        bot_id: &str,
+        marked_at: i64,
+    ) -> Result<(), DaemonError> {
+        self.conn.execute(
+            "INSERT INTO mls_store_resets (bot_id, marked_at, reset_at, archive_path)
+             VALUES (?1, ?2, NULL, NULL)
+             ON CONFLICT(bot_id) DO UPDATE SET
+                marked_at = excluded.marked_at,
+                reset_at = NULL,
+                archive_path = NULL",
+            (bot_id, marked_at),
+        )?;
+        Ok(())
+    }
+
+    /// Record that `bot_id`'s reset completed: the fresh store now exists
+    /// (or the legacy file set was deleted with no fresh store yet needed).
+    pub fn complete_mls_store_reset(
+        &self,
+        bot_id: &str,
+        reset_at: i64,
+        archive_path: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.conn.execute(
+            "UPDATE mls_store_resets SET reset_at = ?2, archive_path = ?3 WHERE bot_id = ?1",
+            (bot_id, reset_at, archive_path),
+        )?;
+        Ok(())
+    }
+
+    /// Load the reset marker for `bot_id`, if any.
+    pub fn load_mls_store_reset_marker(
+        &self,
+        bot_id: &str,
+    ) -> Result<Option<MlsStoreResetMarker>, DaemonError> {
+        self.conn
+            .query_row(
+                "SELECT marked_at, reset_at, archive_path FROM mls_store_resets WHERE bot_id = ?1",
+                (bot_id,),
+                |row| {
+                    Ok(MlsStoreResetMarker {
+                        marked_at: row.get(0)?,
+                        reset_at: row.get(1)?,
+                        archive_path: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DaemonError::Sqlite)
+    }
+
+    /// Record one harvested legacy-store admin for `(bot_id, wire_id)`.
+    /// Idempotent: re-harvesting the same admin during an interrupted-reset
+    /// retry does not duplicate the row.
+    pub fn upsert_mls_store_reset_admin(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+        admin_npub: &str,
+    ) -> Result<(), DaemonError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO mls_store_reset_admins (bot_id, wire_id, admin_npub)
+             VALUES (?1, ?2, ?3)",
+            (bot_id, wire_id, admin_npub),
+        )?;
+        Ok(())
+    }
+
+    /// Load the harvested admin set for `(bot_id, wire_id)`, sorted for
+    /// deterministic output.
+    pub fn load_mls_store_reset_admins(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT admin_npub FROM mls_store_reset_admins
+             WHERE bot_id = ?1 AND wire_id = ?2
+             ORDER BY admin_npub",
+        )?;
+        let rows = stmt
+            .query_map((bot_id, wire_id), |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
 }
 
 /// A single row from the MLS groups table.
@@ -559,6 +651,16 @@ pub struct MlsGroupRow {
     pub creator_npub: String,
     pub relay: String,
     pub invited_bots: Vec<String>,
+}
+
+/// A bot's MLS store reset marker: `reset_at`/`archive_path` are `None`
+/// while a reset is in progress, so "marker present, `reset_at` NULL" is a
+/// recoverable interrupted state at every crash point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MlsStoreResetMarker {
+    pub marked_at: i64,
+    pub reset_at: Option<i64>,
+    pub archive_path: Option<String>,
 }
 
 /// A single row from the event trace table.
@@ -799,6 +901,67 @@ impl Db {
         })
         .await
     }
+
+    /// Commit a reset-in-progress marker for `bot_id`, before any
+    /// destructive step against its MLS store.
+    pub async fn mark_mls_store_reset_start(
+        &self,
+        bot_id: &str,
+        marked_at: i64,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        self.run(move |db| db.mark_mls_store_reset_start(&bot_id, marked_at))
+            .await
+    }
+
+    /// Record that `bot_id`'s reset completed.
+    pub async fn complete_mls_store_reset(
+        &self,
+        bot_id: &str,
+        reset_at: i64,
+        archive_path: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let archive_path = archive_path.map(str::to_string);
+        self.run(move |db| db.complete_mls_store_reset(&bot_id, reset_at, archive_path.as_deref()))
+            .await
+    }
+
+    /// Load the reset marker for `bot_id`, if any.
+    pub async fn load_mls_store_reset_marker(
+        &self,
+        bot_id: &str,
+    ) -> Result<Option<MlsStoreResetMarker>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        self.run(move |db| db.load_mls_store_reset_marker(&bot_id))
+            .await
+    }
+
+    /// Record one harvested legacy-store admin for `(bot_id, wire_id)`.
+    pub async fn upsert_mls_store_reset_admin(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+        admin_npub: &str,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let wire_id = wire_id.to_string();
+        let admin_npub = admin_npub.to_string();
+        self.run(move |db| db.upsert_mls_store_reset_admin(&bot_id, &wire_id, &admin_npub))
+            .await
+    }
+
+    /// Load the harvested admin set for `(bot_id, wire_id)`.
+    pub async fn load_mls_store_reset_admins(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let wire_id = wire_id.to_string();
+        self.run(move |db| db.load_mls_store_reset_admins(&bot_id, &wire_id))
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -903,6 +1066,7 @@ mod tests {
             "creator_npub",
             "relay",
             "invited_bots",
+            "state_lost_at",
         ]
         .iter()
         .copied()
@@ -918,6 +1082,17 @@ mod tests {
         assert_eq!(pk, expected_pk, "mls_groups primary key mismatch");
 
         for col in &columns {
+            // state_lost_at is a nullable INTEGER timestamp (U10): most rows
+            // have no reset in their history, and it is not a pubkey/name
+            // field like every other column here.
+            if col.name == "state_lost_at" {
+                assert!(!col.not_null, "mls_groups.state_lost_at should be nullable");
+                assert_eq!(
+                    col.type_, "INTEGER",
+                    "mls_groups.state_lost_at should be INTEGER"
+                );
+                continue;
+            }
             assert!(col.not_null, "mls_groups.{} should be NOT NULL", col.name);
             assert_eq!(col.type_, "TEXT", "mls_groups.{} should be TEXT", col.name);
         }
