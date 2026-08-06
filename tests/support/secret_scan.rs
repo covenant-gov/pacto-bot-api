@@ -8,10 +8,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+/// Guards every live `SensitiveFixture` against the one test that scans the
+/// whole process's writable memory. Every fixture holds the shared (read)
+/// half for its entire lifetime; the memory-scan test instead takes the
+/// exclusive (write) half around the scan itself, which blocks until every
+/// other fixture in the process has been dropped -- and, per `Drop for
+/// SensitiveFixture` below, zeroized. Without this, `cargo test`'s default
+/// in-process, multi-threaded harness (unlike `cargo nextest`, which runs
+/// each test in its own process) can let the scan observe another test's
+/// marker while that test is still genuinely mid-flight, not just stale.
+static SCAN_LOCK: RwLock<()> = RwLock::new(());
 
 /// A set of unique synthetic secret markers used to detect leaks.
 ///
@@ -33,12 +44,36 @@ pub struct SensitiveFixture {
     pub attachment_nonce_marker: String,
     /// Synthetic decrypted attachment plaintext marker.
     pub attachment_plaintext_marker: String,
+    /// Held for the fixture's lifetime so `SCAN_LOCK`'s writer (the
+    /// memory-scan test) can never observe this fixture concurrently.
+    /// `None` only for the fixture built by that same test, which takes the
+    /// write half itself instead (see `new_unguarded`).
+    _scan_guard: Option<RwLockReadGuard<'static, ()>>,
 }
 
 impl SensitiveFixture {
     /// Create a new fixture with fresh markers.
-    #[allow(clippy::expect_used)]
     pub fn new() -> Self {
+        Self::build(Some(SCAN_LOCK.read()))
+    }
+
+    /// Build a fixture without taking `SCAN_LOCK`'s read half. For use only
+    /// by the memory-scan test itself, which takes the write half instead
+    /// (via `acquire_exclusive_scan_lock`) around the scan.
+    pub fn new_unguarded() -> Self {
+        Self::build(None)
+    }
+
+    /// Block until every other live `SensitiveFixture` in the process has
+    /// been dropped (and zeroized), then hold `SCAN_LOCK` exclusively so
+    /// none can spring up mid-scan. Intended to be held only around the
+    /// scan itself.
+    pub fn acquire_exclusive_scan_lock() -> RwLockWriteGuard<'static, ()> {
+        SCAN_LOCK.write()
+    }
+
+    #[allow(clippy::expect_used)]
+    fn build(scan_guard: Option<RwLockReadGuard<'static, ()>>) -> Self {
         let first = Uuid::new_v4().as_simple().to_string();
         let second = Uuid::new_v4().as_simple().to_string();
 
@@ -74,7 +109,27 @@ impl SensitiveFixture {
             attachment_key_marker,
             attachment_nonce_marker,
             attachment_plaintext_marker,
+            _scan_guard: scan_guard,
         }
+    }
+}
+
+// SAFETY/hygiene: `cargo test`'s default harness runs every test in this
+// binary in one process (unlike `cargo nextest`, which isolates each test in
+// its own process). `simulated_core_dump_after_nsec_load_does_not_leak_marker`
+// scans the *entire* process's writable memory, so a marker from a fixture
+// that belonged to a different, already-finished test can still be sitting
+// in freed-but-unzeroed heap and get flagged as a false-positive leak from
+// *this* test. Zeroize every marker on drop so no fixture outlives its test.
+impl Drop for SensitiveFixture {
+    fn drop(&mut self) {
+        self.nsec_marker.zeroize();
+        self.nsec_marker_bytes.zeroize();
+        self.bunker_uri_marker.zeroize();
+        self.http_token_marker.zeroize();
+        self.attachment_key_marker.zeroize();
+        self.attachment_nonce_marker.zeroize();
+        self.attachment_plaintext_marker.zeroize();
     }
 }
 

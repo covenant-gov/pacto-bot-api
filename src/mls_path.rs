@@ -120,15 +120,20 @@ fn validate_parent_structure(parent: &Path) -> Result<PathBuf, MlsPathError> {
 }
 
 /// Validate that `parent` is readable and writable only by the owner.
+///
+/// No-op on non-Unix platforms.
+#[cfg(unix)]
 fn validate_parent_permissions(parent: &Path) -> Result<(), MlsPathError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::symlink_metadata(parent)?;
-        if meta.permissions().mode() & 0o077 != 0 {
-            return Err(MlsPathError::NotOwnerOnly(parent.to_path_buf()));
-        }
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(parent)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        return Err(MlsPathError::NotOwnerOnly(parent.to_path_buf()));
     }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_parent_permissions(_parent: &Path) -> Result<(), MlsPathError> {
     Ok(())
 }
 

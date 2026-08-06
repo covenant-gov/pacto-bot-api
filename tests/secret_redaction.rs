@@ -399,7 +399,10 @@ signing = {{ backend = "nsec", nsec = "" }}
 
 #[test]
 fn simulated_core_dump_after_nsec_load_does_not_leak_marker() {
-    let fixture = SensitiveFixture::new();
+    // Not `SensitiveFixture::new()`: this fixture is scanned under
+    // `SCAN_LOCK`'s exclusive half below, so it must not also hold the
+    // shared half (see `SensitiveFixture::new_unguarded`).
+    let fixture = SensitiveFixture::new_unguarded();
 
     // Load the synthetic nsec into the local signer, then drop it. The secret
     // bytes are held in a Zeroizing container and cleared on drop, so no copy
@@ -407,6 +410,11 @@ fn simulated_core_dump_after_nsec_load_does_not_leak_marker() {
     let signer = LocalKey::parse(&fixture.nsec_marker).unwrap();
     drop(signer);
 
+    // Block until every other live `SensitiveFixture` in the process (each
+    // holding the shared half for its whole lifetime) has been dropped and
+    // zeroized, so a concurrently-running sibling test's marker can never be
+    // mistaken for a leak from this test.
+    let _exclusive_scan = SensitiveFixture::acquire_exclusive_scan_lock();
     let Some(memory) = fixture.scan_memory() else {
         // Core-dump simulation is only implemented on Linux.
         return;

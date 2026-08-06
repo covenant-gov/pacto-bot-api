@@ -49,12 +49,10 @@ impl BotState {
     ) -> Result<Self, DaemonError> {
         let signer = SignerBackend::from_config(&config.signing, &config.npub)?;
         let mls_db_path = mls_db_path.as_ref();
+        #[cfg(unix)]
         if let Some(parent) = mls_db_path.parent() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-            }
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
         }
         let mls = Some(MlsEngineHandle::new_persistent(mls_db_path)?);
         Ok(Self {

@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use refinery::embed_migrations;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use secrecy::{ExposeSecret, SecretString};
+#[cfg(unix)]
 use std::fs::OpenOptions;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
