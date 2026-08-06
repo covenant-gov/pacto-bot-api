@@ -2368,7 +2368,7 @@ dependencies = [
  "image",
  "kamadak-exif",
  "mdk-storage-traits",
- "nostr",
+ "nostr 0.43.1",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
@@ -2386,7 +2386,7 @@ version = "0.5.1"
 source = "git+https://github.com/marmot-protocol/mdk?rev=f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c#f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c"
 dependencies = [
  "mdk-storage-traits",
- "nostr",
+ "nostr 0.43.1",
  "openmls",
  "openmls_sqlite_storage",
  "refinery",
@@ -2401,7 +2401,7 @@ name = "mdk-storage-traits"
 version = "0.5.1"
 source = "git+https://github.com/marmot-protocol/mdk?rev=f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c#f46875ec6fbe1cd616e9dfb4d2aa10f56044e58c"
 dependencies = [
- "nostr",
+ "nostr 0.43.1",
  "openmls",
  "openmls_traits",
  "serde",
@@ -2512,13 +2512,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr"
+version = "0.44.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40ff7b77ef428b40aa2834a6acbae38a0e104c98b306208ca4b87a420d579a4b"
+dependencies = [
+ "base64",
+ "bech32 0.11.1",
+ "bip39",
+ "bitcoin_hashes",
+ "cbc",
+ "chacha20 0.9.1",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "instant",
+ "scrypt",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
 name = "nostr-blossom"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb09560e29d780eb3d79e166c1620c8681bc163e7bb9b9bffdda8ad6c824a056"
 dependencies = [
  "base64",
- "nostr",
+ "nostr 0.43.1",
  "reqwest 0.12.28",
  "serde",
 ]
@@ -2530,8 +2554,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3bcd44ea344d1cab3447615681cd3bb90134cafe4d157d3e714c23c31268cd8"
 dependencies = [
  "async-utility",
- "nostr",
- "nostr-relay-pool",
+ "nostr 0.43.1",
+ "nostr-relay-pool 0.43.1",
  "tokio",
  "tracing",
 ]
@@ -2543,7 +2567,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1c75a8c2175d2785ba73cfddef21d1e30da5fbbdf158569b6808ba44973a15b"
 dependencies = [
  "lru",
- "nostr",
+ "nostr 0.43.1",
+ "tokio",
+]
+
+[[package]]
+name = "nostr-database"
+version = "0.44.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7462c9d8ae5ef6a28d66a192d399ad2530f1f2130b13186296dbb11bdef5b3d1"
+dependencies = [
+ "lru",
+ "nostr 0.44.8",
  "tokio",
 ]
 
@@ -2558,8 +2593,26 @@ dependencies = [
  "atomic-destructor",
  "lru",
  "negentropy",
- "nostr",
- "nostr-database",
+ "nostr 0.43.1",
+ "nostr-database 0.43.0",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "nostr-relay-pool"
+version = "0.44.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c85c54d6ca9aae4ae2bf19a7663ba9db5f45f783f1d24aff55f006386b8b99a1"
+dependencies = [
+ "async-utility",
+ "async-wsocket",
+ "atomic-destructor",
+ "hex",
+ "lru",
+ "negentropy",
+ "nostr 0.44.8",
+ "nostr-database 0.44.0",
  "tokio",
  "tracing",
 ]
@@ -2571,9 +2624,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "599f8963d6a1522a13b1a2b0ea6e168acfc367706606f1d33fa595e91fa22db0"
 dependencies = [
  "async-utility",
- "nostr",
- "nostr-database",
- "nostr-relay-pool",
+ "nostr 0.43.1",
+ "nostr-database 0.43.0",
+ "nostr-relay-pool 0.43.1",
  "tokio",
 ]
 
@@ -2857,10 +2910,10 @@ dependencies = [
  "mdk-sqlite-storage",
  "mdk-storage-traits",
  "nix",
- "nostr",
+ "nostr 0.43.1",
  "nostr-blossom",
  "nostr-connect",
- "nostr-relay-pool",
+ "nostr-relay-pool 0.44.3",
  "nostr-sdk",
  "openmls_traits",
  "parking_lot",
