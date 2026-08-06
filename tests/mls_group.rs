@@ -1123,3 +1123,295 @@ async fn concurrent_invite_serializes_and_publishes_one_welcome() -> Result<(), 
     relay.stop().await;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// U11: post-reset recovery, failure isolation, and handler signal
+// ---------------------------------------------------------------------------
+
+/// req(R28)
+#[tokio::test(flavor = "multi_thread")]
+async fn send_into_state_lost_group_returns_error_32026() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup", "SendGroupMessages"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let dir = common::tempdir()?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm, db.clone(), Diagnostics::new()));
+
+    let handler_id = register_handler(
+        &dispatch,
+        &["mls-bot"],
+        &["CreateMlsGroup", "SendGroupMessages"],
+    )
+    .await;
+
+    relay
+        .inject_event(member.create_key_package_event(vec![relay.url()]).await)
+        .await;
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+
+    // Simulate a completed reset marking this group state-lost (the actual
+    // ClientManager::new startup path is covered by
+    // completed_reset_marks_orphaned_groups_state_lost_and_leaves_members_untouched
+    // in src/client_manager.rs's own tests; this test isolates the send-gate).
+    let now = chrono::Utc::now().timestamp();
+    db.mark_mls_group_state_lost("mls-bot", "test-squad", now)
+        .await?;
+
+    let req = JsonRpcMessage::request(
+        3.into(),
+        "agent.send_group_message",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_id": wire_id,
+            "content": "hello",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    assert_jsonrpc_error(resp, -32026);
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R28)
+#[tokio::test(flavor = "multi_thread")]
+async fn welcome_event_clears_state_lost_mark_and_next_send_succeeds() -> Result<(), Box<dyn Error>>
+{
+    use pacto_bot_api::events::{AgentEvent, EventType};
+
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup", "SendGroupMessages"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let dir = common::tempdir()?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm, db.clone(), Diagnostics::new()));
+
+    let handler_id = register_handler(
+        &dispatch,
+        &["mls-bot"],
+        &["CreateMlsGroup", "SendGroupMessages"],
+    )
+    .await;
+
+    relay
+        .inject_event(member.create_key_package_event(vec![relay.url()]).await)
+        .await;
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+
+    let now = chrono::Utc::now().timestamp();
+    db.mark_mls_group_state_lost("mls-bot", "test-squad", now)
+        .await?;
+    assert!(
+        db.load_mls_group_state_lost_at("mls-bot", &wire_id)
+            .await?
+            .is_some()
+    );
+
+    // Drive the exact code path a real inbound Welcome reaches: dispatch_event
+    // with an MlsWelcomeReceived event carrying the group's wire id in
+    // chat_id (see NostrClient::finish_gift_wrap for where that's set on a
+    // real gift wrap).
+    dispatch
+        .dispatch_event(AgentEvent {
+            bot_id: "mls-bot".to_string(),
+            event_id: "welcome-event-id".to_string(),
+            event_type: EventType::MlsWelcomeReceived,
+            chat_id: Some(wire_id.clone()),
+            rumor_id: "rumor-id".to_string(),
+            author: member_npub.clone(),
+            timestamp: now as u64,
+            ..Default::default()
+        })
+        .await?;
+
+    assert!(
+        db.load_mls_group_state_lost_at("mls-bot", &wire_id)
+            .await?
+            .is_none(),
+        "processing the Welcome must clear the state-lost mark"
+    );
+
+    let req = JsonRpcMessage::request(
+        3.into(),
+        "agent.send_group_message",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_id": wire_id,
+            "content": "hello again",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    // No longer -32026; the send reaches the real engine and succeeds.
+    let JsonRpcMessage::Response { .. } = resp else {
+        panic!("expected a successful send after the mark clears, got {resp:?}");
+    };
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R49)
+#[tokio::test(flavor = "multi_thread")]
+async fn call_against_fail_closed_bot_returns_error_32028() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+
+    let dir = common::tempdir()?;
+    let bot_dir = dir.path().join("mls-bot");
+    std::fs::create_dir_all(&bot_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bot_dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    // An unencrypted store with no recognisable schema -- classification
+    // fails closed (same fixture shape as
+    // client_manager::tests::mls_engine_construction_failure_is_isolated_and_recorded_in_health).
+    let store_path = bot_dir.join("mls.db");
+    {
+        let conn = rusqlite::Connection::open(&store_path)?;
+        conn.execute_batch("CREATE TABLE unrelated (x INTEGER);")?;
+    }
+
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup", "SendGroupMessages"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db)
+            .await
+            .expect("daemon starts despite the fail-closed store"),
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm, db, Diagnostics::new()));
+
+    let handler_id = register_handler(
+        &dispatch,
+        &["mls-bot"],
+        &["CreateMlsGroup", "SendGroupMessages"],
+    )
+    .await;
+
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    assert_jsonrpc_error(resp, -32028);
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R37)
+#[tokio::test(flavor = "multi_thread")]
+async fn handler_registration_accepts_bot_unavailable_event_type() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let (dispatch, _cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["ReadMessages"],
+            "mls.db",
+        )],
+        &relay.url(),
+    )
+    .await;
+
+    let req = JsonRpcMessage::request(
+        1.into(),
+        "handler.register",
+        Some(json!({
+            "bot_ids": ["mls-bot"],
+            "event_types": ["bot_unavailable"],
+            "capabilities": ["ReadMessages"],
+        })),
+    );
+    let resp = dispatch.handle_message(req, None, None).await?.unwrap();
+    let JsonRpcMessage::Response { .. } = resp else {
+        panic!("expected handler.register to accept bot_unavailable, got {resp:?}");
+    };
+
+    relay.stop().await;
+    Ok(())
+}

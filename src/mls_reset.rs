@@ -55,8 +55,13 @@ fn lock_for(bot_id: &str) -> Arc<AsyncMutex<()>> {
 }
 
 /// Classify `store_path` for `bot_id`, reset it if needed, and prune expired
-/// legacy archives. Returns `Ok(())` when the path is ready for
-/// [`crate::mls::MlsEngineHandle::new_persistent`]. Every fail-closed
+/// legacy archives. Returns `Ok(true)` when the path is ready for
+/// [`crate::mls::MlsEngineHandle::new_persistent`] and this call performed an
+/// actual reset (legacy harvest-and-move, or an encrypted store reset under
+/// R26) -- the caller must republish this bot's KeyPackage before any
+/// restoration can be attempted (R27). Returns `Ok(false)` for a fresh
+/// install, an already-valid store, or finishing an interrupted reset whose
+/// destructive step already completed in a prior run. Every fail-closed
 /// condition returns `Err`; the caller isolates that per bot (U11) rather
 /// than propagating it to every configured bot.
 pub async fn classify_and_prepare(
@@ -64,11 +69,12 @@ pub async fn classify_and_prepare(
     bot_id: &str,
     store_path: &Path,
     archive_retention_days: u32,
-) -> Result<(), MlsError> {
+) -> Result<bool, MlsError> {
     let guard = lock_for(bot_id);
     let _permit = guard.lock().await;
 
     let sidecars = sidecar_paths(store_path);
+    let mut reset_occurred = false;
 
     if !store_path.exists() {
         if sidecars.iter().any(|p| p.exists()) {
@@ -76,11 +82,13 @@ pub async fn classify_and_prepare(
             // the first time we have seen this bot after a crash mid-move);
             // only leftover sidecars remain. Finish removing them the same
             // way a completed reset would, then fall through to a fresh
-            // store below.
+            // store below. The reset itself (and any KeyPackage republish
+            // it required) already happened in a prior run that recorded
+            // the completed marker; this call performs no new reset.
             finish_sidecar_cleanup(store_path, &sidecars, archive_retention_days)?;
         }
         prune_expired_archives(store_path, archive_retention_days)?;
-        return Ok(());
+        return Ok(false);
     }
 
     let encrypted = mdk_sqlite_storage::encryption::is_database_encrypted(store_path)
@@ -91,6 +99,7 @@ pub async fn classify_and_prepare(
             Some(version) if version >= 100 => {
                 reset_legacy_store(db, bot_id, store_path, &sidecars, archive_retention_days)
                     .await?;
+                reset_occurred = true;
             }
             _ => {
                 return Err(MlsError::Engine(
@@ -99,7 +108,7 @@ pub async fn classify_and_prepare(
             }
         }
         prune_expired_archives(store_path, archive_retention_days)?;
-        return Ok(());
+        return Ok(reset_occurred);
     }
 
     match mls_key::load(store_path) {
@@ -107,11 +116,13 @@ pub async fn classify_and_prepare(
             // Key absent: reset-eligible, always archived (R26) regardless
             // of the retention setting.
             reset_encrypted_store(db, bot_id, store_path, &sidecars).await?;
+            reset_occurred = true;
         }
         Ok(Some(key)) => match try_open_with_key(store_path, &key) {
             Ok(()) => {}
             Err(OpenOutcome::WrongKey) => {
                 reset_encrypted_store(db, bot_id, store_path, &sidecars).await?;
+                reset_occurred = true;
             }
             Err(OpenOutcome::Other) => {
                 return Err(MlsError::Engine(
@@ -127,7 +138,7 @@ pub async fn classify_and_prepare(
     }
 
     prune_expired_archives(store_path, archive_retention_days)?;
-    Ok(())
+    Ok(reset_occurred)
 }
 
 enum OpenOutcome {
@@ -503,9 +514,10 @@ mod tests {
         let store = dir.path().join("vector-mls.db");
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-1", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-1", &store, 0)
             .await
             .expect("classify");
+        assert!(!reset_occurred, "a fresh install performs no reset");
 
         assert!(!store.exists(), "classify must not create the store itself");
         assert!(
@@ -527,9 +539,10 @@ mod tests {
         build_legacy_store(&store, &group_id, &[admin_hex.as_str()]);
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-legacy", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-legacy", &store, 0)
             .await
             .expect("classify legacy store");
+        assert!(reset_occurred, "harvesting a legacy store is a reset");
 
         assert!(!store.exists(), "legacy store must leave the live path");
         let marker = db
@@ -559,9 +572,10 @@ mod tests {
         build_legacy_store(&store, &[9u8; 32], &[]);
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-archived", &store, 7)
+        let reset_occurred = classify_and_prepare(&db, "bot-archived", &store, 7)
             .await
             .expect("classify legacy store");
+        assert!(reset_occurred, "archiving a legacy store is a reset");
 
         assert!(!store.exists());
         let marker = db
@@ -617,9 +631,13 @@ mod tests {
         drop(storage);
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-valid", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-valid", &store, 0)
             .await
             .expect("already-valid store opens with no reset");
+        assert!(
+            !reset_occurred,
+            "opening an already-valid store performs no reset"
+        );
 
         assert!(store.exists(), "an already-valid store must not be removed");
         assert!(
@@ -649,9 +667,10 @@ mod tests {
         let db = test_db().await;
 
         // retention_days = 0 -- still archived, per R26.
-        classify_and_prepare(&db, "bot-wrongkey", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-wrongkey", &store, 0)
             .await
             .expect("wrong-key store resets");
+        assert!(reset_occurred, "a wrong-key store must be reset");
 
         assert!(!store.exists());
         let marker = db
@@ -674,9 +693,13 @@ mod tests {
         std::fs::write(format!("{}-wal", store.display()), b"stale wal").unwrap();
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-interrupted", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-interrupted", &store, 0)
             .await
             .expect("finish interrupted reset");
+        assert!(
+            !reset_occurred,
+            "finishing a prior run's interrupted reset performs no new reset"
+        );
 
         assert!(!Path::new(&format!("{}-wal", store.display())).exists());
         assert!(
@@ -693,9 +716,10 @@ mod tests {
         std::fs::write(format!("{}-shm", store.display()), b"stale shm").unwrap();
         let db = test_db().await;
 
-        classify_and_prepare(&db, "bot-nondb", &store, 0)
+        let reset_occurred = classify_and_prepare(&db, "bot-nondb", &store, 0)
             .await
             .expect("classify");
+        assert!(!reset_occurred, "only leftover sidecars, no new reset");
 
         assert!(!Path::new(&format!("{}-wal", store.display())).exists());
         assert!(!Path::new(&format!("{}-shm", store.display())).exists());
@@ -722,6 +746,11 @@ mod tests {
         // the lock releases, sees a clear path and also succeeds -- exactly
         // one reset is recorded either way.
         assert!(a.is_ok() && b.is_ok(), "{a:?} / {b:?}");
+        assert_eq!(
+            [a.unwrap(), b.unwrap()].into_iter().filter(|r| *r).count(),
+            1,
+            "exactly one of the two concurrent calls performs the reset"
+        );
         let marker = db
             .load_mls_store_reset_marker("bot-race")
             .await

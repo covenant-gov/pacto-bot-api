@@ -156,6 +156,19 @@ pub enum DaemonError {
 
     #[error("failed to generate reconnect token: {0}")]
     TokenGeneration(#[from] getrandom::Error),
+
+    /// R28: this group's `agent.db` row predates a completed store reset for
+    /// this bot (U10/U11) and has not yet been restored by an inbound
+    /// Welcome. The message never names the group or the bot.
+    #[error("MLS group state lost to a reset; awaiting re-invitation")]
+    MlsGroupStateLost,
+
+    /// R49/KTD9: this bot's MLS engine failed to construct because store
+    /// classification (U10) failed closed. Distinct from
+    /// [`DaemonError::MlsEngineNotConfigured`], which means the bot was
+    /// never configured for MLS at all.
+    #[error("MLS engine unavailable: bot store failed a fail-closed classification")]
+    MlsEngineUnavailable,
 }
 
 impl DaemonError {
@@ -179,6 +192,8 @@ impl DaemonError {
             DaemonError::BlobUploadFailed { .. } => -32022,
             DaemonError::InvalidReaction => -32023,
             DaemonError::SpoolEntryMissing => -32024,
+            DaemonError::MlsGroupStateLost => -32026,
+            DaemonError::MlsEngineUnavailable => -32028,
             DaemonError::MlsEngineNotConfigured => -32013,
             DaemonError::MlsGroupAlreadyExists => -32014,
             DaemonError::MlsGroupNotFound => -32015,
@@ -319,6 +334,15 @@ mod tests {
     }
 
     #[test]
+    fn u11_error_codes_match_plan() {
+        // KTD9: -32026 group state lost / awaiting re-invitation (R28),
+        // -32028 bot engine unavailable after a fail-closed classification
+        // (R49). -32025 and -32027 are reserved by KTD9 for other units.
+        assert_eq!(DaemonError::MlsGroupStateLost.to_json_rpc_code(), -32026);
+        assert_eq!(DaemonError::MlsEngineUnavailable.to_json_rpc_code(), -32028);
+    }
+
+    #[test]
     fn daemon_specific_band_codes_are_unique_except_documented_collision() {
         // Every `DaemonError` variant whose `to_json_rpc_code()` falls in the
         // Pacto-specific server-error band (-32000..=-32099, per
@@ -388,6 +412,8 @@ mod tests {
             ),
             ("InvalidReaction", DaemonError::InvalidReaction),
             ("SpoolEntryMissing", DaemonError::SpoolEntryMissing),
+            ("MlsGroupStateLost", DaemonError::MlsGroupStateLost),
+            ("MlsEngineUnavailable", DaemonError::MlsEngineUnavailable),
         ];
 
         let mut seen: std::collections::HashMap<i32, &str> = std::collections::HashMap::new();

@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use fs2::FileExt;
+use mdk_sqlite_storage::MdkSqliteStorage;
+use mdk_sqlite_storage::encryption::EncryptionConfig;
 #[cfg(unix)]
 use nix::errno::Errno;
 #[cfg(unix)]
@@ -12,7 +14,7 @@ use nostr::key::Keys;
 use nostr::{PublicKey, ToBech32};
 use pacto_bot_api::config::{
     BotConfig, DaemonConfig, SigningConfig, VALID_CAPABILITIES, enforce_config_permissions,
-    validate_bot_id,
+    validate_bot_id, validate_mls_db_path,
 };
 use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::diagnostics::{
@@ -20,9 +22,11 @@ use pacto_bot_api::diagnostics::{
     check_relay_connectivity,
 };
 use pacto_bot_api::errors::DaemonError;
+use pacto_bot_api::mls_key;
 use pacto_bot_api::nip46;
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::secrecy::ExposeSecret;
+use pacto_bot_api::secure_file::create_restricted_file;
 use pacto_bot_api::signer::SignerBackend;
 #[cfg(not(unix))]
 use pacto_bot_api::transport::protocol::MetricsResponse;
@@ -125,10 +129,20 @@ const TEST_BUNKER_AFTER_HELP: &str = r#"Examples:
 
 const EXPORT_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin export echo-bot > echo-bot-state.json
+  pacto-bot-admin export echo-bot --bundle-dir echo-bot-bundle > echo-bot-state.json
+
+Note: --bundle-dir copies the bot's MLS store, its sidecars, and its key
+(never the key bytes themselves) into the named directory, created 0o700.
+The JSON output only ever references those files by bare filename.
 "#;
 
 const IMPORT_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin import echo-bot echo-bot-state.json
+  pacto-bot-admin import echo-bot echo-bot-state.json --bundle-dir echo-bot-bundle
+
+Note: without --bundle-dir, an export that included an MLS store bundle is
+imported with its group metadata only; the store is skipped and every
+imported group is marked state-lost.
 "#;
 
 const VALIDATE_CONFIG_AFTER_HELP: &str = r#"Examples:
@@ -371,6 +385,11 @@ enum Command {
     Export {
         #[arg(value_name = "BOT_ID")]
         bot_id: String,
+
+        /// Directory to write the bot's MLS store, sidecars, and key into.
+        /// Required to export the MLS store; omit to export metadata only.
+        #[arg(long, value_name = "DIR")]
+        bundle_dir: Option<PathBuf>,
     },
     /// Import bot daemon-local state from JSON.
     #[command(after_help = IMPORT_AFTER_HELP)]
@@ -380,6 +399,11 @@ enum Command {
 
         #[arg(value_name = "STATE_FILE")]
         state_file: String,
+
+        /// Directory holding the MLS store bundle written by a prior
+        /// `export --bundle-dir`.
+        #[arg(long, value_name = "DIR")]
+        bundle_dir: Option<PathBuf>,
     },
     /// Validate the daemon configuration file.
     #[command(after_help = VALIDATE_CONFIG_AFTER_HELP)]
@@ -708,10 +732,14 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         }
         Command::PublishProfile { bot_id } => cmd_publish_profile(&cli.config, &bot_id).await,
         Command::TestBunker { bot_id } => cmd_test_bunker(&cli.config, &bot_id).await,
-        Command::Export { bot_id } => cmd_export(&cli.config, cli.data_dir, &bot_id),
-        Command::Import { bot_id, state_file } => {
-            cmd_import(&cli.config, cli.data_dir, &bot_id, &state_file)
+        Command::Export { bot_id, bundle_dir } => {
+            cmd_export(&cli.config, cli.data_dir, &bot_id, bundle_dir)
         }
+        Command::Import {
+            bot_id,
+            state_file,
+            bundle_dir,
+        } => cmd_import(&cli.config, cli.data_dir, &bot_id, &state_file, bundle_dir),
         Command::ValidateConfig => cmd_validate_config(&cli.config, cli.data_dir),
         Command::RotateHttpToken => cmd_rotate_http_token(&cli.config, cli.data_dir),
         Command::Diagnose { format } => cmd_diagnose(&cli.config, cli.data_dir, &format).await,
@@ -1481,10 +1509,16 @@ async fn cmd_test_bunker(config_path: &Path, bot_id: &str) -> Result<(), DaemonE
     }
 }
 
+/// Export bot daemon-local state to JSON, optionally bundling the bot's MLS
+/// store, its sidecars, and its key into `bundle_dir` (R29). The JSON
+/// output never contains key bytes or an absolute store/key path — only
+/// bare-filename manifest entries resolved against the bundle directory a
+/// caller supplies at import time.
 fn cmd_export(
     config_path: &Path,
     data_dir_override: Option<PathBuf>,
     bot_id: &str,
+    bundle_dir: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
     let config = load_admin_config(config_path)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
@@ -1511,8 +1545,28 @@ fn cmd_export(
                 creator_npub: row.creator_npub,
                 relay: row.relay,
                 invited_bots: row.invited_bots,
+                state_lost_at: row.state_lost_at,
             })
             .collect()
+    };
+
+    // The MLS store and key are bot-config artifacts, not agent.db rows —
+    // export has never required config membership (unlike import), so this
+    // stays a lookup rather than `find_bot`'s hard error.
+    let bot = config.bots.iter().find(|b| b.id == bot_id);
+    let mls_store = match (
+        bot.and_then(|b| b.mls_db_path.as_deref()),
+        bundle_dir.as_deref(),
+    ) {
+        (Some(store_path), Some(bundle_dir)) => export_mls_store(store_path, bundle_dir)?,
+        (Some(store_path), None) if store_path.exists() => {
+            eprintln!(
+                "warning: bot {bot_id} has an MLS store at {}; pass --bundle-dir to export it (metadata only was exported)",
+                store_path.display()
+            );
+            None
+        }
+        _ => None,
     };
 
     let state = ExportState {
@@ -1524,6 +1578,7 @@ fn cmd_export(
         cursors,
         handlers,
         mls_groups,
+        mls_store,
         split_brain_warning: true,
     };
 
@@ -1534,23 +1589,47 @@ fn cmd_export(
     Ok(())
 }
 
+/// Import bot daemon-local state from `state_file`, optionally applying the
+/// MLS store bundle found in `bundle_dir` (R29). Refusal is scoped to the
+/// store artifact only: a missing key, a key that does not open the store,
+/// an invalid manifest entry, or no `--bundle-dir` all import the
+/// `agent.db` half regardless and mark every imported group for this bot
+/// state-lost, rather than refusing the whole import.
 fn cmd_import(
     config_path: &Path,
     data_dir_override: Option<PathBuf>,
     bot_id: &str,
     state_file: &str,
+    bundle_dir: Option<PathBuf>,
 ) -> Result<(), DaemonError> {
     let config = load_admin_config(config_path)?;
-    let _bot = find_bot(&config.bots, bot_id)?;
+    let bot = find_bot(&config.bots, bot_id)?;
     let data_dir = resolve_data_dir(&config, data_dir_override);
     check_no_daemon_lock(&data_dir)?;
 
     let state_json = fs::read_to_string(state_file).map_err(DaemonError::Io)?;
     let state: ExportState = serde_json::from_str(&state_json)?;
 
+    let store_outcome = import_mls_store(
+        state.mls_store.as_ref(),
+        bundle_dir.as_deref(),
+        bot,
+        &data_dir,
+    )?;
+
     let db_path = data_dir.join(AGENT_DB_FILE);
     let conn = open_agent_db(&db_path)?;
     let db = Database::open(&db_path)?;
+
+    // Only a `Skipped` outcome forces state-lost: `NotExported` preserves
+    // whatever `agent.db` already recorded (there was never a store bundle
+    // promise to break), and `Imported` preserves it too, since a
+    // successful store open only proves the whole store decrypts, not that
+    // every named group's leaf is present inside it.
+    let forced_state_lost_at = match &store_outcome {
+        MlsStoreImportOutcome::Skipped(_) => Some(Utc::now().timestamp()),
+        MlsStoreImportOutcome::Imported | MlsStoreImportOutcome::NotExported => None,
+    };
 
     for group in &state.mls_groups {
         if group.bot_id == bot_id {
@@ -1561,6 +1640,7 @@ fn cmd_import(
                 creator_npub: group.creator_npub.clone(),
                 relay: group.relay.clone(),
                 invited_bots: group.invited_bots.clone(),
+                state_lost_at: forced_state_lost_at.or(group.state_lost_at),
             };
             db.insert_mls_group_export(&row)?;
         }
@@ -1578,8 +1658,298 @@ fn cmd_import(
         }
     }
 
+    match &store_outcome {
+        MlsStoreImportOutcome::Imported => println!("imported MLS store for {bot_id}"),
+        MlsStoreImportOutcome::NotExported => {}
+        MlsStoreImportOutcome::Skipped(reason) => {
+            println!(
+                "warning: MLS store for {bot_id} was skipped ({reason}); imported groups were marked state-lost"
+            );
+        }
+    }
     println!("imported state for {bot_id}");
     Ok(())
+}
+
+/// Reject a manifest entry that is not a bare filename: no path separator
+/// (`/` or `\`), no `..`/`.`, no absolute or root component (R29). Checked
+/// before any path is built from the entry, on both the export-time read
+/// side and the import-time write side.
+fn validate_manifest_filename(name: &str) -> Result<(), DaemonError> {
+    let mut components = Path::new(name).components();
+    let is_bare = !name.contains('\\')
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        );
+    if is_bare {
+        Ok(())
+    } else {
+        Err(DaemonError::Config(format!(
+            "MLS store manifest entry {name:?} is not a bare filename"
+        )))
+    }
+}
+
+/// Create `path` as a directory with owner-only (`0o700`) permissions from
+/// the moment it is created, matching `mls_reset.rs::new_archive_dir`'s
+/// pattern for bundle/archive directories.
+fn create_restricted_dir(path: &Path) -> Result<(), DaemonError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(path).map_err(DaemonError::Io)?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(DaemonError::Io)?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path).map_err(DaemonError::Io)?;
+    }
+    Ok(())
+}
+
+/// Tighten an already-written file to owner-only (`0o600`) permissions.
+/// Used after `std::fs::copy` (which inherits the source's mode) for the
+/// store file and its sidecars; the key itself is never copied this way —
+/// see [`export_mls_store`] and [`import_mls_store`].
+#[cfg(unix)]
+fn restrict_file_permissions(path: &Path) -> Result<(), DaemonError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(DaemonError::Io)
+}
+#[cfg(not(unix))]
+fn restrict_file_permissions(_path: &Path) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+/// Copy `store_path`'s MLS store, its present sidecars, and a copy of its
+/// key into `bundle_dir` (R29). Returns `Ok(None)` when there is nothing to
+/// export: no store file, or a store whose key is absent — export never
+/// mints a new key for a source that has none, so it only ever reads via
+/// [`mls_key::load`], never `mls_key::load_or_create`.
+fn export_mls_store(
+    store_path: &Path,
+    bundle_dir: &Path,
+) -> Result<Option<MlsStoreManifest>, DaemonError> {
+    if !store_path.exists() {
+        return Ok(None);
+    }
+
+    let key = match mls_key::load(store_path) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            eprintln!(
+                "warning: MLS store {} has no key on disk; store and key were not exported",
+                store_path.display()
+            );
+            return Ok(None);
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: MLS store {} key could not be read ({e}); store and key were not exported",
+                store_path.display()
+            );
+            return Ok(None);
+        }
+    };
+
+    create_restricted_dir(bundle_dir)?;
+
+    let store_file_name = store_path
+        .file_name()
+        .ok_or_else(|| DaemonError::Config("MLS store path has no file name".into()))?
+        .to_owned();
+    let dest_store_path = bundle_dir.join(&store_file_name);
+    fs::copy(store_path, &dest_store_path).map_err(DaemonError::Io)?;
+    restrict_file_permissions(&dest_store_path)?;
+
+    // The key is never copied by `std::fs::copy` (which would inherit the
+    // source's mode rather than asserting one) and never minted fresh: it
+    // is read once via `mls_key::load` above, then written through the same
+    // owner-only-at-creation primitive the key provider itself uses.
+    let dest_key_path = mls_key::key_path_for_store(&dest_store_path);
+    {
+        let mut file = create_restricted_file(&dest_key_path).map_err(DaemonError::Io)?;
+        file.write_all(&*key).map_err(DaemonError::Io)?;
+        file.sync_all().map_err(DaemonError::Io)?;
+    }
+
+    // Sidecars enumerated by literal filename suffix on the full path, per
+    // R21/`mls_reset.rs::sidecar_paths` — never `Path::with_extension`.
+    let mut sidecar_files = Vec::new();
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut source = store_path.as_os_str().to_os_string();
+        source.push(suffix);
+        let source = PathBuf::from(source);
+        if !source.exists() {
+            continue;
+        }
+        let mut dest_name = store_file_name.clone();
+        dest_name.push(suffix);
+        let dest = bundle_dir.join(&dest_name);
+        fs::copy(&source, &dest).map_err(DaemonError::Io)?;
+        restrict_file_permissions(&dest)?;
+        sidecar_files.push(dest_name.to_string_lossy().into_owned());
+    }
+
+    Ok(Some(MlsStoreManifest {
+        store_file: store_file_name.to_string_lossy().into_owned(),
+        sidecar_files,
+    }))
+}
+
+/// Outcome of attempting to import a bot's MLS store bundle (R29).
+enum MlsStoreImportOutcome {
+    /// The export contained no MLS store bundle for this bot.
+    NotExported,
+    /// The store, its key, and its present sidecars were copied into place.
+    Imported,
+    /// The store artifact was skipped; the string is the operator-facing
+    /// reason `cmd_import` reports.
+    Skipped(String),
+}
+
+enum MlsStoreOpenOutcome {
+    WrongKey,
+    Other,
+}
+
+/// Try opening `store_path` with `key` without leaving the caller holding
+/// the connection, mirroring `mls_reset.rs::try_open_with_key`.
+fn try_open_mls_store_with_key(
+    store_path: &Path,
+    key: &[u8; 32],
+) -> Result<(), MlsStoreOpenOutcome> {
+    match MdkSqliteStorage::new_with_key(store_path, EncryptionConfig::new(*key)) {
+        Ok(_storage) => Ok(()),
+        Err(mdk_sqlite_storage::error::Error::WrongEncryptionKey) => {
+            Err(MlsStoreOpenOutcome::WrongKey)
+        }
+        Err(_other) => Err(MlsStoreOpenOutcome::Other),
+    }
+}
+
+/// Import `manifest`'s MLS store bundle from `bundle_dir` into `bot`'s
+/// configured store path under `data_dir` (R29). Every ordinary failure
+/// (missing `--bundle-dir`, unconfigured bot, invalid manifest entry,
+/// missing key, wrong key) returns `Ok(Skipped(reason))` rather than
+/// `Err`, so the caller always still imports the `agent.db` half. Only a
+/// destination that fails the same hardening `validate_mls_db_path`
+/// applies at daemon startup — including a symlink escape out of the
+/// bot's data directory — surfaces as a hard `Err`, refusing to write
+/// anywhere outside the bot's data directory.
+fn import_mls_store(
+    manifest: Option<&MlsStoreManifest>,
+    bundle_dir: Option<&Path>,
+    bot: &BotConfig,
+    data_dir: &Path,
+) -> Result<MlsStoreImportOutcome, DaemonError> {
+    let Some(manifest) = manifest else {
+        return Ok(MlsStoreImportOutcome::NotExported);
+    };
+    let Some(bundle_dir) = bundle_dir else {
+        return Ok(MlsStoreImportOutcome::Skipped(
+            "export included an MLS store but --bundle-dir was not given at import time".into(),
+        ));
+    };
+    if bot.mls_db_path.is_none() {
+        return Ok(MlsStoreImportOutcome::Skipped(format!(
+            "bot {} has no mls_db_path configured; cannot import an MLS store",
+            bot.id
+        )));
+    }
+
+    // Manifest entries are constrained to bare filenames *before* any path
+    // is resolved from them — the only place an attacker-controlled string
+    // reaches a path join in this function, on both the bundle-read side
+    // (below) and, via `manifest.store_file`, the sidecar-naming below.
+    if let Err(e) = validate_manifest_filename(&manifest.store_file) {
+        return Ok(MlsStoreImportOutcome::Skipped(format!(
+            "MLS store manifest entry rejected: {e}"
+        )));
+    }
+    for sidecar in &manifest.sidecar_files {
+        if let Err(e) = validate_manifest_filename(sidecar) {
+            return Ok(MlsStoreImportOutcome::Skipped(format!(
+                "MLS store manifest entry rejected: {e}"
+            )));
+        }
+    }
+
+    let source_store = bundle_dir.join(&manifest.store_file);
+    if !source_store.exists() {
+        return Ok(MlsStoreImportOutcome::Skipped(format!(
+            "MLS store file missing from bundle: {}",
+            manifest.store_file
+        )));
+    }
+
+    let key = match mls_key::load(&source_store) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return Ok(MlsStoreImportOutcome::Skipped(
+                "MLS store key missing from bundle".into(),
+            ));
+        }
+        Err(e) => {
+            return Ok(MlsStoreImportOutcome::Skipped(format!(
+                "MLS store key in bundle is unusable: {e}"
+            )));
+        }
+    };
+
+    if let Err(outcome) = try_open_mls_store_with_key(&source_store, &key) {
+        let reason = match outcome {
+            MlsStoreOpenOutcome::WrongKey => "MLS store bundle key does not open its store",
+            MlsStoreOpenOutcome::Other => "MLS store bundle could not be opened",
+        };
+        return Ok(MlsStoreImportOutcome::Skipped(reason.into()));
+    }
+
+    // Re-resolve and re-harden the live destination immediately before
+    // writing, rather than trusting the canonicalization `load_admin_config`
+    // already performed at the top of `cmd_import`: this re-runs the same
+    // hardening `validate_mls_db_path` applies to a bot's configured
+    // `mls_db_path` at daemon startup, as a TOCTOU guard and to reject a
+    // destination that resolves through a symlink out of the bot's data
+    // directory.
+    let dest_store_path = validate_mls_db_path(bot, data_dir)?;
+
+    fs::copy(&source_store, &dest_store_path).map_err(DaemonError::Io)?;
+    restrict_file_permissions(&dest_store_path)?;
+
+    let dest_key_path = mls_key::key_path_for_store(&dest_store_path);
+    {
+        let mut file = create_restricted_file(&dest_key_path).map_err(DaemonError::Io)?;
+        file.write_all(&*key).map_err(DaemonError::Io)?;
+        file.sync_all().map_err(DaemonError::Io)?;
+    }
+
+    let dest_file_name = dest_store_path
+        .file_name()
+        .ok_or_else(|| DaemonError::Config("MLS destination store path has no file name".into()))?
+        .to_owned();
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut expected_name = manifest.store_file.clone();
+        expected_name.push_str(suffix);
+        if !manifest.sidecar_files.iter().any(|s| s == &expected_name) {
+            continue;
+        }
+        let source = bundle_dir.join(&expected_name);
+        if !source.exists() {
+            continue;
+        }
+        let mut dest_name = dest_file_name.clone();
+        dest_name.push(suffix);
+        let dest = dest_store_path.with_file_name(dest_name);
+        fs::copy(&source, &dest).map_err(DaemonError::Io)?;
+        restrict_file_permissions(&dest)?;
+    }
+
+    Ok(MlsStoreImportOutcome::Imported)
 }
 
 fn cmd_validate_config(
@@ -3316,6 +3686,12 @@ struct ExportState {
     handlers: Vec<HandlerExport>,
     #[serde(default)]
     mls_groups: Vec<MlsGroupExport>,
+    /// Manifest of the MLS store bundle written by `export --bundle-dir`
+    /// (R29). Bare filenames only, resolved against the bundle directory a
+    /// caller supplies at import time; never an absolute path, never key
+    /// bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mls_store: Option<MlsStoreManifest>,
     split_brain_warning: bool,
 }
 
@@ -3351,6 +3727,26 @@ struct MlsGroupExport {
     creator_npub: String,
     relay: String,
     invited_bots: Vec<String>,
+    /// Set when this group's engine state is known to be lost — either
+    /// carried over from `agent.db` (R28) or set by import itself when the
+    /// MLS store bundle could not be applied (R29).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_lost_at: Option<i64>,
+}
+
+/// Manifest of an exported MLS store bundle (R29). Every field is a bare
+/// filename relative to the bundle directory `export --bundle-dir` wrote
+/// (or `import --bundle-dir` reads) — never an absolute path — so the JSON
+/// blob itself carries no path or key material. Validated against
+/// [`validate_manifest_filename`] before use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MlsStoreManifest {
+    /// The SQLCipher store file's bare filename inside the bundle directory.
+    store_file: String,
+    /// WAL/SHM/journal sidecars actually present at export time, by bare
+    /// filename inside the bundle directory.
+    #[serde(default)]
+    sidecar_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

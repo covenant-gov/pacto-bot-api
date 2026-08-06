@@ -93,6 +93,7 @@ async fn startup_reconciliation_restores_missing_mls_group_rows() {
         creator_npub: creator_npub.clone(),
         relay: "wss://relay.example".into(),
         invited_bots: vec![peer_npub.clone()],
+        state_lost_at: None,
     };
     db.insert_mls_group(row).await.expect("insert group row");
 

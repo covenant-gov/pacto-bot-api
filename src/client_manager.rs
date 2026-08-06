@@ -35,20 +35,32 @@ pub struct ClientManager {
     pub handler_registry: HandlerRegistry,
 }
 
-/// Reconcile a bot's MLS engine groups with the daemon database.
+/// Reconcile a bot's MLS engine groups with the daemon database (U11/R28).
 ///
-/// On daemon startup, the engine may already know about groups whose rows were
-/// never persisted to `agent.db` (e.g., a crash after the engine mutation but
-/// before the DB insert). This helper inserts any missing rows using the Squad
-/// wire id as the stable key.
+/// Loads this bot's `agent.db` rows first and diffs them against the
+/// engine's live wire-id set in both directions:
+///
+/// - An engine group with no matching `agent.db` row is inserted (unchanged
+///   from before U11: e.g. a crash after the engine mutation but before the
+///   DB insert).
+/// - An `agent.db` row with no matching engine group is a *candidate*
+///   state-lost group, but is only actually marked when this bot has a
+///   completed store reset on record (U10). A bare diff with no reset
+///   marker also describes a bot legitimately evicted from a group by a
+///   remote admin; marking that case would wrongly refuse sends on every
+///   future startup. A fresh install (no rows, no marker) marks nothing.
 async fn reconcile_mls_groups(
     bot_id: &str,
     bot_npub: &str,
     mls: &MlsEngineHandle,
     db: &Db,
 ) -> Result<(), DaemonError> {
-    let groups = mls.list_groups().await?;
-    for group in groups {
+    let db_rows = db.load_all_mls_groups(bot_id).await?;
+    let engine_groups = mls.list_groups().await?;
+    let engine_wire_ids: std::collections::HashSet<&str> =
+        engine_groups.iter().map(|g| g.wire_id.as_str()).collect();
+
+    for group in &engine_groups {
         let members: Vec<String> = group
             .members
             .iter()
@@ -66,6 +78,22 @@ async fn reconcile_mls_groups(
         )
         .await?;
     }
+
+    let has_completed_reset = db
+        .load_mls_store_reset_marker(bot_id)
+        .await?
+        .is_some_and(|marker| marker.reset_at.is_some());
+
+    if has_completed_reset {
+        let now = chrono::Utc::now().timestamp();
+        for row in &db_rows {
+            if row.state_lost_at.is_none() && !engine_wire_ids.contains(row.wire_id.as_str()) {
+                db.mark_mls_group_state_lost(bot_id, &row.group_name, now)
+                    .await?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -78,6 +106,7 @@ impl ClientManager {
     ) -> Result<Self, DaemonError> {
         let mut bots = HashMap::with_capacity(config.bots.len());
         let mut bot_id_to_pubkey = HashMap::with_capacity(config.bots.len());
+        let data_dir = data_dir.as_ref();
 
         for bot_config in config.bots {
             let bot_id = bot_config.id.clone();
@@ -89,20 +118,31 @@ impl ClientManager {
             // Bots with an explicit mls_db_path get an MLS engine; otherwise the
             // bot has no MLS engine regardless of capabilities.
             let bot_state = if bot_config.mls_db_path.is_some() {
-                let canonical_path =
-                    crate::config::validate_mls_db_path(&bot_config, data_dir.as_ref())?;
-                crate::mls_reset::classify_and_prepare(
+                match Self::construct_mls_bot_state(
+                    bot_config.clone(),
+                    data_dir,
                     db,
-                    &bot_id,
-                    &canonical_path,
                     config.daemon.mls_archive_retention_days,
+                    &nostr_client,
                 )
-                .await?;
-                let state = BotState::new_with_mls(bot_config, canonical_path)?;
-                if let Some(mls) = state.mls.as_ref() {
-                    reconcile_mls_groups(state.bot_id(), state.npub(), mls, db).await?;
+                .await
+                {
+                    Ok(state) => state,
+                    Err(reason) => {
+                        // R49: isolate an MLS-store-specific failure to this
+                        // bot instead of aborting startup for every
+                        // configured bot. Genuinely fatal, non-store
+                        // conditions (duplicate/invalid bot_id, signer
+                        // construction failure, bunker verification) are
+                        // not caught here and still propagate below.
+                        warn!(
+                            bot_id = %bot_id,
+                            reason,
+                            "MLS engine unavailable for bot; continuing startup for other bots"
+                        );
+                        BotState::new_mls_engine_unavailable(bot_config, reason)?
+                    }
                 }
-                state
             } else {
                 BotState::new(bot_config)?
             };
@@ -122,6 +162,67 @@ impl ClientManager {
             nostr_client,
             handler_registry: HandlerRegistry::new(),
         })
+    }
+
+    /// Build the MLS-engine portion of a single bot's startup (U11/R49):
+    /// store path validation, classification/reset, engine construction, an
+    /// after-reset KeyPackage republish (R27), and group reconciliation.
+    ///
+    /// Every failure here belongs to this bot alone -- the caller isolates
+    /// it instead of aborting every other configured bot -- so failures map
+    /// to a fixed, non-leaking reason string rather than propagate as a
+    /// `DaemonError`, which may carry a raw path or SQL fragment (matching
+    /// the redaction discipline `mls_reset.rs`/`mls_key.rs` already follow).
+    async fn construct_mls_bot_state(
+        bot_config: crate::config::BotConfig,
+        data_dir: &Path,
+        db: &Db,
+        archive_retention_days: u32,
+        nostr_client: &NostrClient,
+    ) -> Result<BotState, &'static str> {
+        let canonical_path = crate::config::validate_mls_db_path(&bot_config, data_dir)
+            .map_err(|_| "MLS engine unavailable: store path validation failed")?;
+
+        let reset_occurred = crate::mls_reset::classify_and_prepare(
+            db,
+            &bot_config.id,
+            &canonical_path,
+            archive_retention_days,
+        )
+        .await
+        .map_err(|_| "MLS engine unavailable: store classification failed closed")?;
+
+        let state = BotState::new_with_mls(bot_config, &canonical_path)
+            .map_err(|_| "MLS engine unavailable: engine construction failed")?;
+
+        if let Some(mls) = state.mls.as_ref() {
+            // R27: republish the KeyPackage before reconciliation can mark
+            // any group state-lost, and definitely before the bot
+            // subscribes to relays (`subscribe_bots` runs only after
+            // `ClientManager::new` returns) -- so a restoration attempt can
+            // never reach this bot before its fresh KeyPackage is live.
+            // Best-effort: a relay hiccup here should not strand an
+            // otherwise-healthy engine, so a publish failure only logs.
+            if reset_occurred {
+                let relays = state.config.relays.clone();
+                if let Err(e) = nostr_client
+                    .publish_key_package(mls, &state.signer, relays)
+                    .await
+                {
+                    warn!(
+                        bot_id = %state.bot_id(),
+                        error = %e,
+                        "failed to republish KeyPackage after MLS store reset"
+                    );
+                }
+            }
+
+            reconcile_mls_groups(state.bot_id(), state.npub(), mls, db)
+                .await
+                .map_err(|_| "MLS engine unavailable: group reconciliation failed")?;
+        }
+
+        Ok(state)
     }
 
     /// Iterate over all bots keyed by public key.
@@ -254,7 +355,10 @@ mod tests {
     use crate::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
     use crate::db::Db;
     use crate::handlers::ConnectionHandle;
+    use crate::test_support::mock_relay::MockRelay;
     use crate::test_support::test_tempdir;
+    use mdk_sqlite_storage::MdkSqliteStorage;
+    use mdk_sqlite_storage::encryption::EncryptionConfig;
     use nostr::nips::nip59;
     use nostr::{SubscriptionId, Timestamp, ToBech32};
     use parking_lot::Mutex;
@@ -735,6 +839,147 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn mls_engine_construction_failure_is_isolated_and_recorded_in_health() {
+        let keys_a = nostr::Keys::generate();
+        let keys_b = nostr::Keys::generate();
+        let keys_bad = nostr::Keys::generate();
+
+        let bot_a = bot_config("healthy-a", &keys_a);
+        let bot_b = bot_config("healthy-b", &keys_b);
+        let mut bot_bad = bot_config("unrecognised-store", &keys_bad);
+        bot_bad.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
+        bot_bad.capabilities.push("SendGroupMessages".into());
+
+        let data_dir = test_tempdir();
+        let bot_dir = data_dir.path().join(&bot_bad.id);
+        std::fs::create_dir_all(&bot_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bot_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store_path = bot_dir.join("vector-mls.db");
+        {
+            let conn = rusqlite::Connection::open(&store_path).unwrap();
+            conn.execute_batch("CREATE TABLE unrelated (x INTEGER);")
+                .unwrap();
+        }
+
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![bot_a, bot_bad.clone(), bot_b],
+        };
+
+        let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
+        let manager = ClientManager::new(
+            data_dir.path(),
+            config,
+            NostrClient::new(vec![]).await.unwrap(),
+            &db,
+        )
+        .await
+        .expect("daemon must stay up despite one bad MLS store");
+
+        assert!(manager.get_bot_by_id("healthy-a").is_some());
+        assert!(manager.get_bot_by_id("healthy-b").is_some());
+
+        let failed = manager
+            .get_bot_by_id("unrecognised-store")
+            .expect("failed bot still tracked so its health is visible");
+        assert!(failed.mls.is_none());
+        assert!(failed.mls_engine_unavailable());
+
+        let health = manager.bot_health_snapshots();
+        let failed_health = health
+            .iter()
+            .find(|h| h.bot_id == "unrecognised-store")
+            .unwrap();
+        let error = failed_health.error.as_deref().expect("error recorded");
+        assert!(
+            !error.contains(&store_path.display().to_string()),
+            "must not leak the store path: {error}"
+        );
+        assert!(
+            !error.to_lowercase().contains("unrelated"),
+            "must not leak table/SQL fragments: {error}"
+        );
+
+        for id in ["healthy-a", "healthy-b"] {
+            let h = health.iter().find(|h| h.bot_id == id).unwrap();
+            assert!(h.error.is_none(), "healthy bot must have no error");
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_republishes_key_package_before_reconciliation() {
+        let relay = MockRelay::start().await.expect("mock relay");
+        let keys = nostr::Keys::generate();
+        let mut bot = bot_config("reset-bot", &keys);
+        bot.mls_db_path = Some(std::path::PathBuf::from("vector-mls.db"));
+        bot.capabilities.push("SendGroupMessages".into());
+        bot.relays = vec![relay.url()];
+
+        let data_dir = test_tempdir();
+        let bot_dir = data_dir.path().join(&bot.id);
+        std::fs::create_dir_all(&bot_dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bot_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store_path = bot_dir.join("vector-mls.db");
+
+        // Build an encrypted store, then corrupt its key so classification
+        // sees WrongEncryptionKey and resets it (R26 -- always archived).
+        let original_key = crate::mls_key::load_or_create(&store_path).unwrap();
+        drop(
+            MdkSqliteStorage::new_with_key(&store_path, EncryptionConfig::new(*original_key))
+                .unwrap(),
+        );
+        let key_path = crate::mls_key::key_path_for_store(&store_path);
+        std::fs::write(&key_path, [0xAB_u8; 32]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let config = DaemonConfig {
+            daemon: GlobalDaemonConfig::default(),
+            bots: vec![bot],
+        };
+        let db = Db::open(&data_dir.path().join("agent.db")).await.unwrap();
+
+        let manager = ClientManager::new(
+            data_dir.path(),
+            config,
+            NostrClient::new(vec![relay.url()]).await.unwrap(),
+            &db,
+        )
+        .await
+        .expect("client manager initializes after reset");
+
+        assert!(manager.get_bot_by_id("reset-bot").unwrap().mls.is_some());
+
+        // The reset must have republished a fresh KeyPackage before this
+        // function returns -- the only way a restoration (an admin re-add
+        // targeting this bot's new store) can reach it. `subscribe_bots`,
+        // and therefore any Welcome-driven restoration attempt, has not
+        // even been called yet at this point: that ordering is structural,
+        // not just observed here.
+        let events = relay
+            .wait_for_event(
+                |e| e.kind == nostr::Kind::MlsKeyPackage,
+                std::time::Duration::from_secs(2),
+            )
+            .await
+            .expect("KeyPackage event published to the relay");
+        assert!(!events.is_empty());
+
+        relay.stop().await;
+    }
+
     #[test]
     fn is_authorized_delegates_to_registry() {
         let keys = nostr::Keys::generate();
@@ -768,6 +1013,197 @@ mod tests {
             manager
                 .is_authorized("unknown-handler", "auth-bot", "ReadMessages")
                 .is_err()
+        );
+    }
+
+    /// Build and sign a real kind:443 KeyPackage event against `engine` for
+    /// `keys` -- a single engine can act as both creator and (via a
+    /// self-issued KeyPackage) recipient for group-creation tests, so no
+    /// second party is needed just to exercise reconciliation. Uses the
+    /// `nostr_json` seam (not `sign_with_keys` directly) per the
+    /// containment lint.
+    async fn build_key_package_event(engine: &MlsEngineHandle, keys: &nostr::Keys) -> nostr::Event {
+        let relays = vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = engine
+            .publish_key_package(&keys.public_key(), relays)
+            .await
+            .expect("publish_key_package");
+        let rumor = nostr::UnsignedEvent::new(
+            keys.public_key(),
+            nostr::Timestamp::now(),
+            nostr::Kind::MlsKeyPackage,
+            tags,
+            content,
+        );
+        crate::nostr_json::sign_unsigned(rumor, keys).expect("sign key package")
+    }
+
+    #[tokio::test]
+    async fn fresh_install_reconciliation_marks_nothing() {
+        let temp = test_tempdir();
+        let db = Db::open(&temp.path().join("agent.db")).await.unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        reconcile_mls_groups("fresh-bot", "npub1fresh", &engine, &db)
+            .await
+            .expect("reconcile");
+
+        assert!(
+            db.load_all_mls_groups("fresh-bot")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.load_mls_store_reset_marker("fresh-bot")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn eviction_without_reset_marker_is_not_marked_state_lost() {
+        let temp = test_tempdir();
+        let db = Db::open(&temp.path().join("agent.db")).await.unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        // A row the bot no longer has engine state for, but with NO
+        // completed reset on record -- a legitimate remote eviction, not a
+        // reset. Must not be marked, or the bot's sends into any future
+        // group would wrongly refuse forever.
+        db.insert_mls_group(crate::db::MlsGroupRow {
+            bot_id: "evicted-bot".into(),
+            group_name: "old-squad".into(),
+            wire_id: "a".repeat(64),
+            creator_npub: "npub1someone".into(),
+            relay: "wss://relay.example".into(),
+            invited_bots: vec![],
+            state_lost_at: None,
+        })
+        .await
+        .unwrap();
+
+        reconcile_mls_groups("evicted-bot", "npub1evicted", &engine, &db)
+            .await
+            .expect("reconcile");
+
+        assert!(
+            db.load_mls_group_state_lost_at("evicted-bot", &"a".repeat(64))
+                .await
+                .unwrap()
+                .is_none(),
+            "a bare diff with no reset marker must not mark eviction as state-lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_reset_marks_orphaned_groups_state_lost_and_leaves_members_untouched() {
+        let temp = test_tempdir();
+        let db = Db::open(&temp.path().join("agent.db")).await.unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        db.insert_mls_group(crate::db::MlsGroupRow {
+            bot_id: "reset-bot".into(),
+            group_name: "pre-reset-squad".into(),
+            wire_id: "b".repeat(64),
+            creator_npub: "npub1someone".into(),
+            relay: "wss://relay.example".into(),
+            invited_bots: vec!["npub1member".into()],
+            state_lost_at: None,
+        })
+        .await
+        .unwrap();
+        assert!(
+            db.is_bot_invited("reset-bot", "pre-reset-squad", "npub1member")
+                .await
+                .unwrap()
+        );
+
+        // Simulate a completed U10 reset for this bot.
+        db.mark_mls_store_reset_start("reset-bot", 1_000)
+            .await
+            .unwrap();
+        db.complete_mls_store_reset("reset-bot", 1_100, None)
+            .await
+            .unwrap();
+
+        reconcile_mls_groups("reset-bot", "npub1resetbot", &engine, &db)
+            .await
+            .expect("reconcile");
+
+        assert!(
+            db.load_mls_group_state_lost_at("reset-bot", &"b".repeat(64))
+                .await
+                .unwrap()
+                .is_some(),
+            "every pre-reset group with no matching engine state must carry state_lost_at"
+        );
+        assert!(
+            db.is_bot_invited("reset-bot", "pre-reset-squad", "npub1member")
+                .await
+                .unwrap(),
+            "mls_group_members rows must survive the reset untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_renamed_while_bot_was_out_reconciles_on_wire_id_without_erroring() {
+        let temp = test_tempdir();
+        let db = Db::open(&temp.path().join("agent.db")).await.unwrap();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let creator_keys = nostr::Keys::generate();
+        let recipient_keys = nostr::Keys::generate();
+        let key_package = build_key_package_event(&engine, &recipient_keys).await;
+        let (wire_id, _welcome) = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                key_package,
+                "renamed-squad".to_string(),
+                vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+            )
+            .await
+            .expect("create_group");
+
+        // agent.db still has the OLD name for this real wire_id, as if the
+        // Squad was renamed on pacto-app while this bot was out of it.
+        db.insert_mls_group(crate::db::MlsGroupRow {
+            bot_id: "rename-bot".into(),
+            group_name: "old-squad-name".into(),
+            wire_id: wire_id.clone(),
+            creator_npub: creator_keys.public_key().to_bech32().unwrap(),
+            relay: "wss://relay.example".into(),
+            invited_bots: vec![],
+            state_lost_at: None,
+        })
+        .await
+        .unwrap();
+
+        reconcile_mls_groups(
+            "rename-bot",
+            &creator_keys.public_key().to_bech32().unwrap(),
+            &engine,
+            &db,
+        )
+        .await
+        .expect("reconcile must not abort startup on a rename");
+
+        let rows = db.load_all_mls_groups("rename-bot").await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "the rename must update in place, not duplicate"
+        );
+        assert_eq!(rows[0].wire_id, wire_id);
+        assert_eq!(
+            rows[0].group_name, "renamed-squad",
+            "group_name must be updated to the engine's current name on a wire_id match"
         );
     }
 }

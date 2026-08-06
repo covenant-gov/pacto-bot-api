@@ -85,6 +85,7 @@ fn serialize_agent_event_includes_new_fields() {
         timestamp: 1234567890,
         reaction: None,
         attachment: None,
+        bot_unavailable: None,
     };
 
     let value = serde_json::to_value(&event).unwrap();
