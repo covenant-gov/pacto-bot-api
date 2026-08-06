@@ -240,6 +240,77 @@ async fn attachment_secrets_are_absent_from_logs_diagnostics_report_and_rpc_erro
     Ok(())
 }
 
+#[tokio::test]
+async fn mls_store_key_never_appears_in_diagnostics_report_or_rpc_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The MLS store key is not part of `SensitiveFixture` (it is generated
+    // fresh per store, not supplied via config), so this test scans directly
+    // for the raw 32-byte key's hex encoding rather than reusing the shared
+    // marker set. Per U9's test-scenario note, MDK's own hex rendering (the
+    // `PRAGMA key = "x'<hex>'"` statement it builds internally) is a named
+    // residue outside this test's scope; only the daemon's own error/report
+    // surfaces are asserted here.
+    let dir = common::tempdir()?;
+    let store_path = dir.path().join("vector-mls.db");
+
+    // Create a store the same way the daemon does, then corrupt the key file
+    // in place (still 32 bytes, still 0o600) so a second open presents the
+    // *wrong* key to the now-encrypted store. This reproduces the
+    // `Error::WrongEncryptionKey` path without ever needing to name the
+    // original key in an assertion.
+    let original_key = pacto_bot_api::mls_key::load_or_create(&store_path)?;
+    let original_key_hex = hex::encode(*original_key);
+    drop(pacto_bot_api::mls::MlsEngineHandle::new_persistent(
+        &store_path,
+    )?);
+
+    let key_path = pacto_bot_api::mls_key::key_path_for_store(&store_path);
+    let wrong_key = [0xABu8; 32];
+    std::fs::write(&key_path, wrong_key)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let wrong_key_hex = hex::encode(wrong_key);
+
+    let open_err = pacto_bot_api::mls::MlsEngineHandle::new_persistent(&store_path)
+        .expect_err("opening an encrypted store with the wrong key must fail");
+    let daemon_err = DaemonError::from(open_err);
+    let display = daemon_err.to_string();
+
+    assert!(
+        !display.contains(&original_key_hex) && !display.contains(&wrong_key_hex),
+        "store-open error must not contain the raw key: {display}"
+    );
+    assert!(
+        !display.contains(&store_path.display().to_string()),
+        "store-open error must not contain the raw store path: {display}"
+    );
+
+    let diagnostics = Diagnostics::new();
+    diagnostics
+        .record_error(Some("mls_store_open_failed"), &display, None)
+        .await;
+    let snapshot = serde_json::to_string(&diagnostics.snapshot().await)?;
+    assert!(!snapshot.contains(&original_key_hex) && !snapshot.contains(&wrong_key_hex));
+
+    let report_dir = TempDir::new()?;
+    diagnostics.flush_report(report_dir.path()).await?;
+    let report = tokio::fs::read_to_string(report_dir.path().join("reports/latest.json")).await?;
+    assert!(!report.contains(&original_key_hex) && !report.contains(&wrong_key_hex));
+    assert!(
+        !report.contains(&store_path.display().to_string()),
+        "diagnostics report must not contain the raw store path: {report}"
+    );
+
+    let rpc = serialize_message(&JsonRpcMessage::error(7.into(), daemon_err.into()))?;
+    assert!(!rpc.contains(&original_key_hex) && !rpc.contains(&wrong_key_hex));
+    assert!(!rpc.contains(&store_path.display().to_string()));
+
+    Ok(())
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn unix_json_rpc_error_does_not_echo_attachment_secret_markers()

@@ -39,6 +39,7 @@ pub fn create_restricted_file(path: &Path) -> std::io::Result<fs::File> {
     use std::ptr;
     use winapi::um::fileapi::{CREATE_ALWAYS, CreateFileW};
     use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+    use winapi::um::minwinbase::SECURITY_ATTRIBUTES;
     use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
     use winapi::um::securitybaseapi::{
         AddAccessAllowedAce, GetSidLengthRequired, GetSidSubAuthorityCount, GetTokenInformation,
@@ -47,8 +48,8 @@ pub fn create_restricted_file(path: &Path) -> std::io::Result<fs::File> {
     };
     use winapi::um::winnt::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, FILE_ALL_ACCESS, FILE_ATTRIBUTE_NORMAL,
-        GENERIC_WRITE, HANDLE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
-        SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_REVISION, TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
+        GENERIC_WRITE, HANDLE, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_DESCRIPTOR,
+        SECURITY_DESCRIPTOR_REVISION, TOKEN_OWNER, TOKEN_QUERY, TokenOwner,
     };
 
     // Get the owner SID from the current process token.
@@ -87,11 +88,11 @@ pub fn create_restricted_file(path: &Path) -> std::io::Result<fs::File> {
         + sid_length as usize;
     let mut acl_buffer = vec![0u8; acl_size];
     let acl = acl_buffer.as_mut_ptr() as *mut ACL;
-    let ok = unsafe { InitializeAcl(acl, acl_size as u32, ACL_REVISION) };
+    let ok = unsafe { InitializeAcl(acl, acl_size as u32, ACL_REVISION.into()) };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let ok = unsafe { AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, owner_sid) };
+    let ok = unsafe { AddAccessAllowedAce(acl, ACL_REVISION.into(), FILE_ALL_ACCESS, owner_sid) };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -100,20 +101,27 @@ pub fn create_restricted_file(path: &Path) -> std::io::Result<fs::File> {
     let mut sd: SECURITY_DESCRIPTOR = unsafe { std::mem::zeroed() };
     let ok = unsafe {
         InitializeSecurityDescriptor(
-            &mut sd as PSECURITY_DESCRIPTOR,
+            &mut sd as *mut SECURITY_DESCRIPTOR as PSECURITY_DESCRIPTOR,
             SECURITY_DESCRIPTOR_REVISION,
         )
     };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
-    let ok = unsafe { SetSecurityDescriptorDacl(&mut sd as PSECURITY_DESCRIPTOR, 1, acl, 0) };
+    let ok = unsafe {
+        SetSecurityDescriptorDacl(
+            &mut sd as *mut SECURITY_DESCRIPTOR as PSECURITY_DESCRIPTOR,
+            1,
+            acl,
+            0,
+        )
+    };
     if ok == 0 {
         return Err(std::io::Error::last_os_error());
     }
     let ok = unsafe {
         SetSecurityDescriptorControl(
-            &mut sd as PSECURITY_DESCRIPTOR,
+            &mut sd as *mut SECURITY_DESCRIPTOR as PSECURITY_DESCRIPTOR,
             SE_DACL_PROTECTED,
             SE_DACL_PROTECTED,
         )
@@ -125,7 +133,7 @@ pub fn create_restricted_file(path: &Path) -> std::io::Result<fs::File> {
     // Create the file with the restrictive DACL already in place.
     let mut sa: SECURITY_ATTRIBUTES = unsafe { std::mem::zeroed() };
     sa.nLength = std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32;
-    sa.lpSecurityDescriptor = &mut sd as PSECURITY_DESCRIPTOR as *mut _;
+    sa.lpSecurityDescriptor = &mut sd as *mut SECURITY_DESCRIPTOR as *mut _;
     sa.bInheritHandle = 0;
 
     let path_wide: Vec<u16> = OsStr::new(path)
