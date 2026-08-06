@@ -18,7 +18,7 @@ use crate::config::BotConfig;
 use crate::db::{Db, MlsGroupRow};
 use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
 use crate::errors::{DaemonError, JsonRpcError};
-use crate::events::{AgentEvent, EventType};
+use crate::events::{AgentEvent, BotUnavailablePayload, BotUnavailableReason, EventType};
 use crate::handlers::ConnectionHandle;
 use crate::handlers::HandlerRef;
 use crate::mls::MlsEngineHandle;
@@ -547,6 +547,26 @@ impl Dispatch {
             (handlers, bot_config, npub_to_bot_id)
         };
 
+        // R28/U11: an inbound Welcome that restored engine state for a group
+        // whose agent.db row was marked state-lost clears the mark, so the
+        // next send into it no longer returns -32026. The wire id is
+        // surfaced in chat_id for Welcome events (see
+        // NostrClient::finish_gift_wrap); by the time this event exists the
+        // engine has already accepted the Welcome.
+        if event.event_type == EventType::MlsWelcomeReceived
+            && let Some(wire_id) = event.chat_id.as_deref()
+        {
+            let groups = self.db.load_all_mls_groups(&event.bot_id).await?;
+            if let Some(group) = groups
+                .iter()
+                .find(|g| g.wire_id == wire_id && g.state_lost_at.is_some())
+            {
+                self.db
+                    .clear_mls_group_state_lost(&event.bot_id, &group.group_name)
+                    .await?;
+            }
+        }
+
         // Process MLS group message events with dedicated helper
         if event.event_type == EventType::MlsGroupMessageReceived
             && !self
@@ -975,6 +995,7 @@ impl Dispatch {
         let own_pubkeys = collect_own_pubkeys(&cm, &handler.bot_ids);
         drop(cm);
         self.db.save_handler(&handler).await?;
+        self.notify_bot_unavailable_on_registration(&handler).await;
 
         self.handlers_registered.fetch_add(1, Ordering::SeqCst);
         self.diagnostics
@@ -1040,6 +1061,7 @@ impl Dispatch {
         let own_pubkeys = collect_own_pubkeys(&cm, &handler.bot_ids);
         drop(cm);
         self.db.save_handler(&handler).await?;
+        self.notify_bot_unavailable_on_registration(&handler).await;
 
         Ok(Some(serde_json::to_value(HandlerReconnectResponse {
             handler_id,
@@ -1051,6 +1073,62 @@ impl Dispatch {
                 .map(|processor| processor.spool_dir().to_string_lossy().into_owned())
                 .unwrap_or_default(),
         })?))
+    }
+
+    /// Send an immediate catch-up [`EventType::BotUnavailable`] notification
+    /// to a handler that just registered/reconnected, for each bot it
+    /// registered both `bot_ids` and the `BotUnavailable` event type for,
+    /// when that bot is currently fail-closed (R49) or has any group marked
+    /// state-lost (R28).
+    ///
+    /// This is the only point the daemon can reach a receiver for the
+    /// signal: `ClientManager::new` and startup reconciliation run before
+    /// any handler connection exists, so a bot that fails closed or gets a
+    /// group marked at startup has no live handler to notify yet. A handler
+    /// that registers afterward for that bot -- the realistic operational
+    /// order -- gets the signal here instead. Best-effort: a send failure
+    /// only logs, since this is a courtesy notification, not the RPC result.
+    async fn notify_bot_unavailable_on_registration(&self, handler: &HandlerRef) {
+        if !handler.event_types.contains(&EventType::BotUnavailable) {
+            return;
+        }
+        for bot_id in &handler.bot_ids {
+            let engine_unavailable = {
+                let cm = self.client_manager.read().await;
+                cm.get_bot_by_id(bot_id)
+                    .is_some_and(|bot| bot.mls_engine_unavailable())
+            };
+            let reason = if engine_unavailable {
+                Some(BotUnavailableReason::EngineUnavailable)
+            } else {
+                match self.db.load_all_mls_groups(bot_id).await {
+                    Ok(groups) if groups.iter().any(|g| g.state_lost_at.is_some()) => {
+                        Some(BotUnavailableReason::StateLost)
+                    }
+                    _ => None,
+                }
+            };
+            let Some(reason) = reason else { continue };
+            let event = AgentEvent {
+                bot_id: bot_id.clone(),
+                event_id: format!(
+                    "bot-unavailable:{bot_id}:{}",
+                    nostr::Timestamp::now().as_secs()
+                ),
+                event_type: EventType::BotUnavailable,
+                timestamp: nostr::Timestamp::now().as_secs(),
+                bot_unavailable: Some(BotUnavailablePayload { reason }),
+                ..Default::default()
+            };
+            if let Err(e) = handler.send_event(event) {
+                warn!(
+                    handler_id = %handler.id,
+                    bot_id = %bot_id,
+                    error = %e,
+                    "failed to send bot_unavailable catch-up notification"
+                );
+            }
+        }
     }
 
     async fn handle_unregister(
@@ -1594,7 +1672,7 @@ impl Dispatch {
         let bot = cm
             .get_bot_by_id(bot_id)
             .ok_or_else(|| DaemonError::UnknownBot(bot_id.to_string()))?;
-        let mls = bot.mls.clone().ok_or(DaemonError::MlsEngineNotConfigured)?;
+        let mls = bot.mls.clone().ok_or_else(|| bot.mls_unavailable_error())?;
         let signer = bot.signer.clone();
         let nostr_client = cm.nostr_client.clone();
         let creator_pubkey = bot.signer.public_key();
@@ -1785,6 +1863,7 @@ impl Dispatch {
                 creator_npub: creator_npub.clone(),
                 relay: relays.first().cloned().unwrap_or_default(),
                 invited_bots: vec![recipient_npub.clone()],
+                state_lost_at: None,
             };
             match self.db.insert_mls_group(row).await {
                 Ok(()) => Ok(wire_id),
@@ -2012,6 +2091,17 @@ impl Dispatch {
             return Err(DaemonError::RateLimited);
         }
 
+        // R28: a group whose engine state a reset lost is refused before the
+        // MLS engine is ever touched, not left to fail with a generic error.
+        if self
+            .db
+            .load_mls_group_state_lost_at(bot_id, group_id)
+            .await?
+            .is_some()
+        {
+            return Err(DaemonError::MlsGroupStateLost);
+        }
+
         let cm = self.client_manager.read().await;
         let bot = cm
             .get_bot_by_id(bot_id)
@@ -2019,7 +2109,7 @@ impl Dispatch {
         let mls_engine = bot
             .mls
             .as_ref()
-            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            .ok_or_else(|| bot.mls_unavailable_error())?;
         let mls_group_id = mls_engine
             .resolve_wire_id(group_id)
             .await
@@ -2066,6 +2156,17 @@ impl Dispatch {
             return Err(DaemonError::RateLimited);
         }
 
+        // R28: a group whose engine state a reset lost is refused before the
+        // MLS engine is ever touched, not left to fail with a generic error.
+        if self
+            .db
+            .load_mls_group_state_lost_at(bot_id, group_id)
+            .await?
+            .is_some()
+        {
+            return Err(DaemonError::MlsGroupStateLost);
+        }
+
         // Clone the handles and release the lock before any network await.
         // `client_manager` is a write-preferring RwLock, so holding a read
         // guard across a relay publish lets one slow send block a routine
@@ -2077,10 +2178,7 @@ impl Dispatch {
             let bot = cm
                 .get_bot_by_id(bot_id)
                 .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
-            let mls_engine = bot
-                .mls
-                .clone()
-                .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            let mls_engine = bot.mls.clone().ok_or_else(|| bot.mls_unavailable_error())?;
             (bot.signer.clone(), mls_engine, cm.nostr_client.clone())
         };
         let mls_group_id =
@@ -2131,6 +2229,17 @@ impl Dispatch {
             return Err(DaemonError::RateLimited);
         }
 
+        // R28: a group whose engine state a reset lost is refused before the
+        // MLS engine is ever touched, not left to fail with a generic error.
+        if self
+            .db
+            .load_mls_group_state_lost_at(bot_id, group_id)
+            .await?
+            .is_some()
+        {
+            return Err(DaemonError::MlsGroupStateLost);
+        }
+
         self.diagnostics.record_attachment_send().await;
         let result = async {
             // Release the lock before the upload and publish. `prepare` uploads
@@ -2141,10 +2250,7 @@ impl Dispatch {
                 let bot = cm
                     .get_bot_by_id(bot_id)
                     .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
-                let mls_engine = bot
-                    .mls
-                    .clone()
-                    .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+                let mls_engine = bot.mls.clone().ok_or_else(|| bot.mls_unavailable_error())?;
                 (bot.signer.clone(), mls_engine, cm.nostr_client.clone())
             };
             let mls_group_id = mls_engine
@@ -2222,7 +2328,7 @@ impl Dispatch {
         let mls_engine = bot
             .mls
             .as_ref()
-            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            .ok_or_else(|| bot.mls_unavailable_error())?;
         let relays = bot.config.relays.clone();
         let event_id = cm
             .nostr_client
@@ -2296,7 +2402,7 @@ impl Dispatch {
         let mls_engine = bot
             .mls
             .as_ref()
-            .ok_or_else(|| DaemonError::Config("bot has no MLS engine".into()))?;
+            .ok_or_else(|| bot.mls_unavailable_error())?;
 
         mls_engine
             .is_group_member(group_id, &member)
@@ -2360,7 +2466,7 @@ impl Dispatch {
         let mls_engine = bot
             .mls
             .as_ref()
-            .ok_or_else(|| DaemonError::MlsEngineNotConfigured)?;
+            .ok_or_else(|| bot.mls_unavailable_error())?;
         let evolution_event = mls_engine.leave_group(group_id).await?;
         let event_id = evolution_event.id;
         cm.nostr_client

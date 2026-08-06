@@ -14,6 +14,15 @@ pub struct BotState {
     pub signer: SignerBackend,
     /// Optional MLS engine for bots that participate in Pacto Squad channels.
     pub mls: Option<MlsEngineHandle>,
+    /// Set only when this bot was configured for MLS but engine construction
+    /// failed closed during startup (U11/R49) -- store classification or
+    /// `MlsEngineHandle::new_persistent` itself. Distinguishes "engine
+    /// unavailable" (`-32028`) from "never configured for MLS" (`-32013`,
+    /// ordinary `mls.is_none()` with this field `None`), and doubles as the
+    /// fixed, non-leaking [`BotHealth::error`] message: no raw path, no raw
+    /// SQL, no key material, matching the redaction discipline
+    /// `mls_reset.rs`/`mls_key.rs` already follow.
+    mls_unavailable_reason: Option<String>,
     /// Active relay subscription IDs owned by this bot.
     subscriptions: Vec<String>,
 }
@@ -25,6 +34,7 @@ impl BotState {
             config,
             signer,
             mls: None,
+            mls_unavailable_reason: None,
             subscriptions: Vec::new(),
         })
     }
@@ -51,6 +61,26 @@ impl BotState {
             config,
             signer,
             mls,
+            mls_unavailable_reason: None,
+            subscriptions: Vec::new(),
+        })
+    }
+
+    /// Create a bot state for a bot configured for MLS whose engine failed
+    /// to construct under R49's fail-closed classification (U11). The
+    /// signer still constructs normally -- signer failures remain fatal to
+    /// daemon startup, unlike a bad MLS store -- but `mls` is `None` and
+    /// `reason` is recorded as this bot's fixed health error.
+    pub fn new_mls_engine_unavailable(
+        config: BotConfig,
+        reason: impl Into<String>,
+    ) -> Result<Self, DaemonError> {
+        let signer = SignerBackend::from_config(&config.signing, &config.npub)?;
+        Ok(Self {
+            config,
+            signer,
+            mls: None,
+            mls_unavailable_reason: Some(reason.into()),
             subscriptions: Vec::new(),
         })
     }
@@ -75,6 +105,23 @@ impl BotState {
         std::mem::take(&mut self.subscriptions)
     }
 
+    /// `true` when this bot was configured for MLS but its engine failed to
+    /// construct closed (U11/R49).
+    pub fn mls_engine_unavailable(&self) -> bool {
+        self.mls_unavailable_reason.is_some()
+    }
+
+    /// The right [`DaemonError`] for a caller whose request needed `mls` and
+    /// found it `None`: `-32028` when construction failed closed for this
+    /// bot, `-32013` when the bot was never configured for MLS at all.
+    pub fn mls_unavailable_error(&self) -> DaemonError {
+        if self.mls_unavailable_reason.is_some() {
+            DaemonError::MlsEngineUnavailable
+        } else {
+            DaemonError::MlsEngineNotConfigured
+        }
+    }
+
     /// Produce a non-sensitive health snapshot for this bot identity.
     pub fn to_bot_health(&self) -> BotHealth {
         let bunker_connected = matches!(self.signer, SignerBackend::Bunker(_));
@@ -85,7 +132,7 @@ impl BotState {
             relays: self.config.relays.clone(),
             bunker_connected,
             signer_backend: self.config.signing.backend_label().to_string(),
-            error: None,
+            error: self.mls_unavailable_reason.clone(),
         }
     }
 }

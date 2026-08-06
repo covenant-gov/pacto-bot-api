@@ -12,6 +12,11 @@ pub enum EventType {
     AttachmentReceived,
     MlsGroupReactionReceived,
     MlsGroupAttachmentReceived,
+    /// A bot the handler cannot currently use (R37): either a group's state
+    /// was lost to a reset and awaits re-invitation, or the bot's MLS engine
+    /// failed to construct after a fail-closed store classification (R49).
+    /// See [`BotUnavailablePayload`].
+    BotUnavailable,
 }
 
 impl EventType {
@@ -25,6 +30,7 @@ impl EventType {
             EventType::AttachmentReceived => "attachment_received",
             EventType::MlsGroupReactionReceived => "mls_group_reaction_received",
             EventType::MlsGroupAttachmentReceived => "mls_group_attachment_received",
+            EventType::BotUnavailable => "bot_unavailable",
         }
     }
 }
@@ -54,6 +60,25 @@ pub struct AttachmentPayload {
     pub path: String,
     /// Unix timestamp after which the inbound spool file may be removed.
     pub expires_at: u64,
+}
+
+/// Which condition left a bot unusable for group operations (R37), carried
+/// by a [`EventType::BotUnavailable`] event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BotUnavailableReason {
+    /// A group's engine state was lost to a store reset (U10/U11) and has
+    /// not yet been restored by an inbound Welcome.
+    StateLost,
+    /// The bot's MLS engine failed to construct after a fail-closed store
+    /// classification (R49); no MLS operation on this bot can succeed.
+    EngineUnavailable,
+}
+
+/// Detail carried by a [`EventType::BotUnavailable`] event.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct BotUnavailablePayload {
+    pub reason: BotUnavailableReason,
 }
 
 /// Notification sent from daemon to handler when an event arrives for a bot.
@@ -87,4 +112,7 @@ pub struct AgentEvent {
     /// Present only on [`EventType::AttachmentReceived`] events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment: Option<AttachmentPayload>,
+    /// Present only on [`EventType::BotUnavailable`] events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_unavailable: Option<BotUnavailablePayload>,
 }

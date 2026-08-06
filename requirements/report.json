@@ -526,9 +526,11 @@
       "id": "R28",
       "summary": "**Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron...",
       "tests": [
-        "tests/transport_unix.rs"
+        "tests/transport_unix.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
+        "tests/mls_group.rs",
         "tests/transport_unix.rs"
       ],
       "sources": [
@@ -684,11 +686,13 @@
       "summary": "**Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs...",
       "tests": [
         "tests/diagnostics.rs",
-        "tests/daemon_shutdown.rs"
+        "tests/daemon_shutdown.rs",
+        "tests/mls_group.rs"
       ],
       "parsed_tests": [
         "tests/daemon_shutdown.rs",
-        "tests/diagnostics.rs"
+        "tests/diagnostics.rs",
+        "tests/mls_group.rs"
       ],
       "sources": [
         "src/diagnostics.rs",

@@ -40,7 +40,7 @@ The following requirements were tagged directly in test source files:
 - **R25** — tests/daemon_startup.rs
 - **R26** — tests/dispatch_integration.rs
 - **R27** — tests/dispatch_integration.rs
-- **R28** — tests/transport_unix.rs
+- **R28** — tests/mls_group.rs, tests/transport_unix.rs
 - **R29** — tests/admin_cli_migration.rs
 - **R30** — tests/dispatch_integration.rs
 - **R31** — tests/admin_cli_migration.rs, tests/admin_cli_status.rs, tests/diagnostics.rs
@@ -49,7 +49,7 @@ The following requirements were tagged directly in test source files:
 - **R34** — tests/secret_redaction.rs
 - **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs
 - **R36** — tests/dev_env_probe.rs
-- **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs
+- **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs, tests/mls_group.rs
 
 ## Coverage by Requirement
 
@@ -82,7 +82,7 @@ The following requirements were tagged directly in test source files:
 | R25 | **Config rotation.** Runtime editing of bot config (relay list, bunker URI, capabilities) requires a daemon restart in Phase 1. Hot reload via SIGHUP is deferred to Phase 3. | tests/daemon_startup.rs | src/config.rs | Static config model is enforced by design; no runtime reload path exists in Phase 1. | ✅ covered |
 | R26 | **Event delivery semantics.** The daemon provides best-effort delivery to currently connected handlers. If a handler crashes or disconnects before returning a terminal response, the event is not re... | tests/dispatch_integration.rs<br>tests/daemon_shutdown.rs | src/dispatch.rs | — | ✅ covered |
 | R27 | **Cursor advancement.** The event cursor advances only after all registered handlers have returned a terminal response (`ack`, `reply`, `ignore`) or the dispatch timeout has expired. This defines t... | tests/dispatch_integration.rs<br>tests/daemon_shutdown.rs | src/dispatch.rs<br>src/db.rs | — | ✅ covered |
-| R28 | **Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron... | tests/transport_unix.rs | src/transport/unix.rs | — | ✅ covered |
+| R28 | **Unix socket trust boundary.** The Unix socket enforces same-OS-user access via `0o600` permissions. Any process running as the daemon user can connect, register, and act as any handler/bot. Stron... | tests/transport_unix.rs<br>tests/mls_group.rs | src/transport/unix.rs | — | ✅ covered |
 | R29 | **State migration.** `pacto-bot-admin export` and `import` include metadata and a warning against running the same bot identity on multiple daemon instances concurrently. Active split-brain detecti... | tests/admin_cli_migration.rs | src/admin.rs | Active split-brain detection is deferred to Phase 2; metadata warning is verified. | ✅ covered |
 | R30 | **Handler failure isolation.** Per-handler dispatch has a bounded timeout; a slow or hung handler cannot block dispatch to other handlers. Unregistered/crashed handlers are removed from the routing... | tests/dispatch_integration.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
 | R31 | **Operator health/status.** The daemon exposes a lightweight status query (via `pacto-bot-admin status` or a JSON-RPC method) reporting daemon uptime, connected relays, bunker connectivity per bot,... | tests/diagnostics.rs<br>tests/admin_cli_migration.rs<br>tests/admin_cli_status.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
@@ -91,4 +91,4 @@ The following requirements were tagged directly in test source files:
 | R34 | **Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite... | tests/secret_redaction.rs | src/errors.rs<br>src/config.rs<br>src/transport/http.rs | — | ✅ covered |
 | R35 | **Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing. | tests/diagnostics.rs<br>tests/admin_cli_migration.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
 | R36 | **Service-version compatibility probing.** When running against `pacto-dev-env`, the daemon probes the versions of external services (relay, bunker, Nostra, Aztec) and warns when they fall outside ... | tests/dev_env_probe.rs | src/dev_env_probe.rs<br>src/main.rs<br>xtask/src/dev_env_probe.rs<br>schemas/service-compatibility.json | — | ✅ covered |
-| R37 | **Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs... | tests/diagnostics.rs<br>tests/daemon_shutdown.rs | src/diagnostics.rs<br>src/main.rs | — | ✅ covered |
+| R37 | **Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs... | tests/diagnostics.rs<br>tests/daemon_shutdown.rs<br>tests/mls_group.rs | src/diagnostics.rs<br>src/main.rs | — | ✅ covered |

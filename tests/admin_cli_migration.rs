@@ -129,6 +129,79 @@ fn assert_mls_tables_in_schema(path: &std::path::Path) -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// Append `mls_db_path` to the single bot section `common::make_config`
+/// wrote, since that helper doesn't emit it (most tests in this file
+/// exercise the non-MLS export/import path and don't need it).
+fn append_mls_db_path(
+    config_path: &std::path::Path,
+    mls_db_path: &str,
+) -> Result<(), Box<dyn Error>> {
+    use std::io::Write as _;
+    let mut file = fs::OpenOptions::new().append(true).open(config_path)?;
+    writeln!(file, "mls_db_path = {mls_db_path:?}")?;
+    Ok(())
+}
+
+/// Return type for [`build_encrypted_store_with_group`]: the store's key
+/// and the created group's name.
+type StoreWithGroup = (zeroize::Zeroizing<[u8; 32]>, String);
+
+/// Build a real encrypted MLS store at `store_path`, matching the fixture
+/// pattern `src/mls_reset.rs`'s own tests use (`mls_key::load_or_create` +
+/// `MdkSqliteStorage::new_with_key`), containing one self-group (creator
+/// only, no invitees -- MDK's documented empty-invitee "message to self"
+/// path). Returns the store's key and the created group's name so a test
+/// can assert the group is still present after a copy round-trip.
+fn build_encrypted_store_with_group(
+    store_path: &std::path::Path,
+) -> Result<StoreWithGroup, Box<dyn Error>> {
+    if let Some(parent) = store_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let key = pacto_bot_api::mls_key::load_or_create(store_path)?;
+    let storage = mdk_sqlite_storage::MdkSqliteStorage::new_with_key(
+        store_path,
+        mdk_sqlite_storage::encryption::EncryptionConfig::new(*key),
+    )?;
+    let engine = mdk_core::MDK::new(storage);
+    let keys = nostr::Keys::generate();
+    let config = mdk_core::prelude::NostrGroupConfigData::new(
+        "Bundle Test Squad".to_string(),
+        "created for a U12 export/import test".to_string(),
+        None,
+        None,
+        None,
+        vec![nostr::RelayUrl::parse("wss://test.relay")?],
+        vec![keys.public_key()],
+    );
+    let result = engine.create_group(&keys.public_key(), vec![], config)?;
+    Ok((key, result.group.name))
+}
+
+/// Build a minimal `ExportState`-shaped JSON blob for hand-crafted import
+/// tests, matching `import_validates_bot_exists_in_config`'s inline shape
+/// but parameterized on `mls_groups`/`mls_store`.
+fn export_state_json(
+    mls_groups: serde_json::Value,
+    mls_store: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut value = json!({
+        "metadata": {
+            "daemon_version": "0.1.0",
+            "exported_at": "2026-01-01T00:00:00Z",
+            "source_data_dir": "/tmp"
+        },
+        "cursors": [],
+        "handlers": [],
+        "mls_groups": mls_groups,
+        "split_brain_warning": true
+    });
+    if let Some(store) = mls_store {
+        value["mls_store"] = store;
+    }
+    value
+}
+
 #[test]
 fn export_import_roundtrip() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
@@ -195,6 +268,7 @@ fn export_import_roundtrips_mls_groups() -> Result<(), Box<dyn Error>> {
             creator_npub: bot.npub.clone(),
             relay: "wss://relay.example.com".to_string(),
             invited_bots: vec!["npub1member".to_string()],
+            state_lost_at: None,
         };
         db.insert_mls_group_export(&row)?;
     }
@@ -234,6 +308,348 @@ fn export_import_roundtrips_mls_groups() -> Result<(), Box<dyn Error>> {
     assert_eq!(groups[0].wire_id, "aabbccdd");
     assert_eq!(groups[0].invited_bots, vec!["npub1member"]);
     assert_mls_tables_in_schema(&dir.path().join("agent.db"))?;
+    Ok(())
+}
+
+#[test]
+fn export_import_bundles_mls_store_and_decrypts_group() -> Result<(), Box<dyn Error>> {
+    let source_dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let source_config = common::make_config(&source_dir, vec![bot.clone()])?;
+    append_mls_db_path(&source_config, "mls.db")?;
+
+    let store_path = source_dir.path().join("echo-bot").join("mls.db");
+    let (key, group_name) = build_encrypted_store_with_group(&store_path)?;
+    let key_hex = hex::encode(*key);
+
+    let bundle_dir = source_dir.path().join("bundle");
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &source_config.to_string_lossy(),
+        "export",
+        "echo-bot",
+        "--bundle-dir",
+        &bundle_dir.to_string_lossy(),
+    ]);
+    let output = cmd.assert().success();
+    let state_json = std::str::from_utf8(&output.get_output().stdout)?.to_string();
+
+    // The manifest is a bare filename; no key bytes and no absolute
+    // store/key path reach the JSON blob.
+    let state: serde_json::Value = serde_json::from_str(&state_json)?;
+    assert_eq!(state["mls_store"]["store_file"], "mls.db");
+    assert!(
+        !state_json.contains(&key_hex),
+        "export JSON must not contain key material"
+    );
+    assert!(
+        !state_json.contains(&store_path.display().to_string()),
+        "export JSON must not contain the absolute store path"
+    );
+
+    let state_path = source_dir.path().join("state.json");
+    fs::write(&state_path, &state_json)?;
+
+    // Import into a clean data dir: a fresh install that has never seen
+    // this bot's store before.
+    let dest_dir = common::tempdir()?;
+    let dest_config = common::make_config(&dest_dir, vec![bot.clone()])?;
+    append_mls_db_path(&dest_config, "mls.db")?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &dest_config.to_string_lossy(),
+        "import",
+        "echo-bot",
+        &state_path.to_string_lossy(),
+        "--bundle-dir",
+        &bundle_dir.to_string_lossy(),
+    ]);
+    let output = cmd.assert().success();
+    let stdout = std::str::from_utf8(&output.get_output().stdout)?;
+    assert!(stdout.contains("imported MLS store"), "{stdout}");
+
+    let dest_store_path = dest_dir.path().join("echo-bot").join("mls.db");
+    assert!(dest_store_path.exists(), "imported store must exist");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let key_path = pacto_bot_api::mls_key::key_path_for_store(&dest_store_path);
+        let mode = fs::metadata(&key_path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "imported key file must be 0o600");
+    }
+
+    // The imported store opens with the imported key and still decrypts
+    // the group created before export.
+    let dest_key = pacto_bot_api::mls_key::load(&dest_store_path)?.expect("imported key present");
+    let storage = mdk_sqlite_storage::MdkSqliteStorage::new_with_key(
+        &dest_store_path,
+        mdk_sqlite_storage::encryption::EncryptionConfig::new(*dest_key),
+    )?;
+    let engine = mdk_core::MDK::new(storage);
+    let groups = engine.get_groups()?;
+    assert!(
+        groups.iter().any(|g| g.name == group_name),
+        "imported store must still contain the group created before export"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn export_bundle_dir_and_key_permissions_are_restricted() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    append_mls_db_path(&config, "mls.db")?;
+
+    let store_path = dir.path().join("echo-bot").join("mls.db");
+    build_encrypted_store_with_group(&store_path)?;
+
+    let bundle_dir = dir.path().join("bundle");
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "export",
+        "echo-bot",
+        "--bundle-dir",
+        &bundle_dir.to_string_lossy(),
+    ]);
+    cmd.assert().success();
+
+    // `create_restricted_dir`/`create_restricted_file` set explicit mode
+    // bits at creation and never rely on the process umask to narrow a
+    // permissive default, so these hold under any umask.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let dir_mode = fs::metadata(&bundle_dir)?.permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "bundle dir must be 0o700");
+
+        let key_path = bundle_dir.join("mls.db.key");
+        let key_mode = fs::metadata(&key_path)?.permissions().mode() & 0o777;
+        assert_eq!(key_mode, 0o600, "bundle key file must be 0o600");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn import_with_missing_key_imports_metadata_and_marks_state_lost() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    append_mls_db_path(&config, "mls.db")?;
+
+    // A bundle whose store file exists but has no `.key` sidecar.
+    let bundle_dir = dir.path().join("bundle");
+    fs::create_dir_all(&bundle_dir)?;
+    fs::write(bundle_dir.join("mls.db"), b"not a real sqlite file")?;
+
+    let state_path = dir.path().join("state.json");
+    let state = export_state_json(
+        json!([{
+            "bot_id": "echo-bot",
+            "group_name": "my-squad",
+            "wire_id": "aabbccdd",
+            "creator_npub": bot.npub,
+            "relay": "wss://relay.example.com",
+            "invited_bots": []
+        }]),
+        Some(json!({ "store_file": "mls.db", "sidecar_files": [] })),
+    );
+    fs::write(&state_path, state.to_string())?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "import",
+        "echo-bot",
+        &state_path.to_string_lossy(),
+        "--bundle-dir",
+        &bundle_dir.to_string_lossy(),
+    ]);
+    let output = cmd.assert().success();
+    let stdout = std::str::from_utf8(&output.get_output().stdout)?;
+    assert!(
+        stdout.contains("skipped"),
+        "must report the store skip: {stdout}"
+    );
+
+    let dest_store_path = dir.path().join("echo-bot").join("mls.db");
+    assert!(
+        !dest_store_path.exists(),
+        "store must not be imported without a key"
+    );
+
+    let db = Database::open(&dir.path().join("agent.db"))?;
+    let groups = db.load_all_mls_groups("echo-bot")?;
+    assert_eq!(groups.len(), 1, "group metadata must still import");
+    assert!(
+        groups[0].state_lost_at.is_some(),
+        "group without a working store must be marked state-lost"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn import_with_wrong_key_marks_state_lost_and_does_not_archive() -> Result<(), Box<dyn Error>> {
+    let source_dir = common::tempdir()?;
+    let real_store_path = source_dir.path().join("source-mls.db");
+    build_encrypted_store_with_group(&real_store_path)?;
+
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    append_mls_db_path(&config, "mls.db")?;
+
+    let bundle_dir = dir.path().join("bundle");
+    fs::create_dir_all(&bundle_dir)?;
+    fs::copy(&real_store_path, bundle_dir.join("mls.db"))?;
+    let key_path = bundle_dir.join("mls.db.key");
+    fs::write(&key_path, [0xABu8; 32])?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    let state_path = dir.path().join("state.json");
+    let state = export_state_json(
+        json!([{
+            "bot_id": "echo-bot",
+            "group_name": "my-squad",
+            "wire_id": "aabbccdd",
+            "creator_npub": bot.npub,
+            "relay": "wss://relay.example.com",
+            "invited_bots": []
+        }]),
+        Some(json!({ "store_file": "mls.db", "sidecar_files": [] })),
+    );
+    fs::write(&state_path, state.to_string())?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "import",
+        "echo-bot",
+        &state_path.to_string_lossy(),
+        "--bundle-dir",
+        &bundle_dir.to_string_lossy(),
+    ]);
+    let output = cmd.assert().success();
+    let stdout = std::str::from_utf8(&output.get_output().stdout)?;
+    assert!(
+        stdout.contains("skipped"),
+        "must report the store skip: {stdout}"
+    );
+
+    let dest_store_path = dir.path().join("echo-bot").join("mls.db");
+    assert!(
+        !dest_store_path.exists(),
+        "store must not be imported with the wrong key"
+    );
+
+    let db = Database::open(&dir.path().join("agent.db"))?;
+    let groups = db.load_all_mls_groups("echo-bot")?;
+    assert_eq!(groups.len(), 1);
+    assert!(groups[0].state_lost_at.is_some());
+
+    // Import must never invoke `mls_reset`'s archive machinery.
+    assert!(!dir.path().join("echo-bot").join("mls-archive").exists());
+    assert!(!dir.path().join("mls-archive").exists());
+
+    Ok(())
+}
+
+#[test]
+fn import_rejects_manifest_entries_with_path_traversal() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    append_mls_db_path(&config, "mls.db")?;
+
+    let bundle_dir = dir.path().join("bundle");
+    fs::create_dir_all(&bundle_dir)?;
+
+    for malicious in ["../evil.db", "/etc/passwd", "sub/dir.db", "..", "."] {
+        let state_path = dir.path().join("state.json");
+        let state = export_state_json(
+            json!([]),
+            Some(json!({ "store_file": malicious, "sidecar_files": [] })),
+        );
+        fs::write(&state_path, state.to_string())?;
+
+        let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+        cmd.args([
+            "--config",
+            &config.to_string_lossy(),
+            "import",
+            "echo-bot",
+            &state_path.to_string_lossy(),
+            "--bundle-dir",
+            &bundle_dir.to_string_lossy(),
+        ]);
+        cmd.assert().success();
+
+        let bot_data_dir = dir.path().join("echo-bot");
+        let entries: Vec<_> = fs::read_dir(&bot_data_dir)?.collect::<Result<_, _>>()?;
+        assert!(
+            entries.is_empty(),
+            "rejected manifest entry {malicious:?} must write nothing to the bot data dir: {entries:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn import_rejects_destination_that_escapes_via_symlink() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("echo-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+    append_mls_db_path(&config, "mls.db")?;
+
+    // Pre-create the bot data dir with a symlink at the configured store
+    // path that points to a real file outside it.
+    let bot_data_dir = dir.path().join("echo-bot");
+    fs::create_dir_all(&bot_data_dir)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bot_data_dir, fs::Permissions::from_mode(0o700))?;
+    }
+    let victim_dir = common::tempdir()?;
+    let victim_path = victim_dir.path().join("victim.db");
+    fs::write(&victim_path, b"do not touch")?;
+    std::os::unix::fs::symlink(&victim_path, bot_data_dir.join("mls.db"))?;
+
+    let state_path = dir.path().join("state.json");
+    fs::write(&state_path, export_state_json(json!([]), None).to_string())?;
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.args([
+        "--config",
+        &config.to_string_lossy(),
+        "import",
+        "echo-bot",
+        &state_path.to_string_lossy(),
+    ]);
+    cmd.assert().failure();
+
+    assert_eq!(
+        fs::read_to_string(&victim_path)?,
+        "do not touch",
+        "a symlink escaping the bot data dir must never be written through"
+    );
+
     Ok(())
 }
 

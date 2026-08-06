@@ -357,6 +357,7 @@ fn parse_event_type(event_type: &str) -> Result<EventType, DaemonError> {
         "attachment_received" => Ok(EventType::AttachmentReceived),
         "mls_group_reaction_received" => Ok(EventType::MlsGroupReactionReceived),
         "mls_group_attachment_received" => Ok(EventType::MlsGroupAttachmentReceived),
+        "bot_unavailable" => Ok(EventType::BotUnavailable),
         _ => Err(DaemonError::InvalidEventType(event_type.to_string())),
     }
 }
@@ -412,6 +413,7 @@ mod tests {
             timestamp: 1,
             reaction: None,
             attachment: None,
+            bot_unavailable: None,
         }
     }
 

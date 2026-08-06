@@ -388,6 +388,14 @@ Handlers respond to `agent.event` by sending a `handler.response` notification c
 | `-32016` | Stale key package — the recipient's KeyPackage is outside the freshness window |
 | `-32017` | Key package not found — no kind:443 KeyPackage exists for the recipient within the freshness window |
 | `-32018` | Invalid key package — the provided KeyPackage failed validation |
+| `-32019` | Attachment too large — the attachment exceeds the configured maximum byte size |
+| `-32020` | Attachment path rejected — the outbound attachment path resolves outside the outbound spool root |
+| `-32021` | Invalid attachment — the attachment failed a fixed structural check (e.g. missing tag, hash mismatch) |
+| `-32022` | Blob upload failed — the Blossom upload failed; the reason names the HTTP status and server `X-Reason` |
+| `-32023` | Invalid reaction — the reaction content is not exactly one emoji grapheme |
+| `-32024` | Spool entry not found — no outbound spool entry exists for the given reference |
+| `-32026` | MLS group state lost — the group's engine state was lost to a store reset (U10/U11) and awaits re-invitation |
+| `-32028` | MLS engine unavailable — the bot's MLS engine failed to construct after a fail-closed store classification (R49); distinct from `-32013`, which means the bot was never configured for MLS |
 | `-32600` | Invalid request — the JSON-RPC request is malformed |
 | `-32601` | Method not found — the method is not recognized |
 | `-32602` | Invalid params — the params are malformed or missing required fields |

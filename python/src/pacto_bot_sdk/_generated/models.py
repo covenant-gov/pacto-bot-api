@@ -234,6 +234,8 @@ class AgentEventParams(BaseModel):
     author: str
     # Bot identity the event is for.
     bot_id: str
+    # Present only when type is bot_unavailable; which condition left the bot unusable for group operations (U11/R37).
+    bot_unavailable: AgentEventParamsBotUnavailableModel | None = None
     # Conversation identifier; the sender's npub for DMs or the Squad wire id for MLS welcome and group messages.
     chat_id: str | None = None
     # Decrypted rumor content.
@@ -287,6 +289,23 @@ class AgentEventParamsAttachmentModel(BaseModel):
     path: str
     # Plaintext byte count, equal to the file size at path.
     size: int
+
+
+class AgentEventParamsBotUnavailableModel(BaseModel):
+    """
+    Model for JSON-RPC method `agent.event`.
+
+    Nested object for `bot_unavailable` of `agent.event`.
+
+    Example:
+
+        >>> AgentEventParamsBotUnavailableModel(reason="...")
+
+    jsonrpc_method: ``"agent.event"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.event"
+    # state_lost: a group's engine state was lost to a store reset and awaits re-invitation. engine_unavailable: the bot's MLS engine failed to construct after a fail-closed store classification (R49).
+    reason: str
 
 
 class AgentEventParamsReactionModel(BaseModel):
@@ -919,4 +938,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsBotUnavailableModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

@@ -280,18 +280,18 @@ impl Database {
         bot_id: &str,
         group_name: &str,
     ) -> Result<Option<MlsGroupRow>, DaemonError> {
-        let row: Option<(String, String, String)> = self
+        let row: Option<(String, String, String, Option<i64>)> = self
             .conn
             .query_row(
-                "SELECT wire_id, creator_npub, relay
+                "SELECT wire_id, creator_npub, relay, state_lost_at
                  FROM mls_groups
                  WHERE bot_id = ?1 AND group_name = ?2",
                 (bot_id, group_name),
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
         match row {
-            Some((wire_id, creator_npub, relay)) => {
+            Some((wire_id, creator_npub, relay, state_lost_at)) => {
                 let mut stmt = self.conn.prepare(
                     "SELECT member_npub FROM mls_group_members
                      WHERE bot_id = ?1 AND group_name = ?2
@@ -307,6 +307,7 @@ impl Database {
                     creator_npub,
                     relay,
                     invited_bots,
+                    state_lost_at,
                 }))
             }
             None => Ok(None),
@@ -316,13 +317,13 @@ impl Database {
     /// Load all MLS groups for `bot_id` together with their members.
     pub fn load_all_mls_groups(&self, bot_id: &str) -> Result<Vec<MlsGroupRow>, DaemonError> {
         let mut stmt = self.conn.prepare(
-            "SELECT g.group_name, g.wire_id, g.creator_npub, g.relay,
+            "SELECT g.group_name, g.wire_id, g.creator_npub, g.relay, g.state_lost_at,
                     GROUP_CONCAT(m.member_npub ORDER BY m.member_npub) AS members
              FROM mls_groups g
              LEFT JOIN mls_group_members m
                  ON g.bot_id = m.bot_id AND g.group_name = m.group_name
              WHERE g.bot_id = ?1
-             GROUP BY g.bot_id, g.group_name, g.wire_id, g.creator_npub, g.relay
+             GROUP BY g.bot_id, g.group_name, g.wire_id, g.creator_npub, g.relay, g.state_lost_at
              ORDER BY g.group_name",
         )?;
         let rows = stmt.query_map([bot_id], |row| {
@@ -330,7 +331,8 @@ impl Database {
             let wire_id: String = row.get(1)?;
             let creator_npub: String = row.get(2)?;
             let relay: String = row.get(3)?;
-            let members: Option<String> = row.get(4)?;
+            let state_lost_at: Option<i64> = row.get(4)?;
+            let members: Option<String> = row.get(5)?;
             let invited_bots = members
                 .map(|s| s.split(',').map(|x| x.to_string()).collect())
                 .unwrap_or_default();
@@ -341,6 +343,7 @@ impl Database {
                 creator_npub,
                 relay,
                 invited_bots,
+                state_lost_at,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -354,8 +357,8 @@ impl Database {
         let invited_bots = serde_json::to_string(&row.invited_bots)?;
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots, state_lost_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 &row.bot_id,
                 &row.group_name,
@@ -363,6 +366,7 @@ impl Database {
                 &row.creator_npub,
                 &row.relay,
                 invited_bots,
+                row.state_lost_at,
             ),
         )?;
         for member in &row.invited_bots {
@@ -384,8 +388,8 @@ impl Database {
         let invited_bots = serde_json::to_string(&row.invited_bots)?;
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         tx.execute(
-            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO mls_groups (bot_id, group_name, wire_id, creator_npub, relay, invited_bots, state_lost_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 &row.bot_id,
                 &row.group_name,
@@ -393,6 +397,7 @@ impl Database {
                 &row.creator_npub,
                 &row.relay,
                 invited_bots,
+                row.state_lost_at,
             ),
         )?;
         for member in &row.invited_bots {
@@ -408,10 +413,14 @@ impl Database {
 
     /// Insert an MLS group row from engine reconciliation if it is missing.
     ///
-    /// This is idempotent: if `(bot_id, group_name)` already exists with the
-    /// same wire id, no changes are made. If the existing row has a different
-    /// wire id, or if the wire id is already assigned to a different group, a
-    /// collision error is returned.
+    /// Matches on `(bot_id, wire_id)` first, not `(bot_id, group_name)`: a
+    /// Squad renamed while the bot was out of it keeps its wire id but
+    /// reports a different name on restoration, and treating that as a hard
+    /// collision (the old lookup order) aborted daemon startup. A wire-id
+    /// match updates `group_name` in place -- on both `mls_groups` and
+    /// `mls_group_members`, which is also keyed by `group_name` -- rather
+    /// than erroring. Only a genuinely new wire id falls through to the
+    /// `(bot_id, group_name)` collision check before inserting.
     pub fn upsert_mls_group_from_reconciliation(
         &self,
         bot_id: &str,
@@ -422,37 +431,43 @@ impl Database {
     ) -> Result<(), DaemonError> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
 
-        let existing_wire_id: Option<String> = tx
+        let existing_group_name: Option<String> = tx
             .query_row(
-                "SELECT wire_id FROM mls_groups
-                 WHERE bot_id = ?1 AND group_name = ?2",
-                (bot_id, group_name),
+                "SELECT group_name FROM mls_groups
+                 WHERE bot_id = ?1 AND wire_id = ?2",
+                (bot_id, wire_id),
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
 
-        if let Some(existing_wire_id) = existing_wire_id {
-            if existing_wire_id != wire_id {
-                return Err(DaemonError::Config(format!(
-                    "MLS group '{group_name}' has wire id {existing_wire_id}, but engine reports {wire_id}"
-                )));
+        if let Some(existing_group_name) = existing_group_name {
+            if existing_group_name != group_name {
+                tx.execute(
+                    "UPDATE mls_groups SET group_name = ?3 WHERE bot_id = ?1 AND wire_id = ?2",
+                    (bot_id, wire_id, group_name),
+                )?;
+                tx.execute(
+                    "UPDATE mls_group_members SET group_name = ?3
+                     WHERE bot_id = ?1 AND group_name = ?2",
+                    (bot_id, &existing_group_name, group_name),
+                )?;
             }
             tx.commit()?;
             return Ok(());
         }
 
-        let wire_collision: Option<String> = tx
+        let name_collision: Option<String> = tx
             .query_row(
-                "SELECT group_name FROM mls_groups
-                 WHERE bot_id = ?1 AND wire_id = ?2",
-                (bot_id, wire_id),
+                "SELECT wire_id FROM mls_groups
+                 WHERE bot_id = ?1 AND group_name = ?2",
+                (bot_id, group_name),
                 |row| row.get(0),
             )
             .optional()?;
 
-        if let Some(colliding_name) = wire_collision {
+        if let Some(colliding_wire_id) = name_collision {
             return Err(DaemonError::Config(format!(
-                "MLS wire id {wire_id} already belongs to group '{colliding_name}'"
+                "MLS group '{group_name}' has wire id {colliding_wire_id}, but engine reports {wire_id}"
             )));
         }
 
@@ -640,6 +655,56 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
+
+    /// Mark a single `agent.db` group row as having lost its engine state to
+    /// a completed store reset (U11/R28). A no-op (not an error) when no
+    /// matching row exists.
+    pub fn mark_mls_group_state_lost(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        state_lost_at: i64,
+    ) -> Result<(), DaemonError> {
+        self.conn.execute(
+            "UPDATE mls_groups SET state_lost_at = ?3 WHERE bot_id = ?1 AND group_name = ?2",
+            (bot_id, group_name, state_lost_at),
+        )?;
+        Ok(())
+    }
+
+    /// Clear a group's state-lost mark, e.g. once an inbound Welcome
+    /// restores engine state for it. A no-op when no matching row exists.
+    pub fn clear_mls_group_state_lost(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+    ) -> Result<(), DaemonError> {
+        self.conn.execute(
+            "UPDATE mls_groups SET state_lost_at = NULL WHERE bot_id = ?1 AND group_name = ?2",
+            (bot_id, group_name),
+        )?;
+        Ok(())
+    }
+
+    /// Look up `state_lost_at` for a group by its wire id -- the identifier
+    /// JSON-RPC send calls carry, not `group_name`. `Ok(None)` covers both
+    /// "no such row" (unreconciled or unknown) and "row present but not
+    /// marked"; either way the caller proceeds to its ordinary error path.
+    pub fn load_mls_group_state_lost_at(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<Option<i64>, DaemonError> {
+        let state_lost_at: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT state_lost_at FROM mls_groups WHERE bot_id = ?1 AND wire_id = ?2",
+                (bot_id, wire_id),
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(state_lost_at.flatten())
+    }
 }
 
 /// A single row from the MLS groups table.
@@ -651,6 +716,10 @@ pub struct MlsGroupRow {
     pub creator_npub: String,
     pub relay: String,
     pub invited_bots: Vec<String>,
+    /// Set when this group's engine state was lost to a completed store
+    /// reset for this bot (U10/U11) and has not yet been restored by an
+    /// inbound Welcome. `None` for an ordinary group.
+    pub state_lost_at: Option<i64>,
 }
 
 /// A bot's MLS store reset marker: `reset_at`/`archive_path` are `None`
@@ -960,6 +1029,44 @@ impl Db {
         let bot_id = bot_id.to_string();
         let wire_id = wire_id.to_string();
         self.run(move |db| db.load_mls_store_reset_admins(&bot_id, &wire_id))
+            .await
+    }
+
+    /// Mark a single `agent.db` group row as having lost its engine state to
+    /// a completed store reset (U11/R28).
+    pub async fn mark_mls_group_state_lost(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+        state_lost_at: i64,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let group_name = group_name.to_string();
+        self.run(move |db| db.mark_mls_group_state_lost(&bot_id, &group_name, state_lost_at))
+            .await
+    }
+
+    /// Clear a group's state-lost mark once an inbound Welcome restores it.
+    pub async fn clear_mls_group_state_lost(
+        &self,
+        bot_id: &str,
+        group_name: &str,
+    ) -> Result<(), DaemonError> {
+        let bot_id = bot_id.to_string();
+        let group_name = group_name.to_string();
+        self.run(move |db| db.clear_mls_group_state_lost(&bot_id, &group_name))
+            .await
+    }
+
+    /// Look up `state_lost_at` for a group by its wire id.
+    pub async fn load_mls_group_state_lost_at(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<Option<i64>, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let wire_id = wire_id.to_string();
+        self.run(move |db| db.load_mls_group_state_lost_at(&bot_id, &wire_id))
             .await
     }
 }
@@ -1525,6 +1632,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-a".to_string(), "npub-b".to_string()],
+            state_lost_at: None,
         };
 
         db.insert_mls_group(&row)?;
@@ -1545,6 +1653,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec![],
+            state_lost_at: None,
         };
         db.insert_mls_group(&row).unwrap();
 
@@ -1566,6 +1675,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec![],
+            state_lost_at: None,
         };
         db.insert_mls_group(&row).unwrap();
 
@@ -1577,6 +1687,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec![],
+            state_lost_at: None,
         };
         db.insert_mls_group(&other_bot)
             .expect("same wire_id for a different bot should be allowed");
@@ -1600,6 +1711,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-a".to_string()],
+            state_lost_at: None,
         };
         db.insert_mls_group(&row)?;
 
@@ -1636,6 +1748,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec![],
+            state_lost_at: None,
         };
         db.insert_mls_group(row.clone()).await?;
 
@@ -1660,6 +1773,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-a".to_string(), "npub-b".to_string()],
+            state_lost_at: None,
         };
         let row2 = MlsGroupRow {
             bot_id: "bot-1".to_string(),
@@ -1668,6 +1782,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-c".to_string()],
+            state_lost_at: None,
         };
         db.insert_mls_group(&row1)?;
         db.insert_mls_group(&row2)?;
@@ -1690,6 +1805,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-a".to_string()],
+            state_lost_at: None,
         };
         db.insert_mls_group_export(&row)?;
         let mut reimport = row.clone();
@@ -1713,6 +1829,7 @@ mod tests {
             creator_npub: "npub-creator".to_string(),
             relay: "wss://relay.example".to_string(),
             invited_bots: vec!["npub-a".to_string()],
+            state_lost_at: None,
         };
         db.insert_mls_group(&row)?;
 
