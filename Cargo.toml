@@ -77,7 +77,7 @@ nostr-blossom = "0.44"
 unicode-segmentation = "1.13.3"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["winnt", "fileapi", "handleapi", "processthreadsapi", "securitybaseapi"] }
+winapi = { version = "0.3", features = ["winnt", "fileapi", "handleapi", "processthreadsapi", "securitybaseapi", "minwinbase"] }
 
 [dev-dependencies]
 schemars = "0.8"
