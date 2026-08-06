@@ -68,7 +68,7 @@ coverage: ## Generate test coverage report (requires cargo-llvm-cov)
 		exit 1; \
 	fi
 
-validate: fmt-check clippy ## Run fmt-check, clippy
+validate: fmt-check clippy containment-lint ## Run fmt-check, clippy, containment-lint
 
 deny: ## Run cargo-deny audit gates
 	cargo deny check
@@ -84,6 +84,9 @@ admin: ## Run the admin CLI binary
 
 xtask-codegen: ## Regenerate Rust types from schemas/
 	cargo xtask codegen
+
+containment-lint: ## Lint for nostr 0.45-removed symbols outside their seam modules
+	cargo xtask containment-lint
 
 install-hooks: ## Install the pre-commit hook
 	cp scripts/pre-commit.sh .git/hooks/pre-commit

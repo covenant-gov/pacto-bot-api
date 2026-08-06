@@ -110,7 +110,7 @@ make deny
 make install-hooks
 ```
 
-**Always run `make validate` before committing.** It runs `cargo fmt --check` and `cargo clippy`. Do not commit code that fails this gate.
+**Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the seam containment lint (`cargo xtask containment-lint`). Do not commit code that fails this gate.
 
 Ecosystem-wide setup for local services (relay, EVM testnet, bunker):
 
@@ -256,7 +256,7 @@ Skills are installed with `npx skills add ... --copy` so the files are committed
 ## Notes for AI Assistants
 
 - `src/` and `tests/` exist. Use `grep` and `ast_grep` to find code; do not assume the repo is planning-only.
-- **Always run `make validate` before committing.** It runs `cargo fmt --check` and `cargo clippy`. Do not commit code that fails this gate.
+- **Always run `make validate` before committing.** It runs `cargo fmt --check`, `cargo clippy`, and the seam containment lint (`cargo xtask containment-lint`). Do not commit code that fails this gate.
 - Respect the planned separation of concerns: runtime logic belongs in the daemon, lifecycle/identity operations belong in `pacto-bot-admin`, and bot authoring belongs in the Python SDK / scaffold generator.
 - When generating config examples, enforce `0o600` permissions and warn against committing real nsec values.
 - Prefer deterministic, Docker-free tests; gate external-service tests behind `#[ignore]`.

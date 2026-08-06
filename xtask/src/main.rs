@@ -1,4 +1,5 @@
 mod codegen;
+mod containment_lint;
 mod coverage;
 mod dev_env_probe;
 mod docs;
@@ -31,6 +32,8 @@ enum Command {
     Coverage,
     /// Lint production source for plain-string secret fields.
     SecretLint,
+    /// Lint for nostr 0.45-removed symbols outside their seam modules.
+    ContainmentLint,
     /// Generate the LLM-readable operator's guide.
     Docs,
 }
@@ -42,6 +45,7 @@ fn main() -> Result<()> {
         Command::Codegen { contract_source } => codegen::run(contract_source.as_deref()),
         Command::FullCheck => {
             secret_lint::run()?;
+            containment_lint::run()?;
             codegen::run(None)?;
             coverage::run()?;
             println!("full-check: ok");
@@ -50,6 +54,7 @@ fn main() -> Result<()> {
         Command::DevEnvProbe => dev_env_probe::run(),
         Command::Coverage => coverage::run(),
         Command::SecretLint => secret_lint::run(),
+        Command::ContainmentLint => containment_lint::run(),
         Command::Docs => docs::run(),
     }
 }
