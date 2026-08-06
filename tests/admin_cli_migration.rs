@@ -43,6 +43,12 @@ fn assert_mls_table_schema(
     assert_eq!(pk, expected_pk_set, "{table} primary key mismatch");
 
     for col in &columns {
+        // state_lost_at is a nullable INTEGER timestamp added by U10; every
+        // other column here is a NOT NULL pubkey/name/id field.
+        if col.0 == "state_lost_at" {
+            assert!(!col.2, "{table}.state_lost_at should be nullable");
+            continue;
+        }
         assert!(col.2, "{table}.{} should be NOT NULL", col.0);
     }
 
@@ -99,6 +105,7 @@ fn assert_mls_tables_in_schema(path: &std::path::Path) -> Result<(), Box<dyn Err
             "creator_npub",
             "relay",
             "invited_bots",
+            "state_lost_at",
         ],
         &["bot_id", "group_name"],
         Some("bot_id"),

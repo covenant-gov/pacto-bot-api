@@ -91,6 +91,13 @@ impl ClientManager {
             let bot_state = if bot_config.mls_db_path.is_some() {
                 let canonical_path =
                     crate::config::validate_mls_db_path(&bot_config, data_dir.as_ref())?;
+                crate::mls_reset::classify_and_prepare(
+                    db,
+                    &bot_id,
+                    &canonical_path,
+                    config.daemon.mls_archive_retention_days,
+                )
+                .await?;
                 let state = BotState::new_with_mls(bot_config, canonical_path)?;
                 if let Some(mls) = state.mls.as_ref() {
                     reconcile_mls_groups(state.bot_id(), state.npub(), mls, db).await?;
