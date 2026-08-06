@@ -47,7 +47,7 @@ hyper = { version = "1", features = ["server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server"] }
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-getrandom = "0.2"
+getrandom = "0.4"
 tempfile = "3"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-tungstenite = "0.28"
