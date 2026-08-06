@@ -66,9 +66,7 @@ pub fn h_tag_content(tags: &Tags) -> Option<String> {
 
 /// Look up a custom kind:15 attachment-metadata tag's content by name.
 pub fn find_attachment_tag<'a>(tags: &'a Tags, name: &str) -> Option<&'a str> {
-    tags.iter()
-        .find(|tag| tag.kind() == TagKind::custom(name))
-        .and_then(|tag| tag.content())
+    find_custom_tag(tags, name).and_then(|tag| tag.content())
 }
 
 /// Build a NIP-25 reaction event reacting to `target` with `emoji`,
