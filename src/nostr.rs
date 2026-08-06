@@ -120,6 +120,17 @@ fn parse_mention_envelope(plaintext: &str) -> (String, Vec<String>, Option<Strin
     }
 }
 
+/// Owned output of the decrypt+parse phase of gift-wrap processing
+/// ([`NostrClient::decrypt_gift_wrap_rumor`]), consumed by the untimed
+/// continuation ([`NostrClient::finish_gift_wrap`]).
+struct DecryptedGiftWrap {
+    recipient: PublicKey,
+    bot_id: String,
+    seal_event: Event,
+    rumor: UnsignedEvent,
+    rumor_id: String,
+}
+
 impl NostrClient {
     /// Create a new client, add the given relays, and begin connecting.
     pub async fn new(relays: Vec<String>) -> Result<Self, DaemonError> {
@@ -962,30 +973,30 @@ impl NostrClient {
                                         let _permit = permit;
                                         let snapshot = signers.read().await.clone();
                                         let mls_engines = mls_engines.read().await.clone();
-                                        match tokio::time::timeout(
+                                        let decrypted = match tokio::time::timeout(
                                             GIFT_WRAP_PROCESS_TIMEOUT,
-                                            Self::process_gift_wrap(
+                                            Self::decrypt_gift_wrap_rumor(
                                                 &snapshot,
-                                                &mls_engines,
                                                 &event,
                                                 diagnostics.as_ref(),
-                                                attachment_processor.as_deref(),
                                             ),
                                         )
                                         .await
                                         {
-                                            Ok(Ok(Some(agent_event))) => {
-                                                let _ = tx.send(Ok(agent_event));
-                                            }
-                                            Ok(Ok(None)) => {}
+                                            Ok(Ok(decrypted)) => decrypted,
                                             Ok(Err(e)) => {
                                                 let _ = tx.send(Err(e));
+                                                return;
                                             }
                                             Err(_elapsed) => {
                                                 // Drop the event rather than stall the intake
                                                 // loop; count it in the same aggregated,
                                                 // ring-safe category `process_gift_wrap` uses
-                                                // for its own rejections (R33, R48).
+                                                // for its own rejections (R33, R48). Only the
+                                                // decrypt+parse phase is bounded here; the
+                                                // untimed continuation below (attachment fetch,
+                                                // MLS welcome acceptance) never reaches this
+                                                // branch, so it can't be orphaned by a timeout.
                                                 if let Some(d) = &diagnostics {
                                                     d.record_gift_wrap_rejected().await;
                                                 }
@@ -993,6 +1004,24 @@ impl NostrClient {
                                                     event_id = %event.id.to_hex(),
                                                     "gift wrap decrypt/parse timed out; dropping event"
                                                 );
+                                                return;
+                                            }
+                                        };
+                                        match Self::finish_gift_wrap(
+                                            &mls_engines,
+                                            &event,
+                                            diagnostics.as_ref(),
+                                            attachment_processor.as_deref(),
+                                            decrypted,
+                                        )
+                                        .await
+                                        {
+                                            Ok(Some(agent_event)) => {
+                                                let _ = tx.send(Ok(agent_event));
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                let _ = tx.send(Err(e));
                                             }
                                         }
                                     });
@@ -1042,13 +1071,22 @@ impl NostrClient {
         UnboundedReceiverStream::new(rx)
     }
 
-    async fn process_gift_wrap(
+    /// Decrypt+parse phase of gift-wrap processing: gift-wrap signature
+    /// verification, recipient `p`-tag lookup, signer lookup, gift-wrap
+    /// NIP-44 decrypt, seal event parse+verify, seal NIP-44 decrypt, rumor
+    /// parse, and the rumor-author-vs-seal-author consistency check (R30).
+    ///
+    /// This is the only portion subject to `GIFT_WRAP_PROCESS_TIMEOUT` at
+    /// the streaming call site in `receive_events`. The remaining,
+    /// side-effecting work (attachment fetch via `spawn_blocking`, MLS
+    /// welcome acceptance) lives in [`NostrClient::finish_gift_wrap`] and runs
+    /// outside that timeout so a slow decrypt can't orphan in-flight
+    /// background work by dropping its future mid-flight.
+    async fn decrypt_gift_wrap_rumor(
         signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
-        mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
         event: &Event,
         diagnostics: Option<&Diagnostics>,
-        attachment_processor: Option<&InboundAttachmentProcessor>,
-    ) -> Result<Option<AgentEvent>, DaemonError> {
+    ) -> Result<DecryptedGiftWrap, DaemonError> {
         info!(
             event_id = %event.id.to_hex(),
             kind = %event.kind.as_u16(),
@@ -1130,6 +1168,34 @@ impl NostrClient {
             }
             return Err(DaemonError::Nostr(message));
         }
+
+        Ok(DecryptedGiftWrap {
+            recipient,
+            bot_id: bot_id.clone(),
+            seal_event,
+            rumor,
+            rumor_id,
+        })
+    }
+
+    /// Untimed continuation of gift-wrap processing: kind-specific
+    /// dispatch (DM / reaction / inbound attachment / MLS welcome) and
+    /// final [`AgentEvent`] construction. Deliberately not wrapped in
+    /// `GIFT_WRAP_PROCESS_TIMEOUT` — see [`NostrClient::decrypt_gift_wrap_rumor`].
+    async fn finish_gift_wrap(
+        mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
+        event: &Event,
+        diagnostics: Option<&Diagnostics>,
+        attachment_processor: Option<&InboundAttachmentProcessor>,
+        decrypted: DecryptedGiftWrap,
+    ) -> Result<Option<AgentEvent>, DaemonError> {
+        let DecryptedGiftWrap {
+            recipient,
+            bot_id,
+            seal_event,
+            rumor,
+            rumor_id,
+        } = decrypted;
 
         let (event_type, reaction, attachment) = match rumor.kind {
             Kind::PrivateDirectMessage => (EventType::DmReceived, None, None),
@@ -1241,6 +1307,29 @@ impl NostrClient {
             attachment,
             ..Default::default()
         }))
+    }
+
+    /// Decrypt+parse a gift wrap and dispatch it into an [`AgentEvent`].
+    /// Delegates to [`NostrClient::decrypt_gift_wrap_rumor`] (timed at the
+    /// streaming call site, untimed here) followed by the untimed
+    /// [`NostrClient::finish_gift_wrap`] continuation; external behavior is
+    /// unchanged from before the split.
+    async fn process_gift_wrap(
+        signers: &HashMap<PublicKey, (String, Arc<dyn Signer>)>,
+        mls_engines: &HashMap<PublicKey, (String, MlsEngineHandle)>,
+        event: &Event,
+        diagnostics: Option<&Diagnostics>,
+        attachment_processor: Option<&InboundAttachmentProcessor>,
+    ) -> Result<Option<AgentEvent>, DaemonError> {
+        let decrypted = Self::decrypt_gift_wrap_rumor(signers, event, diagnostics).await?;
+        Self::finish_gift_wrap(
+            mls_engines,
+            event,
+            diagnostics,
+            attachment_processor,
+            decrypted,
+        )
+        .await
     }
 
     /// Extract a [`ReactionPayload`] from a decrypted kind:7 rumor by
