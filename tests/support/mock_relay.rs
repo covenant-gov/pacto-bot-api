@@ -146,16 +146,19 @@ impl MockRelay {
         &self,
         timeout: std::time::Duration,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut rx = self.inner.subscription_tx.subscribe();
         let deadline = tokio::time::Instant::now() + timeout;
 
         loop {
-            if *rx.borrow() > 0 {
+            if self.inner.subscription_count.load(Ordering::SeqCst) > 0 {
                 return Ok(());
             }
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Err("timeout waiting for relay subscription".into());
+            }
+            let mut rx = self.inner.subscription_tx.subscribe();
+            if self.inner.subscription_count.load(Ordering::SeqCst) > 0 {
+                return Ok(());
             }
             match tokio::time::timeout(remaining, rx.changed()).await {
                 Ok(Ok(())) => continue,
@@ -328,6 +331,20 @@ mod tests {
         let events = relay.events().await;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].content, "hello");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_for_subscription_uses_atomic_count_when_watch_notification_is_missed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let relay = MockRelay::start().await?;
+
+        relay.inner.subscription_count.store(1, Ordering::SeqCst);
+
+        relay
+            .wait_for_subscription(std::time::Duration::from_millis(10))
+            .await?;
+
         Ok(())
     }
 }
