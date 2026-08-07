@@ -52,6 +52,13 @@ pub struct GlobalDaemonConfig {
     /// setting.
     #[serde(default = "default_mls_archive_retention_days")]
     pub mls_archive_retention_days: u32,
+    /// Minimum age, in seconds, a stuck bot or MLS group must reach before
+    /// the daemon's periodic tick warns about it (R41): a group still
+    /// state-lost, a bot whose MLS engine is still unavailable, or a
+    /// sole-admin squad still unrepaired. Warning immediately at every
+    /// reset would be noise an operator has had no chance to act on yet.
+    #[serde(default = "default_stuck_bot_warning_min_age_secs")]
+    pub stuck_bot_warning_min_age_secs: u64,
 }
 
 impl Default for GlobalDaemonConfig {
@@ -68,6 +75,7 @@ impl Default for GlobalDaemonConfig {
             spool_outbound_retention_secs: default_spool_outbound_retention_secs(),
             blob_servers: default_blob_servers(),
             mls_archive_retention_days: default_mls_archive_retention_days(),
+            stuck_bot_warning_min_age_secs: default_stuck_bot_warning_min_age_secs(),
         }
     }
 }
@@ -114,6 +122,10 @@ fn default_blob_servers() -> Vec<String> {
 
 fn default_mls_archive_retention_days() -> u32 {
     0
+}
+
+fn default_stuck_bot_warning_min_age_secs() -> u64 {
+    3_600
 }
 
 /// Per-bot identity configuration.

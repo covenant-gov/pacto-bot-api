@@ -44,6 +44,11 @@ jobs:
             pacto-contract-*.json.sha256
           if-no-files-found: error
 
+  # Windows (x86_64-pc-windows-gnu) and FreeBSD (x86_64-unknown-freebsd) are
+  # deliberately absent from this matrix: rusqlite#1025 blocks the Windows
+  # SQLCipher/crypto link, and cargo-zigbuild#356 blocks FreeBSD `kvm` symbol
+  # resolution. Windows still gets a compile-only `cargo check` gate in
+  # ci.yml so its code paths stay compiled; FreeBSD has no CI gate.
   build:
     name: Build ${{ matrix.target }}
     runs-on: macos-latest
@@ -60,10 +65,6 @@ jobs:
             asset: linux_amd64
           - target: aarch64-unknown-linux-musl
             asset: linux_arm64
-          # - target: x86_64-pc-windows-gnu
-          #   asset: windows_amd64
-          # - target: x86_64-unknown-freebsd
-          #   asset: freebsd_amd64
 
     steps:
       - name: Set short SHA

@@ -394,8 +394,11 @@ Handlers respond to `agent.event` by sending a `handler.response` notification c
 | `-32022` | Blob upload failed — the Blossom upload failed; the reason names the HTTP status and server `X-Reason` |
 | `-32023` | Invalid reaction — the reaction content is not exactly one emoji grapheme |
 | `-32024` | Spool entry not found — no outbound spool entry exists for the given reference |
+| `-32025` | Peer version mismatch — a fetched KeyPackage or Welcome is missing the required `encoding` tag (peer is on the pre-MIP-00/MIP-02 wire format), distinct from `-32018` (a genuinely malformed KeyPackage/Welcome) |
 | `-32026` | MLS group state lost — the group's engine state was lost to a store reset (U10/U11) and awaits re-invitation |
+| `-32027` | MLS restoration incomplete — `AddMember`'s remove-then-re-add restoration merged the remove commit but failed before the re-add committed; the named member is now genuinely outside the group |
 | `-32028` | MLS engine unavailable — the bot's MLS engine failed to construct after a fail-closed store classification (R49); distinct from `-32013`, which means the bot was never configured for MLS |
+| `-32029` | MLS group repair prerequisite — `admin.repair_mls_group_admins` refused a group this bot no longer holds live MLS state for, naming restoration (via re-invitation) or re-creation (bot-only-admin set) as the prerequisite instead of a raw engine `GroupNotFound` |
 | `-32600` | Invalid request — the JSON-RPC request is malformed |
 | `-32601` | Method not found — the method is not recognized |
 | `-32602` | Invalid params — the params are malformed or missing required fields |

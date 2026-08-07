@@ -18,8 +18,8 @@ use pacto_bot_api::config::{
 };
 use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::diagnostics::{
-    BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, check_bunker_connectivity,
-    check_relay_connectivity,
+    BunkerCheck, DaemonStatus, HealthSnapshot, RelayCheck, SoleAdminBucket, VersionInfo,
+    check_bunker_connectivity, check_relay_connectivity, classify_sole_admin,
 };
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::mls_key;
@@ -33,8 +33,8 @@ use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
     AdminSendTestDmResponse, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, MlsGroupResponse, parse_message,
-    serialize_message,
+    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, MlsGroupResponse,
+    RepairMlsGroupAdminsResponse, parse_message, serialize_message,
 };
 use percent_encoding::percent_decode_str;
 use rusqlite::Connection;
@@ -175,7 +175,9 @@ const SEND_TEST_DM_AFTER_HELP: &str = r#"Examples:
 
 const MLS_GROUP_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1...
+  pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1... --admin npub1recipient... --admin npub1other...
   pacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...
+  pacto-bot-admin mls-group repair-admins --bot echo-bot --group my-squad
 "#;
 
 const TRACE_EVENTS_AFTER_HELP: &str = r#"Examples:
@@ -593,6 +595,12 @@ enum MlsGroupCommand {
         /// Recipient public key (npub or hex).
         #[arg(short, long, value_name = "NPUB_OR_HEX")]
         recipient: String,
+
+        /// Explicit admin set (npub or hex), additive only; repeatable.
+        /// Defaults to the creator plus the invited recipient when
+        /// omitted. MDK rejects a set omitting the creator.
+        #[arg(long = "admin", value_name = "NPUB_OR_HEX")]
+        admins: Vec<String>,
     },
     /// Invite a recipient to an existing MLS group.
     Invite {
@@ -607,6 +615,16 @@ enum MlsGroupCommand {
         /// Recipient public key (npub or hex).
         #[arg(short, long, value_name = "NPUB_OR_HEX")]
         recipient: String,
+    },
+    /// Expand a sole-admin group's admin set to every current member.
+    RepairAdmins {
+        /// Bot identity that owns the group.
+        #[arg(short, long, value_name = "BOT_ID")]
+        bot: String,
+
+        /// Name of the MLS group.
+        #[arg(short, long, value_name = "GROUP_NAME")]
+        group: String,
     },
 }
 
@@ -754,12 +772,18 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
             bot,
             group,
             recipient,
-        }) => cmd_mls_group_create(&cli.config, cli.data_dir, &bot, &group, &recipient).await,
+            admins,
+        }) => {
+            cmd_mls_group_create(&cli.config, cli.data_dir, &bot, &group, &recipient, &admins).await
+        }
         Command::MlsGroup(MlsGroupCommand::Invite {
             bot,
             group,
             recipient,
         }) => cmd_mls_group_invite(&cli.config, cli.data_dir, &bot, &group, &recipient).await,
+        Command::MlsGroup(MlsGroupCommand::RepairAdmins { bot, group }) => {
+            cmd_mls_group_repair_admins(&cli.config, cli.data_dir, &bot, &group).await
+        }
         Command::TraceEvents {
             bot_id,
             since,
@@ -2058,7 +2082,7 @@ async fn cmd_diagnose(
         _ => None,
     };
 
-    let bots: Vec<BotDiagnosis> = config
+    let mut bots: Vec<BotDiagnosis> = config
         .as_ref()
         .map(|c| {
             c.bots
@@ -2076,11 +2100,100 @@ async fn cmd_diagnose(
                         signing_backend: signing_backend_label(&b.signing),
                         relay_count: b.relays.len(),
                         live_bunker_connected,
+                        reset_at: None,
+                        mls_groups: Vec::new(),
                     }
                 })
                 .collect()
         })
         .unwrap_or_default();
+
+    // R41: per-bot reset state, per-group state-held/state-lost, and the
+    // sole-admin squad buckets (KTD5/KTD6). Read directly from `agent.db`
+    // rather than through the live daemon socket -- this is static,
+    // DB-backed fact independent of whether the daemon is currently
+    // running, unlike `live_snapshot`'s counters.
+    let mut sole_admin_groups = SoleAdminGroups::default();
+    if let Some(dir) = &data_dir {
+        let db_path = dir.join(AGENT_DB_FILE);
+        if db_path.exists() {
+            match Database::open(&db_path) {
+                Ok(db) => {
+                    for bot in bots.iter_mut() {
+                        let reset_marker = match db.load_mls_store_reset_marker(&bot.id) {
+                            Ok(marker) => marker,
+                            Err(e) => {
+                                errors
+                                    .push(format!("bot {}: reset marker load error: {e}", bot.id));
+                                None
+                            }
+                        };
+                        bot.reset_at = reset_marker
+                            .as_ref()
+                            .and_then(|m| m.reset_at)
+                            .and_then(|ts| DateTime::<Utc>::from_timestamp(ts, 0));
+                        // R26 (encrypted-store) resets never harvest an admin
+                        // set. Never surface `archive_path` itself -- only
+                        // this derived boolean.
+                        let bot_reset_was_r26 = reset_marker
+                            .as_ref()
+                            .and_then(|m| m.archive_path.as_deref())
+                            .is_some_and(|p| p.ends_with("-r26"));
+
+                        let groups = match db.load_all_mls_groups(&bot.id) {
+                            Ok(groups) => groups,
+                            Err(e) => {
+                                errors.push(format!("bot {}: MLS group load error: {e}", bot.id));
+                                Vec::new()
+                            }
+                        };
+                        for group in &groups {
+                            let state_lost = group.state_lost_at.is_some();
+                            bot.mls_groups.push(MlsGroupDiagnosis {
+                                group_name: group.group_name.clone(),
+                                wire_id: group.wire_id.clone(),
+                                state_held: !state_lost,
+                            });
+
+                            let harvested_admin_count =
+                                match db.load_mls_store_reset_admins(&bot.id, &group.wire_id) {
+                                    Ok(admins) => admins.len(),
+                                    Err(e) => {
+                                        errors.push(format!(
+                                            "bot {}: harvested admin load error: {e}",
+                                            bot.id
+                                        ));
+                                        0
+                                    }
+                                };
+                            let entry = SoleAdminGroup {
+                                bot_id: bot.id.clone(),
+                                group_name: group.group_name.clone(),
+                                wire_id: group.wire_id.clone(),
+                            };
+                            match classify_sole_admin(
+                                state_lost,
+                                harvested_admin_count,
+                                bot_reset_was_r26,
+                            ) {
+                                Some(SoleAdminBucket::RepairableNow) => {
+                                    sole_admin_groups.repairable_now.push(entry)
+                                }
+                                Some(SoleAdminBucket::Unrestorable) => {
+                                    sole_admin_groups.unrestorable.push(entry)
+                                }
+                                Some(SoleAdminBucket::AdminSetUnknown) => {
+                                    sole_admin_groups.admin_set_unknown.push(entry)
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                }
+                Err(e) => errors.push(format!("failed to open db: {e}")),
+            }
+        }
+    }
 
     let mut relay_connectivity = Vec::new();
     let mut bunker_connectivity = Vec::new();
@@ -2171,6 +2284,7 @@ async fn cmd_diagnose(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default(),
         socket,
+        version_info: VersionInfo::default(),
         bots,
         relay_connectivity,
         bunker_connectivity,
@@ -2179,6 +2293,7 @@ async fn cmd_diagnose(
         recent_counts,
         bot_cursors,
         handler_count,
+        sole_admin_groups,
         errors,
     };
 
@@ -2532,10 +2647,18 @@ async fn cmd_mls_group_create(
     bot_id: &str,
     group: &str,
     recipient: &str,
+    admins: &[String],
 ) -> Result<(), DaemonError> {
     #[cfg(not(unix))]
     {
-        let _ = (config_path, data_dir_override, bot_id, group, recipient);
+        let _ = (
+            config_path,
+            data_dir_override,
+            bot_id,
+            group,
+            recipient,
+            admins,
+        );
         return Err(DaemonError::Config(
             "mls-group is only available on Unix platforms".into(),
         ));
@@ -2548,16 +2671,20 @@ async fn cmd_mls_group_create(
         let data_dir = resolve_data_dir(&config, data_dir_override);
         let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
         let recipient = validate_mls_recipient(recipient)?;
+        let admins = admins
+            .iter()
+            .map(|a| validate_mls_recipient(a))
+            .collect::<Result<Vec<_>, _>>()?;
 
-        let request = JsonRpcMessage::request(
-            1.into(),
-            "admin.create_mls_group",
-            Some(serde_json::json!({
-                "bot_id": bot_id,
-                "group_name": group,
-                "recipient": recipient,
-            })),
-        );
+        let mut params = serde_json::json!({
+            "bot_id": bot_id,
+            "group_name": group,
+            "recipient": recipient,
+        });
+        if !admins.is_empty() {
+            params["admins"] = serde_json::json!(admins);
+        }
+        let request = JsonRpcMessage::request(1.into(), "admin.create_mls_group", Some(params));
         let value = with_admin_session(&socket_path, bot_id, request).await?;
         let response: MlsGroupResponse = serde_json::from_value(value)?;
         println!("{}", response.wire_id);
@@ -2600,6 +2727,44 @@ async fn cmd_mls_group_invite(
         let value = with_admin_session(&socket_path, bot_id, request).await?;
         let response: MlsGroupResponse = serde_json::from_value(value)?;
         println!("{}", response.wire_id);
+        Ok(())
+    }
+}
+
+async fn cmd_mls_group_repair_admins(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    group: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, group);
+        return Err(DaemonError::Config(
+            "mls-group is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = load_admin_config(config_path)?;
+        let bot = find_bot(&config.bots, bot_id)?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "admin.repair_mls_group_admins",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "group_name": group,
+            })),
+        );
+        let value = with_admin_session(&socket_path, bot_id, request).await?;
+        let response: RepairMlsGroupAdminsResponse = serde_json::from_value(value)?;
+        for admin in &response.admins {
+            println!("{admin}");
+        }
         Ok(())
     }
 }
@@ -3757,6 +3922,8 @@ struct DiagnoseReport {
     daemon_status: Option<String>,
     data_dir: String,
     socket: SocketHealth,
+    /// Compile-time-pinned version and MLS wire-generation info (R6, R41).
+    version_info: VersionInfo,
     bots: Vec<BotDiagnosis>,
     relay_connectivity: Vec<RelayCheck>,
     bunker_connectivity: Vec<BunkerCheck>,
@@ -3766,6 +3933,9 @@ struct DiagnoseReport {
     recent_counts: Option<RecentCountsReport>,
     bot_cursors: Vec<BotCursorDiagnosis>,
     handler_count: i64,
+    /// Sole-admin squad list, split into three mutually exclusive buckets
+    /// (R41, KTD5/KTD6).
+    sole_admin_groups: SoleAdminGroups,
     errors: Vec<String>,
 }
 
@@ -3827,6 +3997,56 @@ struct BotDiagnosis {
     relay_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     live_bunker_connected: Option<bool>,
+    /// UTC timestamp of this bot's last completed MLS store reset.
+    /// Absent -- not a zero timestamp -- when the bot was never reset
+    /// (R41).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reset_at: Option<DateTime<Utc>>,
+    /// Per-group state-held/state-lost view for this bot's `agent.db`
+    /// rows (R41).
+    mls_groups: Vec<MlsGroupDiagnosis>,
+}
+
+/// Whether a bot currently holds MLS engine state for one of its
+/// `agent.db` groups (R41).
+#[derive(Debug, Clone, Serialize)]
+struct MlsGroupDiagnosis {
+    group_name: String,
+    wire_id: String,
+    /// `true` when the bot currently holds MLS engine state for this
+    /// group; `false` when a completed reset marked it lost and no
+    /// restoring Welcome has arrived yet.
+    state_held: bool,
+}
+
+/// The sole-admin squad list, split into three buckets per KTD5/KTD6 so an
+/// operator does not wait on a restoration that structurally cannot
+/// happen. A group with two or more known admins, or with no admin-set
+/// history at all, appears in none of the three.
+#[derive(Debug, Clone, Serialize, Default)]
+struct SoleAdminGroups {
+    /// Sole-admin squads the bot currently holds engine state for: the
+    /// admin set can be expanded now (once U14's repair command lands).
+    repairable_now: Vec<SoleAdminGroup>,
+    /// Sole-admin squads whose engine state a reset destroyed: the bot
+    /// was the only admin, so no third party can restore them. Must be
+    /// re-created.
+    unrestorable: Vec<SoleAdminGroup>,
+    /// Squads whose admin set cannot be determined: the bot's store was
+    /// reset via the R26 (encrypted-store) path, which cannot harvest an
+    /// admin set before archiving. Structurally present but currently
+    /// always empty in this daemon -- there is no code path today that
+    /// reads an R26 archive back to re-harvest its admin set. Populating
+    /// this bucket is future work for an archive-reader, not part of this
+    /// unit.
+    admin_set_unknown: Vec<SoleAdminGroup>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SoleAdminGroup {
+    bot_id: String,
+    group_name: String,
+    wire_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -4055,6 +4275,28 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
     }
     write("")?;
 
+    write("version_info:")?;
+    write(&format!(
+        "  daemon_version: {}",
+        report.version_info.daemon_version
+    ))?;
+    write(&format!(
+        "  mdk_version: {}",
+        report.version_info.mdk_version
+    ))?;
+    write(&format!(
+        "  mls_wire_generation: {}",
+        report.version_info.mls_wire_generation
+    ))?;
+    write(&format!(
+        "  vendored_openssl_version: {}",
+        report.version_info.vendored_openssl_version
+    ))?;
+    write(&format!(
+        "  vendored_sqlcipher_version: {}",
+        report.version_info.vendored_sqlcipher_version
+    ))?;
+
     write("bots:")?;
     if report.bots.is_empty() {
         write("  (none)")?;
@@ -4067,9 +4309,47 @@ fn print_diagnose_text(report: &DiagnoseReport) -> Result<(), DaemonError> {
             if let Some(connected) = bot.live_bunker_connected {
                 write(&format!("    live_bunker_connected: {connected}"))?;
             }
+            match bot.reset_at {
+                Some(reset_at) => write(&format!("    reset_at: {}", reset_at.to_rfc3339()))?,
+                None => write("    reset_at: (never reset)")?,
+            }
+            if bot.mls_groups.is_empty() {
+                write("    mls_groups: (none)")?;
+            } else {
+                write("    mls_groups:")?;
+                for group in &bot.mls_groups {
+                    write(&format!(
+                        "      - group_name: {} wire_id: {} state_held: {}",
+                        group.group_name, group.wire_id, group.state_held
+                    ))?;
+                }
+            }
         }
     }
     write("")?;
+
+    write("sole_admin_groups:")?;
+    let mut write_sole_admin_bucket =
+        |name: &str, groups: &[SoleAdminGroup]| -> Result<(), DaemonError> {
+            write(&format!("  {name}:"))?;
+            if groups.is_empty() {
+                write("    (none)")?;
+            } else {
+                for group in groups {
+                    write(&format!(
+                        "    - bot_id: {} group_name: {} wire_id: {}",
+                        group.bot_id, group.group_name, group.wire_id
+                    ))?;
+                }
+            }
+            Ok(())
+        };
+    write_sole_admin_bucket("repairable_now", &report.sole_admin_groups.repairable_now)?;
+    write_sole_admin_bucket("unrestorable", &report.sole_admin_groups.unrestorable)?;
+    write_sole_admin_bucket(
+        "admin_set_unknown",
+        &report.sole_admin_groups.admin_set_unknown,
+    )?;
 
     write("relay_connectivity:")?;
     if report.relay_connectivity.is_empty() {

@@ -16,7 +16,9 @@ use crate::attachment::outbound::{AttachmentMetadata, OutboundAttachmentProcesso
 use crate::client_manager::ClientManager;
 use crate::config::BotConfig;
 use crate::db::{Db, MlsGroupRow};
-use crate::diagnostics::{DaemonStatus, Diagnostics, HealthSnapshot};
+use crate::diagnostics::{
+    DaemonStatus, Diagnostics, HealthSnapshot, SoleAdminBucket, classify_sole_admin,
+};
 use crate::errors::{DaemonError, JsonRpcError};
 use crate::events::{AgentEvent, BotUnavailablePayload, BotUnavailableReason, EventType};
 use crate::handlers::ConnectionHandle;
@@ -29,7 +31,8 @@ use crate::transport::protocol::{
     AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
     AgentVersionResponse, CreateMlsGroupParams, HandlerReconnectParams, HandlerReconnectResponse,
     HandlerRegisterResponse, HandlerUnregisterResponse, InviteToMlsGroupParams, JsonRpcMessage,
-    Method, MetricsResponse, MlsGroupResponse, parse_method,
+    Method, MetricsResponse, MlsGroupResponse, RepairMlsGroupAdminsParams,
+    RepairMlsGroupAdminsResponse, parse_method,
 };
 
 use secrecy::{ExposeSecret, SecretString};
@@ -786,6 +789,79 @@ impl Dispatch {
         }
     }
 
+    /// Emit a `warn!` for every bot and MLS group still stuck past
+    /// `min_age` (R41): a group whose engine state a reset lost and that
+    /// no Welcome has yet restored, a bot whose MLS engine failed to
+    /// construct (gated on daemon uptime, since a per-bot unavailability
+    /// timestamp is not tracked across restarts), and a sole-admin squad
+    /// the reset made unrestorable. Never logs a store, key, or archive
+    /// path -- only bot ids, group names, and wire ids, matching the
+    /// redaction discipline `mls_reset.rs` already follows. Called from
+    /// the daemon's periodic tick, the only push channel that already
+    /// runs unconditionally.
+    pub async fn warn_stuck_bots(&self, min_age: Duration) -> Result<(), DaemonError> {
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now.saturating_sub(min_age.as_secs() as i64);
+
+        let (bot_ids, unavailable_bot_ids) = {
+            let cm = self.client_manager.read().await;
+            let bot_ids: Vec<String> = cm.bot_ids().map(str::to_string).collect();
+            let unavailable_bot_ids: Vec<String> = cm
+                .bots()
+                .filter(|(_, bot)| bot.mls_engine_unavailable())
+                .map(|(_, bot)| bot.bot_id().to_string())
+                .collect();
+            (bot_ids, unavailable_bot_ids)
+        };
+
+        let uptime_seconds = self.diagnostics.snapshot().await.uptime_seconds;
+        if uptime_seconds as i64 >= min_age.as_secs() as i64 {
+            for bot_id in &unavailable_bot_ids {
+                warn!(
+                    bot_id = %bot_id,
+                    "MLS engine unavailable for bot past the warning threshold; see pacto-bot-admin diagnose"
+                );
+            }
+        }
+
+        for bot_id in &bot_ids {
+            let reset_marker = self.db.load_mls_store_reset_marker(bot_id).await?;
+            let bot_reset_was_r26 = reset_marker
+                .as_ref()
+                .and_then(|marker| marker.archive_path.as_deref())
+                .is_some_and(|path| path.ends_with("-r26"));
+
+            let groups = self.db.load_all_mls_groups(bot_id).await?;
+            for group in &groups {
+                let Some(lost_at) = group.state_lost_at else {
+                    continue;
+                };
+                if lost_at > cutoff {
+                    continue;
+                }
+                let harvested_admin_count = self
+                    .db
+                    .load_mls_store_reset_admins(bot_id, &group.wire_id)
+                    .await?
+                    .len();
+                let sole_admin_unrestorable = matches!(
+                    classify_sole_admin(true, harvested_admin_count, bot_reset_was_r26),
+                    Some(SoleAdminBucket::Unrestorable)
+                );
+                warn!(
+                    bot_id = %bot_id,
+                    group = %group.group_name,
+                    wire_id = %group.wire_id,
+                    state_lost_since = lost_at,
+                    sole_admin_unrestorable,
+                    "MLS group state lost to a reset and still awaiting re-invitation past the warning threshold"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     /// Broadcast an `agent.metrics` notification to all registered handlers.
     ///
     /// Uses the same payload shape as the `agent.metrics` response.
@@ -914,6 +990,10 @@ impl Dispatch {
             }
             Method::AgentInviteToMlsGroup => {
                 self.handle_agent_invite_to_mls_group(handler_id, params)
+                    .await
+            }
+            Method::AdminRepairMlsGroupAdmins => {
+                self.handle_admin_repair_mls_group_admins(handler_id, params)
                     .await
             }
             Method::AgentIsSquadMember => self.handle_is_squad_member(handler_id, params).await,
@@ -1719,8 +1799,14 @@ impl Dispatch {
             }
         }
 
-        self.do_create_mls_group(params.bot_id, params.group_name, params.recipient, None)
-            .await
+        self.do_create_mls_group(
+            params.bot_id,
+            params.group_name,
+            params.recipient,
+            params.admins,
+            None,
+        )
+        .await
     }
 
     async fn handle_admin_invite_to_mls_group(
@@ -1759,6 +1845,7 @@ impl Dispatch {
             params.bot_id,
             params.group_name,
             params.recipient,
+            params.admins,
             handler_id,
         )
         .await
@@ -1787,6 +1874,7 @@ impl Dispatch {
         bot_id: String,
         group_name: String,
         recipient: String,
+        admins: Option<Vec<String>>,
         handler_id: Option<&str>,
     ) -> Result<Option<Value>, DaemonError> {
         self.require_mls_agent_capability(handler_id, &bot_id, "CreateMlsGroup")
@@ -1812,6 +1900,19 @@ impl Dispatch {
                 "creator cannot be invited to their own group".into(),
             ));
         }
+
+        // U14: additive-only admin set. When the caller omits `admins`,
+        // default to creator+recipient instead of the pre-parity
+        // sole-creator-admin default (KD7) -- MDK itself rejects any
+        // explicit set that omits the creator, so this can never strand
+        // the bot outside its own group.
+        let admin_pubkeys: Vec<PublicKey> = match admins {
+            Some(list) => list
+                .iter()
+                .map(|s| Self::parse_recipient(s))
+                .collect::<Result<_, _>>()?,
+            None => vec![creator_pubkey, recipient_pk],
+        };
 
         // Acquire per-(bot_id, group_name) lock only for the DB idempotency check.
         let lock = self.acquire_mls_group_lock(&bot_id, &group_name);
@@ -1848,6 +1949,7 @@ impl Dispatch {
                     key_package,
                     group_name.clone(),
                     relay_urls,
+                    admin_pubkeys.clone(),
                 )
                 .await?;
             nostr_client
@@ -1960,12 +2062,36 @@ impl Dispatch {
                 )
                 .await?;
             match mls.add_member(&wire_id, recipient_pk, key_package).await {
-                Ok((welcome_rumor, evolution_event)) => {
+                Ok(outcome) => {
+                    // U14: publish remove-then-add IN ORDER when this was a
+                    // restoration -- dropping either desyncs this bot's
+                    // epoch from every peer's, the same failure class U5
+                    // prevents for `Proposal` handling.
+                    if let Some(remove_evt) = outcome.remove_evolution_event {
+                        nostr_client.send_evolution_event(&remove_evt).await?;
+                    }
                     nostr_client
-                        .send_welcome(&signer, &recipient_pk, welcome_rumor)
+                        .send_welcome(&signer, &recipient_pk, outcome.welcome_rumor)
                         .await?;
-                    nostr_client.send_evolution_event(&evolution_event).await?;
+                    nostr_client
+                        .send_evolution_event(&outcome.evolution_event)
+                        .await?;
                     Ok(wire_id.clone())
+                }
+                Err(crate::mls::MlsError::RestorationIncomplete {
+                    remove_evolution_event,
+                }) => {
+                    // The remove commit already merged into this bot's local
+                    // engine state before the re-add failed. Best-effort
+                    // publish so peers converge on "member removed",
+                    // matching this bot's own local state, then report the
+                    // real resulting condition rather than a generic error.
+                    let _ = nostr_client
+                        .send_evolution_event(&remove_evolution_event)
+                        .await;
+                    Err(DaemonError::MlsRestorationIncomplete {
+                        recipient_npub: recipient_npub.clone(),
+                    })
                 }
                 Err(e) => {
                     if mls.is_group_member(&wire_id, &recipient_pk).await? {
@@ -2008,6 +2134,81 @@ impl Dispatch {
         );
 
         Ok(Some(serde_json::to_value(MlsGroupResponse { wire_id })?))
+    }
+
+    /// U14 repair command: expand a sole-admin group's admin set to every
+    /// current member. Refuses for a group this bot no longer holds live
+    /// MLS state for, naming the actual next step (restoration or
+    /// re-creation) instead of surfacing a raw engine `GroupNotFound`.
+    async fn handle_admin_repair_mls_group_admins(
+        &self,
+        caller_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        self.require_admin_or_self(caller_id, None).await?;
+
+        let params = params.ok_or_else(|| {
+            DaemonError::Config("admin.repair_mls_group_admins missing params".into())
+        })?;
+        let params: RepairMlsGroupAdminsParams = serde_json::from_value(params.clone())?;
+
+        if let Some(hid) = caller_id {
+            let now = Instant::now();
+            if !self.rate_limiter.check(hid, &params.bot_id, now).await {
+                self.diagnostics.record_rate_limited().await;
+                return Err(DaemonError::RateLimited);
+            }
+        }
+
+        let group_name = Self::validate_group_name(&params.group_name)?;
+
+        let cm = self.client_manager.read().await;
+        let bot = cm
+            .get_bot_by_id(&params.bot_id)
+            .ok_or_else(|| DaemonError::UnknownBot(params.bot_id.clone()))?;
+        let mls = bot.mls.clone().ok_or_else(|| bot.mls_unavailable_error())?;
+        let nostr_client = cm.nostr_client.clone();
+        drop(cm);
+
+        let row = self
+            .db
+            .load_mls_group(&params.bot_id, &group_name)
+            .await?
+            .ok_or(DaemonError::MlsGroupNotFound)?;
+
+        if row.state_lost_at.is_some() {
+            // Best available signal while live state is unreadable: no
+            // cached invited member at all means this bot was (as far as
+            // it ever knew) the group's only member, so only re-creation
+            // remains; any cached invite means restoration via another
+            // admin re-inviting this bot comes first.
+            let prerequisite = if row.invited_bots.is_empty() {
+                "re-creation (this bot was the only known member before state was lost)"
+            } else {
+                "restoration via re-invitation by another admin"
+            };
+            return Err(DaemonError::MlsGroupRepairPrerequisite { prerequisite });
+        }
+
+        let (evolution_event, new_admins) = mls.repair_group_admins(&row.wire_id).await?;
+        nostr_client.send_evolution_event(&evolution_event).await?;
+
+        let admins = new_admins
+            .into_iter()
+            .map(|pk| pk.to_bech32())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DaemonError::Nostr(format!("invalid admin npub: {e}")))?;
+
+        info!(
+            bot_id = %params.bot_id,
+            group_name = %group_name,
+            admin_count = admins.len(),
+            "repaired mls group admin set"
+        );
+
+        Ok(Some(serde_json::to_value(RepairMlsGroupAdminsResponse {
+            admins,
+        })?))
     }
 
     async fn handle_version(&self) -> Result<Option<Value>, DaemonError> {
@@ -2467,10 +2668,18 @@ impl Dispatch {
             .mls
             .as_ref()
             .ok_or_else(|| bot.mls_unavailable_error())?;
-        let evolution_event = mls_engine.leave_group(group_id).await?;
-        let event_id = evolution_event.id;
+        let outcome = mls_engine.leave_group(group_id).await?;
+        let event_id = outcome.leave_event.id;
+        // U14: publish the self-demote commit (if this member was an
+        // admin) BEFORE the leave proposal, so peers see the demotion
+        // before acting on the departure.
+        if let Some(self_demote_event) = &outcome.self_demote_event {
+            cm.nostr_client
+                .send_evolution_event(self_demote_event)
+                .await?;
+        }
         cm.nostr_client
-            .send_evolution_event(&evolution_event)
+            .send_evolution_event(&outcome.leave_event)
             .await?;
         Ok(event_id)
     }
@@ -4252,14 +4461,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn authorized_exit_mls_group_returns_event_id_and_publishes_evolution() {
-        // MDK 0.8.0 enforces MIP-03: an admin must self-demote before it can
-        // send a SelfRemove proposal, and a sole admin has no one to demote
-        // to. `admin.create_mls_group` always makes the creator the sole
-        // admin (tracked as KD7/R11, deferred to a later unit), so this test
-        // exercises the bot as an invited (non-admin) member of a group
-        // created by an external Squad admin, joined by feeding the bot's
-        // MLS engine a welcome directly instead of round-tripping a gift
-        // wrap through the relay.
+        // U14: the default admin set is now creator+recipient, so the bot
+        // here is an admin of the group created by the external Squad
+        // admin below and must self-demote (MIP-03) before it can send a
+        // SelfRemove proposal -- `agent.exit_mls_group` handles that
+        // transparently and publishes both the demote commit and the
+        // leave proposal, in order. Joined by feeding the bot's MLS
+        // engine a welcome directly instead of round-tripping a gift wrap
+        // through the relay.
         let relay = MockRelay::start().await.expect("mock relay should start");
         let keys = test_keys();
         let (dispatch, cm) = dispatch_with_bots_on_relay(
@@ -4310,6 +4519,7 @@ mod tests {
                 bot_key_package_event,
                 "test-group".to_string(),
                 relays,
+                vec![admin_keys.public_key(), keys.public_key()],
             )
             .await
             .expect("create_group failed");
@@ -4350,8 +4560,16 @@ mod tests {
             .iter()
             .filter(|e| e.kind == Kind::MlsGroupMessage)
             .collect();
-        assert_eq!(evolution_events.len(), 1);
-        assert_eq!(evolution_events[0].id.to_hex(), result.event_id);
+        assert_eq!(
+            evolution_events.len(),
+            2,
+            "must publish both the self-demote commit and the leave proposal"
+        );
+        assert_eq!(
+            evolution_events[1].id.to_hex(),
+            result.event_id,
+            "the response event_id must be the leave proposal, published last"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

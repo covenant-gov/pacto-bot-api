@@ -2,6 +2,7 @@ use crate::config::BotConfig;
 use crate::diagnostics::BotHealth;
 use crate::errors::DaemonError;
 use crate::mls::MlsEngineHandle;
+use chrono::{DateTime, Utc};
 
 use crate::signer::SignerBackend;
 #[cfg(test)]
@@ -25,6 +26,12 @@ pub struct BotState {
     mls_unavailable_reason: Option<String>,
     /// Active relay subscription IDs owned by this bot.
     subscriptions: Vec<String>,
+    /// UTC timestamp of this bot's last completed MLS store reset (U10/U11,
+    /// R41). `None` when the bot has never been reset. Attached separately
+    /// via [`Self::with_reset_at`] after construction because it comes
+    /// from an async DB lookup the synchronous constructors below cannot
+    /// perform.
+    reset_at: Option<DateTime<Utc>>,
 }
 
 impl BotState {
@@ -36,6 +43,7 @@ impl BotState {
             mls: None,
             mls_unavailable_reason: None,
             subscriptions: Vec::new(),
+            reset_at: None,
         })
     }
 
@@ -61,6 +69,7 @@ impl BotState {
             mls,
             mls_unavailable_reason: None,
             subscriptions: Vec::new(),
+            reset_at: None,
         })
     }
 
@@ -80,7 +89,16 @@ impl BotState {
             mls: None,
             mls_unavailable_reason: Some(reason.into()),
             subscriptions: Vec::new(),
+            reset_at: None,
         })
+    }
+
+    /// Attach this bot's last completed MLS store reset timestamp (R41).
+    /// Separate from the constructors because it comes from an async DB
+    /// lookup they cannot perform; `None` means never reset.
+    pub fn with_reset_at(mut self, reset_at: Option<DateTime<Utc>>) -> Self {
+        self.reset_at = reset_at;
+        self
     }
 
     /// The bot's Nostr public key (npub) as configured.
@@ -131,6 +149,7 @@ impl BotState {
             bunker_connected,
             signer_backend: self.config.signing.backend_label().to_string(),
             error: self.mls_unavailable_reason.clone(),
+            reset_at: self.reset_at,
         }
     }
 }

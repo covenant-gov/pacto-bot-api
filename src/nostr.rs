@@ -515,8 +515,14 @@ impl NostrClient {
         Ok(event_id)
     }
 
-    /// Fetch a fresh kind:443 KeyPackage authored by `recipient` from the relay
-    /// pool.
+    /// The kind:30443 addressable (NIP-33) KeyPackage kind. MDK 0.8.0
+    /// accepts both this and the legacy `Kind::MlsKeyPackage` (443) through
+    /// May 31, 2026; the daemon must fetch either kind even though it only
+    /// ever *publishes* kind:443 (per R8).
+    const MLS_KEY_PACKAGE_KIND_ADDRESSABLE: Kind = Kind::Custom(30443);
+
+    /// Fetch a fresh kind:443 or kind:30443 KeyPackage authored by
+    /// `recipient` from the relay pool.
     ///
     /// The returned event is verified, of the correct kind, authored by the
     /// requested pubkey, and within the freshness window. The age of the
@@ -534,7 +540,7 @@ impl NostrClient {
         let since = now - freshness_secs;
 
         let filter = Filter::new()
-            .kind(Kind::MlsKeyPackage)
+            .kinds([Kind::MlsKeyPackage, Self::MLS_KEY_PACKAGE_KIND_ADDRESSABLE])
             .author(*recipient)
             .since(since);
 
@@ -569,7 +575,10 @@ impl NostrClient {
                 continue;
             }
 
-            if event.kind != Kind::MlsKeyPackage || event.pubkey != *recipient {
+            if (event.kind != Kind::MlsKeyPackage
+                && event.kind != Self::MLS_KEY_PACKAGE_KIND_ADDRESSABLE)
+                || event.pubkey != *recipient
+            {
                 warn!(
                     event_id = %event_id,
                     author = %author,
@@ -1267,15 +1276,45 @@ impl NostrClient {
             let (_mls_bot_id, mls) = mls_engines.get(&recipient).ok_or_else(|| {
                 DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
             })?;
-            let wire_id = mls
+            match mls
                 .process_welcome_and_return_wire_id(event.id, rumor.clone())
                 .await
-                .map_err(|e| {
-                    DaemonError::Nostr(format!(
-                        "failed to accept MLS welcome for bot {bot_id}: {e}"
-                    ))
-                })?;
-            Some(wire_id)
+            {
+                Ok(wire_id) => Some(wire_id),
+                Err(mls::MlsError::PeerVersionMismatch) => {
+                    // Unsolicited inbound Welcome: no caller is waiting on a
+                    // JSON-RPC response, and the gift-wrap sender is
+                    // attacker-mintable, so this is counted in one
+                    // aggregated total rather than a per-event `ErrorRecord`
+                    // or any per-peer state (R33, R42) -- see
+                    // `Diagnostics::record_welcome_version_mismatch`.
+                    warn!(
+                        event_id = %event.id.to_hex(),
+                        rumor_id = %rumor_id,
+                        "inbound MLS welcome missing required encoding tag; peer is on a pre-MIP-00/MIP-02 wire format"
+                    );
+                    if let Some(d) = diagnostics {
+                        d.record_welcome_version_mismatch().await;
+                    }
+                    return Ok(None);
+                }
+                Err(e) => {
+                    // Any other rejection (correctly tagged but structurally
+                    // invalid, decrypt failure, etc.) -- same aggregated,
+                    // no-per-peer-state treatment, but a distinct counter
+                    // from the version-mismatch case above.
+                    warn!(
+                        event_id = %event.id.to_hex(),
+                        rumor_id = %rumor_id,
+                        error = %e,
+                        "failed to accept MLS welcome; dropping as structurally invalid"
+                    );
+                    if let Some(d) = diagnostics {
+                        d.record_welcome_rejected().await;
+                    }
+                    return Ok(None);
+                }
+            }
         } else {
             None
         };

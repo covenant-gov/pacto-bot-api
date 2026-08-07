@@ -200,7 +200,7 @@ See also `docs/solutions/` for documented solutions and patterns in these areas.
 - **Persistence:** SQLite via `rusqlite` (bundled), WAL mode.
 - **Logging:** `tracing` / `tracing-subscriber`.
 - **CLI:** `clap`.
-- **Key runtime dependencies:** `nostr-sdk` 0.43, `tokio`, `serde`/`serde_json`, `rusqlite`, `toml`, `axum`, `tokio-util`, `tracing`, `clap`, `zeroize`, `uuid`, `secrecy`, `thiserror`, `chrono`, `fs2`, `tokio-tungstenite`, `hex`, `bech32`, `subtle`, `reqwest`.
+- **Key runtime dependencies:** `nostr-sdk` 0.44, `mdk-core`/`mdk-sqlite-storage`/`mdk-storage-traits` 0.8.0 (MLS engine), `tokio`, `serde`/`serde_json`, `rusqlite`, `toml`, `axum`, `tokio-util`, `tracing`, `clap`, `zeroize`, `uuid`, `secrecy`, `thiserror`, `chrono`, `fs2`, `tokio-tungstenite`, `hex`, `bech32`, `subtle`, `reqwest`.
 - **Dev/test tools:** `schemars`, `jsonschema`, `proptest`, `assert_cmd`, `predicates`, `parking_lot`, `nix`, `futures`, `syn`, `quote`.
 - **External services required for integration testing:** local Nostr relay (`ws://localhost:7000`), local Anvil EVM node (`http://localhost:8545`), optional NIP-46 bunker.
 - **Packaging:** `cargo-zigbuild` for cross-compilation, Docker multi-stage image, GHCR publish via CI, `scripts/package-release.sh` for tar/zip + SHA-256 artifacts.

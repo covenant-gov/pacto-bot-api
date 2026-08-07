@@ -1001,7 +1001,12 @@ async def test_status_handler_called(bot, transport):
     transport.inject({
         "jsonrpc": "2.0",
         "method": "agent.status",
-        "params": {"state": "ready", "capabilities": ["ReadMessages"]},
+        "params": {
+            "state": "ready",
+            "daemon_version": "0.10.0",
+            "mls_wire_generation": "mip-00-02-base64",
+            "capabilities": ["ReadMessages"],
+        },
     })
 
     await asyncio.sleep(0.05)

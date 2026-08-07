@@ -541,7 +541,7 @@
     },
     {
       "name": "agent.status",
-      "summary": "Daemon lifecycle status notification.",
+      "summary": "Daemon lifecycle status notification. Carries the daemon-wide version and MLS wire generation only -- never a per-bot or per-group map. Per-bot reset state, per-group state-held/state-lost, and sole-admin squad detail are reported by `pacto-bot-admin diagnose` instead, since this notification fans out to every registered handler regardless of which bots it registered for.",
       "params": [
         {
           "name": "params",
@@ -561,9 +561,17 @@
                 "type": "array",
                 "items": { "type": "string" },
                 "description": "Capabilities available to the handler."
+              },
+              "daemon_version": {
+                "type": "string",
+                "description": "Daemon crate version. Daemon-wide only -- no per-bot detail is carried on this notification."
+              },
+              "mls_wire_generation": {
+                "type": "string",
+                "description": "Identifier for the MLS wire encoding generation this daemon speaks (e.g. base64 KeyPackage/Welcome content with a mandatory `encoding` tag)."
               }
             },
-            "required": ["state"]
+            "required": ["state", "daemon_version", "mls_wire_generation"]
           }
         }
       ]
@@ -777,7 +785,7 @@
     },
     {
       "name": "agent.publish_key_package",
-      "summary": "Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.",
+      "summary": "Publish a Nostr MLS KeyPackage event (kind:443, base64-encoded content with an `encoding` tag per MIP-00/MIP-02) for the specified bot.",
       "params": [
         {
           "name": "params",
@@ -797,7 +805,7 @@
         "name": "event_id",
         "schema": {
           "type": "string",
-          "description": "Hex id of the published kind:443 KeyPackage event."
+          "description": "Hex id of the published kind:443 KeyPackage event; the event content is base64-encoded and carries an `encoding` tag per MIP-00/MIP-02."
         }
       }
     },
@@ -857,7 +865,12 @@
               },
               "recipient": {
                 "type": "string",
-                "description": "Nostr public key (npub or hex) of the initial member."
+                "description": "Nostr public key (npub or hex) of the initial member. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure."
+              },
+              "admins": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional explicit admin set (npub or hex Nostr public keys), additive only. Defaults to the creator plus the invited recipient when omitted. MDK rejects a set omitting the creator."
               }
             },
             "required": ["bot_id", "group_name", "recipient"]
@@ -894,7 +907,7 @@
               },
               "recipient": {
                 "type": "string",
-                "description": "Nostr public key (npub or hex) of the member to invite."
+                "description": "Nostr public key (npub or hex) of the member to invite. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure."
               }
             },
             "required": ["bot_id", "group_name", "recipient"]
@@ -931,7 +944,12 @@
               },
               "recipient": {
                 "type": "string",
-                "description": "Nostr public key (npub or hex) of the initial member."
+                "description": "Nostr public key (npub or hex) of the initial member. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure."
+              },
+              "admins": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Optional explicit admin set (npub or hex Nostr public keys), additive only. Defaults to the creator plus the invited recipient when omitted. MDK rejects a set omitting the creator."
               }
             },
             "required": ["bot_id", "group_name", "recipient"]
@@ -968,7 +986,7 @@
               },
               "recipient": {
                 "type": "string",
-                "description": "Nostr public key (npub or hex) of the member to invite."
+                "description": "Nostr public key (npub or hex) of the member to invite. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure."
               }
             },
             "required": ["bot_id", "group_name", "recipient"]
@@ -983,6 +1001,43 @@
             "wire_id": { "type": "string" }
           },
           "required": ["wire_id"]
+        }
+      }
+    },
+    {
+      "name": "admin.repair_mls_group_admins",
+      "summary": "Expand a sole-admin MLS group's admin set to every current member (admin-only).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity that owns the group."
+              },
+              "group_name": {
+                "type": "string",
+                "description": "Human-readable group name."
+              }
+            },
+            "required": ["bot_id", "group_name"]
+          }
+        }
+      ],
+      "result": {
+        "name": "repair",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "admins": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "The resulting admin set (npub-encoded) after repair."
+            }
+          },
+          "required": ["admins"]
         }
       }
     }

@@ -12,6 +12,7 @@ use std::time::Duration;
 use assert_cmd::cargo::CommandCargoExt;
 use pacto_bot_api::attachment::crypto::{AttachmentKey, decrypt, encrypt};
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
+use pacto_bot_api::db::{Database, MlsGroupRow};
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::errors::DaemonError;
 use pacto_bot_api::signer::{BunkerConnection, BunkerKind, LocalKey};
@@ -993,4 +994,51 @@ async fn run_mls_admin_cli(config: &std::path::Path, args: &[&str]) -> CliOutput
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         success: output.status.success(),
     }
+}
+
+/// req(R41)
+#[test]
+fn diagnose_json_never_leaks_reset_archive_path() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = common::tempdir()?;
+    let (bot, _nsec) = common::generate_nsec_bot("r26-archive-bot")?;
+    let config = common::make_config(&dir, vec![bot.clone()])?;
+
+    let now = chrono::Utc::now().timestamp();
+    let archive_marker = "very-secret-archive-directory-marker-r26";
+    {
+        let db = Database::open(&dir.path().join("agent.db"))?;
+        db.mark_mls_store_reset_start("r26-archive-bot", now - 100)?;
+        db.complete_mls_store_reset(
+            "r26-archive-bot",
+            now - 90,
+            Some(&format!("/private/secret/{archive_marker}")),
+        )?;
+        db.insert_mls_group(&MlsGroupRow {
+            bot_id: "r26-archive-bot".into(),
+            group_name: "archived-squad".into(),
+            wire_id: "wire-archived".into(),
+            creator_npub: bot.npub.clone(),
+            relay: "wss://relay.example".into(),
+            invited_bots: vec![],
+            state_lost_at: Some(now),
+        })?;
+    }
+
+    let mut cmd = Command::cargo_bin("pacto-bot-admin")?;
+    cmd.arg("--config")
+        .arg(&config)
+        .args(["diagnose", "--format", "json"]);
+    let output = cmd.output()?;
+    assert!(output.status.success(), "diagnose should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    assert!(
+        !stdout.contains(archive_marker),
+        "archive path leaked into diagnose --format json output: {stdout}"
+    );
+    assert!(
+        !stdout.contains("/private/secret/"),
+        "raw archive directory leaked into diagnose --format json output: {stdout}"
+    );
+    Ok(())
 }

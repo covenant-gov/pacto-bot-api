@@ -51,6 +51,94 @@ pub struct BotHealth {
     /// Optional stable error state for the bot identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// UTC timestamp of this bot's last completed MLS store reset (U10/U11),
+    /// sourced from `mls_store_resets.reset_at`. Absent -- not a zero
+    /// timestamp -- when the bot was never reset (R41).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_at: Option<DateTime<Utc>>,
+}
+
+/// Version and MLS wire-generation info reported for advisory matching
+/// against a running deployment (R6, R41). Populated once at snapshot
+/// construction time from compile-time-pinned `Cargo.lock` values (see
+/// `crate::version`), not from live bot state, so it is identical across
+/// every snapshot for the life of the process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionInfo {
+    /// Daemon crate version (`CARGO_PKG_VERSION`).
+    pub daemon_version: String,
+    /// `mdk-core`/`mdk-sqlite-storage`/`mdk-storage-traits` version pinned
+    /// in `Cargo.toml` (KTD1: no `git =` dependency).
+    pub mdk_version: String,
+    /// Identifier for the MLS wire encoding generation this daemon speaks.
+    pub mls_wire_generation: String,
+    /// Vendored OpenSSL version linked via `rusqlite`'s
+    /// `bundled-sqlcipher-vendored-openssl` feature (KD6).
+    pub vendored_openssl_version: String,
+    /// Vendored SQLCipher version linked via `libsqlite3-sys`'s
+    /// `bundled-sqlcipher*` features.
+    pub vendored_sqlcipher_version: String,
+}
+
+impl Default for VersionInfo {
+    fn default() -> Self {
+        Self {
+            daemon_version: crate::version::VERSION.to_string(),
+            mdk_version: crate::version::MDK_VERSION.to_string(),
+            mls_wire_generation: crate::version::MLS_WIRE_GENERATION.to_string(),
+            vendored_openssl_version: crate::version::VENDORED_OPENSSL_VERSION.to_string(),
+            vendored_sqlcipher_version: crate::version::VENDORED_SQLCIPHER_VERSION.to_string(),
+        }
+    }
+}
+
+/// Sole-admin squad bucket, per KTD5/KTD6 (U15): which of the three
+/// mutually exclusive diagnostic populations a sole-admin group falls
+/// into. `None` (no bucket) covers a group with two or more known admins,
+/// or one with no admin-set history at all (not part of this
+/// classification).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoleAdminBucket {
+    /// The bot still holds MLS engine state for this group: `U14`'s repair
+    /// command (`update_group_data`) can expand the admin set now.
+    RepairableNow,
+    /// The bot was the group's only ever admin and its engine state was
+    /// lost to a reset: no third party can restore it. Must be re-created.
+    Unrestorable,
+    /// The bot's store reset went through the R26 (encrypted-store) path,
+    /// which cannot harvest an admin set before archiving, so this
+    /// state-lost group's admin set cannot be determined at all.
+    AdminSetUnknown,
+}
+
+/// Classify a single group's sole-admin bucket from already-loaded data
+/// (KTD5/KTD6), so the branching is shared between the CLI's synchronous
+/// `Database` reads (`pacto-bot-admin diagnose`) and the daemon's async
+/// `Db` reads (the periodic-tick warning) without duplicating it.
+///
+/// `harvested_admin_count` is the number of rows
+/// `mls_store_reset_admins` holds for this group's `wire_id` -- the admin
+/// set harvested from the legacy store at reset time, before the daemon's
+/// own admin-set tracking existed. `bot_reset_was_r26` is `true` when this
+/// bot's most recent completed reset archived an *encrypted* store (R26),
+/// which never harvests: zero harvested rows there means "unknown", not
+/// "no admins".
+pub fn classify_sole_admin(
+    state_lost: bool,
+    harvested_admin_count: usize,
+    bot_reset_was_r26: bool,
+) -> Option<SoleAdminBucket> {
+    if harvested_admin_count == 1 {
+        Some(if state_lost {
+            SoleAdminBucket::Unrestorable
+        } else {
+            SoleAdminBucket::RepairableNow
+        })
+    } else if harvested_admin_count == 0 && state_lost && bot_reset_was_r26 {
+        Some(SoleAdminBucket::AdminSetUnknown)
+    } else {
+        None
+    }
 }
 
 /// A single redacted error entry retained in diagnostics.
@@ -74,6 +162,9 @@ pub struct ErrorRecord {
 pub struct HealthSnapshot {
     /// Current daemon lifecycle status.
     pub status: DaemonStatus,
+    /// Version and MLS wire-generation info (R6, R41). Reported in
+    /// `agent.status` too (daemon-wide only, never per-bot).
+    pub version_info: VersionInfo,
     /// UTC timestamp recorded when the daemon (or this snapshot source) started.
     pub startup_time: DateTime<Utc>,
     /// Daemon uptime in seconds.
@@ -122,6 +213,19 @@ pub struct HealthSnapshot {
     /// would let a spray of malformed wraps evict genuine diagnostic
     /// entries from the fixed-size ring (R33, R42).
     pub gift_wrap_rejected_total: u64,
+    /// Total inbound MLS Welcome rumors rejected because they were missing
+    /// the required `encoding` tag -- i.e. the sender is on the
+    /// pre-MIP-00/MIP-02 hex wire format rather than base64 + `encoding`.
+    /// An unsolicited Welcome's sender is attacker-mintable (like the
+    /// gift-wrap sender above), so this is one aggregated total, never
+    /// keyed by peer identity (R33, R42).
+    pub welcome_version_mismatch_total: u64,
+    /// Total inbound MLS Welcome rumors rejected for any other reason
+    /// (correctly tagged but structurally invalid, decrypt failure, etc.).
+    /// Distinct from [`HealthSnapshot::welcome_version_mismatch_total`] so
+    /// an operator can tell "peer needs to upgrade" apart from "this
+    /// Welcome is corrupt"; also never keyed by peer identity.
+    pub welcome_rejected_total: u64,
     /// Current number of files in the inbound spool directory.
     pub spool_inbound_entries: u64,
     /// Current number of files in the outbound spool directory.
@@ -141,6 +245,7 @@ impl Default for HealthSnapshot {
         let now = Utc::now();
         Self {
             status: DaemonStatus::Initializing,
+            version_info: VersionInfo::default(),
             startup_time: now,
             uptime_seconds: 0,
             handlers_registered: 0,
@@ -161,6 +266,8 @@ impl Default for HealthSnapshot {
             attachment_receive_total: 0,
             attachment_receive_failed_total: 0,
             gift_wrap_rejected_total: 0,
+            welcome_version_mismatch_total: 0,
+            welcome_rejected_total: 0,
             spool_inbound_entries: 0,
             spool_outbound_entries: 0,
             group_messages_rate_limited_total: 0,
@@ -495,6 +602,34 @@ impl Diagnostics {
     /// human-readable reason should log it via `tracing` instead.
     pub async fn record_gift_wrap_rejected(&self) {
         self.with_snapshot(|snapshot| snapshot.gift_wrap_rejected_total += 1)
+            .await;
+    }
+
+    /// Increment the aggregated counter for inbound MLS Welcome rumors
+    /// rejected because they were missing the required `encoding` tag (a
+    /// peer-version mismatch).
+    ///
+    /// Deliberately does not push an [`ErrorRecord`] and is never keyed by
+    /// peer identity, for the same reason as
+    /// [`Diagnostics::record_gift_wrap_rejected`]: an unsolicited Welcome's
+    /// sender is attacker-mintable, so per-event or per-peer recording
+    /// would let a spray of malformed Welcomes evict genuine diagnostic
+    /// entries or grow unbounded state (R33, R42).
+    pub async fn record_welcome_version_mismatch(&self) {
+        self.with_snapshot(|snapshot| snapshot.welcome_version_mismatch_total += 1)
+            .await;
+    }
+
+    /// Increment the aggregated counter for inbound MLS Welcome rumors
+    /// rejected for any other reason (correctly tagged but structurally
+    /// invalid, decrypt failure, etc.).
+    ///
+    /// Same no-`ErrorRecord`, no-per-peer-state treatment as
+    /// [`Diagnostics::record_welcome_version_mismatch`]; kept as a
+    /// separate counter so an operator can tell the two rejection
+    /// categories apart.
+    pub async fn record_welcome_rejected(&self) {
+        self.with_snapshot(|snapshot| snapshot.welcome_rejected_total += 1)
             .await;
     }
 
@@ -985,6 +1120,7 @@ mod tests {
                 bunker_connected: true,
                 signer_backend: "bunker_local".into(),
                 error: None,
+                reset_at: None,
             },
             BotHealth {
                 bot_id: "bot-b".into(),
@@ -994,6 +1130,7 @@ mod tests {
                 bunker_connected: false,
                 signer_backend: "nsec".into(),
                 error: None,
+                reset_at: None,
             },
         ])
         .await;
@@ -1064,6 +1201,7 @@ mod tests {
             bunker_connected: true,
             signer_backend: "bunker_remote".into(),
             error: None,
+            reset_at: None,
         }])
         .await;
 

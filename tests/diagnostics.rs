@@ -74,6 +74,7 @@ async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Erro
             bunker_connected: true,
             signer_backend: "bunker_local".into(),
             error: None,
+            reset_at: None,
         },
         BotHealth {
             bot_id: "bot-two".into(),
@@ -83,6 +84,7 @@ async fn report_flushes_and_round_trips() -> Result<(), Box<dyn std::error::Erro
             bunker_connected: false,
             signer_backend: "nsec".into(),
             error: None,
+            reset_at: None,
         },
     ])
     .await;
@@ -163,6 +165,7 @@ async fn metrics_response_matches_schema_fields() {
         bunker_connected: true,
         signer_backend: "bunker_local".into(),
         error: None,
+        reset_at: None,
     }])
     .await;
 

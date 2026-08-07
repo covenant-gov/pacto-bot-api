@@ -152,6 +152,19 @@ impl ClientManager {
             bot_state.signer.verify_bunker_public_key().await?;
             let pubkey = bot_state.signer.public_key();
 
+            // R41: attach this bot's last completed reset timestamp for
+            // diagnostics, regardless of whether its MLS engine construction
+            // above succeeded. Best-effort -- a DB error here must not take
+            // down every other bot's startup over a purely diagnostic field.
+            let reset_at = db
+                .load_mls_store_reset_marker(&bot_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|marker| marker.reset_at)
+                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0));
+            let bot_state = bot_state.with_reset_at(reset_at);
+
             bots.insert(pubkey, bot_state);
             bot_id_to_pubkey.insert(bot_id, pubkey);
         }
@@ -1167,6 +1180,7 @@ mod tests {
                 key_package,
                 "renamed-squad".to_string(),
                 vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![creator_keys.public_key(), recipient_keys.public_key()],
             )
             .await
             .expect("create_group");

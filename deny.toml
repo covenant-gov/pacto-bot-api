@@ -17,6 +17,18 @@ version = 2
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
+ignore = [
+    # libcrux-sha3 0.0.8 / libcrux-secrets 0.0.5 are pinned transitively via
+    # mdk-core 0.8.0 -> openmls_rust_crypto 0.5.1 -> hpke-rs 0.6.1, which
+    # requires these exact versions (no semver-compatible fix is available;
+    # `cargo update -p libcrux-sha3 -p libcrux-secrets` resolves nothing).
+    # Bumping past them requires an upstream hpke-rs/openmls_rust_crypto
+    # release, which is outside this daemon's dependency ownership. Revisit
+    # on the next mdk-core bump (tracked by KTD7 / pacto-bot-api-ah6x).
+    "RUSTSEC-2026-0207", # libcrux-sha3 incremental SHAKE squeeze output
+    "RUSTSEC-2026-0208", # libcrux-sha3 AVX2 SHAKE-256 panic
+    "RUSTSEC-2026-0212", # libcrux-secrets aarch64 constant-time swap/select
+]
 
 [licenses]
 version = 2
@@ -33,6 +45,7 @@ allow = [
     "MPL-2.0",
     "OpenSSL",
     "CDLA-Permissive-2.0",
+    "MIT-0",
 ]
 confidence-threshold = 0.8
 exceptions = []

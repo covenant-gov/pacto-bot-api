@@ -12,10 +12,20 @@ CROSS_MACOS_TARGETS := x86_64-apple-darwin aarch64-apple-darwin
 CROSS_LINUX_TARGETS := x86_64-unknown-linux-musl aarch64-unknown-linux-musl
 CROSS_WINDOWS_TARGETS := x86_64-pc-windows-gnu
 CROSS_FREEBSD_TARGETS := x86_64-unknown-freebsd
-CROSS_ALL_TARGETS := $(CROSS_MACOS_TARGETS) $(CROSS_LINUX_TARGETS) $(CROSS_WINDOWS_TARGETS) $(CROSS_FREEBSD_TARGETS)
+# CROSS_ALL_TARGETS (the release/package path) intentionally excludes
+# CROSS_WINDOWS_TARGETS and CROSS_FREEBSD_TARGETS: rusqlite#1025 blocks the
+# Windows SQLCipher/crypto link, and cargo-zigbuild#356 blocks FreeBSD `kvm`
+# symbol resolution. The `cross-compile-windows` and `cross-compile-freebsd`
+# make targets below still work standalone; only `make package` drops them.
+CROSS_ALL_TARGETS := $(CROSS_MACOS_TARGETS) $(CROSS_LINUX_TARGETS)
+# CROSS_SUPPORTED_TARGETS additionally covers the individually-reachable
+# `cross-compile-windows`/`cross-compile-freebsd` targets, so `cross-setup`
+# still installs their rustup toolchains even though they are out of the
+# release/package gate above.
+CROSS_SUPPORTED_TARGETS := $(CROSS_ALL_TARGETS) $(CROSS_WINDOWS_TARGETS) $(CROSS_FREEBSD_TARGETS)
 
 cross-setup: ## Install rustup targets needed for cross-compilation
-	rustup target add $(filter-out universal2-apple-darwin,$(CROSS_ALL_TARGETS))
+	rustup target add $(filter-out universal2-apple-darwin,$(CROSS_SUPPORTED_TARGETS))
 
 cross-compile: cross-setup ## Build release binaries for all supported targets (requires zig + cargo-zigbuild)
 	@for target in $(CROSS_ALL_TARGETS); do \
