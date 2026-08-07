@@ -4,7 +4,7 @@
 //! nonce rather than the usual 12-byte nonce (KTD8 in
 //! `docs/plans/2026-08-03-001-feat-reactions-attachments-parity-plan.md`).
 //! Getting this width wrong silently produces files the app cannot open, so
-//! [`Cipher`] is the single place that width is expressed. The byte layout —
+//! `Cipher` is the single place that width is expressed. The byte layout —
 //! ciphertext body followed by the 16-byte GCM tag — matches
 //! `pacto-app/src-tauri/src/crypto.rs:68-93`.
 

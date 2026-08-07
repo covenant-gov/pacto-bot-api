@@ -175,7 +175,7 @@ fn read_legacy_schema_version(store_path: &Path) -> Result<Option<i64>, MlsError
 }
 
 /// Enumerate a store's sidecars by literal filename suffix on the full path
-/// — never [`Path::with_extension`]/[`Path::set_extension`], which silently
+/// — never [`Path::with_extension`]/[`PathBuf::set_extension`], which silently
 /// misses sidecars for a store not named `*.db` (R21).
 fn sidecar_paths(store_path: &Path) -> Vec<PathBuf> {
     let base = store_path.as_os_str();
