@@ -7,7 +7,7 @@
 //! and that is commonly unavailable on a headless Linux server. This module is
 //! the daemon's own key source instead: a 32-byte key held next to the store,
 //! in a file named by appending `.key` to the store's file *name* (not via
-//! [`Path::set_extension`], so `squad.db` and `squad.sqlite` in one directory
+//! [`PathBuf::set_extension`], so `squad.db` and `squad.sqlite` in one directory
 //! do not collide on `squad.key`).
 //!
 //! Two operations, with different side-effect contracts:
@@ -58,7 +58,7 @@ pub enum MlsKeyError {
 }
 
 /// Derive the key file path for `store_path` by appending `.key` to the
-/// store's file *name*. Using the file name (not [`Path::set_extension`])
+/// store's file *name*. Using the file name (not [`PathBuf::set_extension`])
 /// means `squad.db` and `squad.sqlite` in the same directory resolve to
 /// distinct `squad.db.key` / `squad.sqlite.key` paths rather than colliding
 /// on `squad.key`.
