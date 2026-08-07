@@ -74,8 +74,8 @@ impl SensitiveFixture {
 
     #[allow(clippy::expect_used)]
     fn build(scan_guard: Option<RwLockReadGuard<'static, ()>>) -> Self {
-        let first = Uuid::new_v4().as_simple().to_string();
-        let second = Uuid::new_v4().as_simple().to_string();
+        let first = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let second = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
 
         // Build the 64-character nsec marker in a single heap allocation so the
         // only full copy is the live buffer.
@@ -90,16 +90,35 @@ impl SensitiveFixture {
             .expect("UUID simple form is hex");
         let nsec_marker_bytes = *nsec_bytes_buf;
 
-        let bunker_uuid = Uuid::new_v4().as_simple().to_string();
-        let bunker_uri_marker = String::from("pacto-test-bunker-") + &bunker_uuid;
+        // Build each concatenated marker with a pre-allocated buffer so the
+        // `+` operator's reallocate-and-free path cannot leave a reconstructible
+        // copy of the full marker in freed heap memory. UUID temporaries are
+        // wrapped in `Zeroizing` so they are cleared on drop.
+        let bunker_uuid = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let mut bunker_uri_marker = String::with_capacity("pacto-test-bunker-".len() + 32);
+        bunker_uri_marker.push_str("pacto-test-bunker-");
+        bunker_uri_marker.push_str(&bunker_uuid);
 
-        let token_uuid = Uuid::new_v4().as_simple().to_string();
-        let http_token_marker = String::from("pacto-test-token-") + &token_uuid;
-        let attachment_key_marker =
-            Uuid::new_v4().as_simple().to_string() + &Uuid::new_v4().as_simple().to_string();
-        let attachment_nonce_marker = Uuid::new_v4().as_simple().to_string();
-        let attachment_plaintext_marker =
-            String::from("pacto-attachment-plaintext-") + &Uuid::new_v4().as_simple().to_string();
+        let token_uuid = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let mut http_token_marker = String::with_capacity("pacto-test-token-".len() + 32);
+        http_token_marker.push_str("pacto-test-token-");
+        http_token_marker.push_str(&token_uuid);
+
+        let key_uuid1 = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let key_uuid2 = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let mut attachment_key_marker = String::with_capacity(64);
+        attachment_key_marker.push_str(&key_uuid1);
+        attachment_key_marker.push_str(&key_uuid2);
+
+        let nonce_uuid = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let mut attachment_nonce_marker = String::with_capacity(32);
+        attachment_nonce_marker.push_str(&nonce_uuid);
+
+        let plaintext_uuid = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
+        let mut attachment_plaintext_marker =
+            String::with_capacity("pacto-attachment-plaintext-".len() + 32);
+        attachment_plaintext_marker.push_str("pacto-attachment-plaintext-");
+        attachment_plaintext_marker.push_str(&plaintext_uuid);
 
         Self {
             nsec_marker,
