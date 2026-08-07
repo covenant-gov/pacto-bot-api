@@ -801,7 +801,11 @@ impl Dispatch {
     /// runs unconditionally.
     pub async fn warn_stuck_bots(&self, min_age: Duration) -> Result<(), DaemonError> {
         let now = chrono::Utc::now().timestamp();
-        let cutoff = now.saturating_sub(min_age.as_secs() as i64);
+        // `min_age` is user-configurable; clamp the `u64` seconds to `i64`
+        // rather than `as`-casting, which would silently wrap for a
+        // pathologically large configured value.
+        let min_age_secs = i64::try_from(min_age.as_secs()).unwrap_or(i64::MAX);
+        let cutoff = now.saturating_sub(min_age_secs);
 
         let (bot_ids, unavailable_bot_ids) = {
             let cm = self.client_manager.read().await;
@@ -815,7 +819,7 @@ impl Dispatch {
         };
 
         let uptime_seconds = self.diagnostics.snapshot().await.uptime_seconds;
-        if uptime_seconds as i64 >= min_age.as_secs() as i64 {
+        if uptime_seconds as i64 >= min_age_secs {
             for bot_id in &unavailable_bot_ids {
                 warn!(
                     bot_id = %bot_id,
