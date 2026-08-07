@@ -335,8 +335,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_for_subscription_uses_atomic_count_when_watch_notification_is_missed(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn wait_for_subscription_uses_atomic_count_when_watch_notification_is_missed()
+    -> Result<(), Box<dyn std::error::Error>> {
         let relay = MockRelay::start().await?;
 
         relay.inner.subscription_count.store(1, Ordering::SeqCst);
