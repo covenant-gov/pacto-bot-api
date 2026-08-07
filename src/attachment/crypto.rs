@@ -12,7 +12,7 @@ use aes::Aes256;
 use aes_gcm::aead::generic_array::typenum::U16;
 use aes_gcm::{AeadInPlace, AesGcm, KeyInit};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::errors::DaemonError;
 
@@ -125,12 +125,19 @@ pub fn decrypt(key: &AttachmentKey, ciphertext: &[u8]) -> Result<Vec<u8>, Daemon
     let nonce = aes_gcm::aead::Nonce::<Cipher>::from_slice(key.nonce.as_slice());
     let tag = aes_gcm::aead::Tag::<Cipher>::from_slice(tag_bytes);
     let mut buffer = body.to_vec();
-    cipher
-        .decrypt_in_place_detached(nonce, b"", &mut buffer, tag)
-        .map_err(|_| DaemonError::AttachmentInvalid {
-            category: "decrypt failed".to_string(),
-        })?;
-    Ok(buffer)
+    match cipher.decrypt_in_place_detached(nonce, b"", &mut buffer, tag) {
+        Ok(()) => Ok(buffer),
+        Err(_) => {
+            // Zeroize the buffer before returning: AES-GCM decrypts in-place
+            // before verifying the authentication tag, so on tag failure the
+            // buffer already holds (candidate) plaintext that must not linger
+            // in freed heap memory.
+            buffer.zeroize();
+            Err(DaemonError::AttachmentInvalid {
+                category: "decrypt failed".to_string(),
+            })
+        }
+    }
 }
 
 /// Lowercase hex SHA-256, used for the `ox` rumor tag and the Blossom `x` auth tag.
