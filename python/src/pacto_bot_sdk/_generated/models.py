@@ -57,11 +57,13 @@ class AdminCreateMlsGroupParams(BaseModel):
     jsonrpc_method: ``"admin.create_mls_group"``
     """
     jsonrpc_method: ClassVar[str] = "admin.create_mls_group"
+    # Optional explicit admin set (npub or hex Nostr public keys), additive only. Defaults to the creator plus the invited recipient when omitted. MDK rejects a set omitting the creator.
+    admins: list[str] | None = None
     # Bot identity that will own the group.
     bot_id: str
     # Human-readable group name.
     group_name: str
-    # Nostr public key (npub or hex) of the initial member.
+    # Nostr public key (npub or hex) of the initial member. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure.
     recipient: str
 
 
@@ -98,7 +100,7 @@ class AdminInviteToMlsGroupParams(BaseModel):
     bot_id: str
     # Human-readable group name.
     group_name: str
-    # Nostr public key (npub or hex) of the member to invite.
+    # Nostr public key (npub or hex) of the member to invite. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure.
     recipient: str
 
 
@@ -116,6 +118,42 @@ class AdminInviteToMlsGroupResponse(BaseModel):
     """
     jsonrpc_method: ClassVar[str] = "admin.invite_to_mls_group"
     wire_id: str
+
+
+class AdminRepairMlsGroupAdminsParams(BaseModel):
+    """
+    Model for JSON-RPC method `admin.repair_mls_group_admins`.
+
+    Expand a sole-admin MLS group's admin set to every current member (admin-only).
+
+    Example:
+
+        >>> AdminRepairMlsGroupAdminsParams(bot_id="...", group_name="...")
+
+    jsonrpc_method: ``"admin.repair_mls_group_admins"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.repair_mls_group_admins"
+    # Bot identity that owns the group.
+    bot_id: str
+    # Human-readable group name.
+    group_name: str
+
+
+class AdminRepairMlsGroupAdminsResponse(BaseModel):
+    """
+    Model for JSON-RPC method `admin.repair_mls_group_admins`.
+
+    Expand a sole-admin MLS group's admin set to every current member (admin-only).
+
+    Example:
+
+        >>> AdminRepairMlsGroupAdminsResponse(admins=[])
+
+    jsonrpc_method: ``"admin.repair_mls_group_admins"``
+    """
+    jsonrpc_method: ClassVar[str] = "admin.repair_mls_group_admins"
+    # The resulting admin set (npub-encoded) after repair.
+    admins: list[str]
 
 
 class AdminSendTestDmParams(BaseModel):
@@ -168,11 +206,13 @@ class AgentCreateMlsGroupParams(BaseModel):
     jsonrpc_method: ``"agent.create_mls_group"``
     """
     jsonrpc_method: ClassVar[str] = "agent.create_mls_group"
+    # Optional explicit admin set (npub or hex Nostr public keys), additive only. Defaults to the creator plus the invited recipient when omitted. MDK rejects a set omitting the creator.
+    admins: list[str] | None = None
     # Bot identity that will own the group.
     bot_id: str
     # Human-readable group name.
     group_name: str
-    # Nostr public key (npub or hex) of the initial member.
+    # Nostr public key (npub or hex) of the initial member. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure.
     recipient: str
 
 
@@ -380,7 +420,7 @@ class AgentInviteToMlsGroupParams(BaseModel):
     bot_id: str
     # Human-readable group name.
     group_name: str
-    # Nostr public key (npub or hex) of the member to invite.
+    # Nostr public key (npub or hex) of the member to invite. The daemon fetches this recipient's most recent KeyPackage event (kind:443 or kind:30443, both accepted) and rejects one missing the required `encoding` tag with a distinct peer-version-mismatch error (-32025) rather than a generic parse failure.
     recipient: str
 
 
@@ -504,7 +544,7 @@ class AgentPublishKeyPackageParams(BaseModel):
     """
     Model for JSON-RPC method `agent.publish_key_package`.
 
-    Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.
+    Publish a Nostr MLS KeyPackage event (kind:443, base64-encoded content with an `encoding` tag per MIP-00/MIP-02) for the specified bot.
 
     Example:
 
@@ -719,19 +759,23 @@ class AgentStatusParams(BaseModel):
     """
     Model for JSON-RPC method `agent.status`.
 
-    Daemon lifecycle status notification.
+    Daemon lifecycle status notification. Carries the daemon-wide version and MLS wire generation only -- never a per-bot or per-group map. Per-bot reset state, per-group state-held/state-lost, and sole-admin squad detail are reported by `pacto-bot-admin diagnose` instead, since this notification fans out to every registered handler regardless of which bots it registered for.
 
     Example:
 
-        >>> AgentStatusParams(state="...")
+        >>> AgentStatusParams(daemon_version="...", mls_wire_generation="...", state="...")
 
     jsonrpc_method: ``"agent.status"``
     """
     jsonrpc_method: ClassVar[str] = "agent.status"
     # Capabilities available to the handler.
     capabilities: list[str] | None = None
+    # Daemon crate version. Daemon-wide only -- no per-bot detail is carried on this notification.
+    daemon_version: str
     # Public key of the bot whose state changed, when applicable.
     identity: str | None = None
+    # Identifier for the MLS wire encoding generation this daemon speaks (e.g. base64 KeyPackage/Welcome content with a mandatory `encoding` tag).
+    mls_wire_generation: str
     # Current daemon lifecycle state.
     state: str
 
@@ -938,4 +982,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsBotUnavailableModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminRepairMlsGroupAdminsParams', 'AdminRepairMlsGroupAdminsResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsBotUnavailableModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

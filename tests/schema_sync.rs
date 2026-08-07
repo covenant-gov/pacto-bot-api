@@ -293,6 +293,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "admin.invite_to_mls_group"
                 | "agent.create_mls_group"
                 | "agent.invite_to_mls_group"
+                | "admin.repair_mls_group_admins"
         );
         if expects_result {
             assert!(
@@ -341,6 +342,8 @@ fn agent_status_params_match_schema() {
         state: "ready".into(),
         identity: Some("npub1example".into()),
         capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+        daemon_version: "1.2.3".into(),
+        mls_wire_generation: "mdk-0.8-base64-encoding-tag".into(),
     };
     validator
         .validate(&serde_json::to_value(&full).unwrap())
@@ -350,6 +353,8 @@ fn agent_status_params_match_schema() {
         state: "initializing".into(),
         identity: None,
         capabilities: vec![],
+        daemon_version: "1.2.3".into(),
+        mls_wire_generation: "mdk-0.8-base64-encoding-tag".into(),
     };
     validator
         .validate(&serde_json::to_value(&minimal).unwrap())
@@ -359,6 +364,8 @@ fn agent_status_params_match_schema() {
         state: "not_a_state".into(),
         identity: None,
         capabilities: vec![],
+        daemon_version: "1.2.3".into(),
+        mls_wire_generation: "mdk-0.8-base64-encoding-tag".into(),
     };
     assert!(
         validator

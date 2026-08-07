@@ -80,6 +80,7 @@ async fn startup_reconciliation_restores_missing_mls_group_rows() {
             key_package,
             "reconciled-group".into(),
             vec![nostr::RelayUrl::parse("wss://relay.example").unwrap()],
+            vec![bot_keys.public_key(), peer_pubkey],
         )
         .await
         .expect("create group via engine")

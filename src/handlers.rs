@@ -122,6 +122,8 @@ impl HandlerRef {
             state: state.to_string(),
             identity: identity.map(String::from),
             capabilities: self.capabilities.clone(),
+            daemon_version: crate::version::VERSION.to_string(),
+            mls_wire_generation: crate::version::MLS_WIRE_GENERATION.to_string(),
         };
         let msg =
             JsonRpcMessage::notification("agent.status", Some(serde_json::to_value(&params)?));
@@ -745,6 +747,33 @@ mod tests {
             status.capabilities,
             vec!["ReadMessages".to_string(), "SendMessages".to_string()]
         );
+        assert_eq!(status.daemon_version, crate::version::VERSION);
+        assert_eq!(
+            status.mls_wire_generation,
+            crate::version::MLS_WIRE_GENERATION
+        );
+
+        // R41: `agent.status` is daemon-wide only -- no per-bot group map
+        // may ride on this broadcast. Assert the raw JSON shape, not just
+        // the typed struct, since an extra field would silently round-trip
+        // through `AgentStatusParams` without `deny_unknown_fields`.
+        let raw = serde_json::to_value(&status).expect("serialize status");
+        let keys: std::collections::HashSet<&str> = raw
+            .as_object()
+            .expect("status params must be a JSON object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let allowed: std::collections::HashSet<&str> = [
+            "state",
+            "identity",
+            "capabilities",
+            "daemon_version",
+            "mls_wire_generation",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(keys, allowed, "agent.status must carry no per-bot fields");
     }
 
     #[test]

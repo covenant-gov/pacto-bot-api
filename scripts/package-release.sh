@@ -30,18 +30,18 @@ asset_for_target() {
     aarch64-apple-darwin) echo darwin_arm64 ;;
     x86_64-unknown-linux-musl) echo linux_amd64 ;;
     aarch64-unknown-linux-musl) echo linux_arm64 ;;
-    x86_64-pc-windows-gnu) echo windows_amd64 ;;
-    x86_64-unknown-freebsd) echo freebsd_amd64 ;;
   esac
 }
 
+# Windows (x86_64-pc-windows-gnu) and FreeBSD (x86_64-unknown-freebsd) are
+# intentionally absent from the release artifact matrix: rusqlite#1025 blocks
+# the Windows SQLCipher/crypto link, and cargo-zigbuild#356 blocks FreeBSD
+# `kvm` symbol resolution. Both remain compile-checked in CI, just not shipped.
 targets=(
   x86_64-apple-darwin
   aarch64-apple-darwin
   x86_64-unknown-linux-musl
   aarch64-unknown-linux-musl
-  x86_64-pc-windows-gnu
-  x86_64-unknown-freebsd
 )
 
 for target in "${targets[@]}"; do

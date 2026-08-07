@@ -324,6 +324,8 @@ pub enum Method {
     AgentCreateMlsGroup,
     #[serde(rename = "agent.invite_to_mls_group")]
     AgentInviteToMlsGroup,
+    #[serde(rename = "admin.repair_mls_group_admins")]
+    AdminRepairMlsGroupAdmins,
 }
 
 impl Method {
@@ -359,6 +361,7 @@ impl Method {
             Method::AdminInviteToMlsGroup,
             Method::AgentCreateMlsGroup,
             Method::AgentInviteToMlsGroup,
+            Method::AdminRepairMlsGroupAdmins,
         ]
     }
 }
@@ -397,6 +400,7 @@ impl FromStr for Method {
             "admin.invite_to_mls_group" => Ok(Self::AdminInviteToMlsGroup),
             "agent.create_mls_group" => Ok(Self::AgentCreateMlsGroup),
             "agent.invite_to_mls_group" => Ok(Self::AgentInviteToMlsGroup),
+            "admin.repair_mls_group_admins" => Ok(Self::AdminRepairMlsGroupAdmins),
             _ => Err(DaemonError::MethodNotFound),
         }
     }
@@ -634,6 +638,12 @@ pub struct CreateMlsGroupParams {
     pub bot_id: String,
     pub group_name: String,
     pub recipient: String,
+    /// U14: explicit admin set (npub or hex Nostr public keys). Additive
+    /// only -- when omitted, the daemon defaults to the creator plus the
+    /// invited recipient instead of the pre-parity sole-creator-admin
+    /// default. MDK itself rejects a set omitting the creator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admins: Option<Vec<String>>,
 }
 
 /// Typed payload for the `admin.invite_to_mls_group` and
@@ -653,11 +663,28 @@ pub struct MlsGroupResponse {
     pub wire_id: String,
 }
 
+/// Typed payload for the `admin.repair_mls_group_admins` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairMlsGroupAdminsParams {
+    pub bot_id: String,
+    pub group_name: String,
+}
+
+/// Typed payload returned by the `admin.repair_mls_group_admins` JSON-RPC
+/// method: the resulting admin set as npub-encoded public keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairMlsGroupAdminsResponse {
+    pub admins: Vec<String>,
+}
+
 /// Typed payload for the `agent.status` JSON-RPC notification.
 ///
 /// Matches the `params` schema declared in `schemas/jsonrpc.json` for the
 /// `agent.status` method: `state` is required, `identity` and `capabilities`
-/// are optional.
+/// are optional. `daemon_version` and `mls_wire_generation` are
+/// daemon-wide only (R41) -- this notification broadcasts to every
+/// registered handler, so per-bot or per-group detail belongs on
+/// `pacto-bot-admin diagnose` instead, never here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStatusParams {
     /// Current daemon lifecycle state.
@@ -668,6 +695,10 @@ pub struct AgentStatusParams {
     /// Capabilities available to the handler.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Daemon crate version (R41: daemon-wide only, no per-bot detail).
+    pub daemon_version: String,
+    /// MLS wire encoding generation this daemon speaks (R41).
+    pub mls_wire_generation: String,
 }
 
 /// Typed payload for the `agent.is_squad_member` JSON-RPC method.
@@ -804,6 +835,8 @@ mod tests {
             state: "ready".into(),
             identity: Some("npub1test".into()),
             capabilities: vec!["ReadMessages".into(), "SendMessages".into()],
+            daemon_version: "1.2.3".into(),
+            mls_wire_generation: "mdk-0.8-base64-encoding-tag".into(),
         };
         let msg =
             JsonRpcMessage::notification("agent.status", Some(serde_json::to_value(&params)?));
@@ -828,6 +861,8 @@ mod tests {
             state: "initializing".into(),
             identity: None,
             capabilities: vec![],
+            daemon_version: "1.2.3".into(),
+            mls_wire_generation: "mdk-0.8-base64-encoding-tag".into(),
         };
         let minimal_json = serde_json::to_value(&minimal)?;
         assert!(minimal_json.get("state").is_some());

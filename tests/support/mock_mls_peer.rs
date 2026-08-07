@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 #![allow(clippy::expect_used)]
 
+use base64::Engine;
 use mdk_core::prelude::*;
 use mdk_sqlite_storage::MdkSqliteStorage;
 use nostr::{Event, EventBuilder, Keys, Kind, RelayUrl, Tag, Timestamp, UnsignedEvent};
@@ -63,6 +64,64 @@ impl MockMlsPeer {
         unsigned.sign(&self.keys).await.expect("sign key package")
     }
 
+    /// Create a key package event using the addressable kind:30443 format
+    /// (`tags_30443`, which includes the mandatory `d` tag). Used to test
+    /// that the daemon accepts the current MIP-00 addressable KeyPackage
+    /// kind, not just the legacy kind:443.
+    pub async fn create_key_package_event_kind_30443(&self, relays: Vec<String>) -> Event {
+        let relay_urls: Vec<RelayUrl> = relays
+            .into_iter()
+            .filter_map(|r| RelayUrl::parse(&r).ok())
+            .collect();
+        let key_package_data = self
+            .engine
+            .create_key_package_for_event(&self.keys.public_key(), relay_urls)
+            .expect("create key package");
+        let unsigned = UnsignedEvent::new(
+            self.keys.public_key(),
+            Timestamp::now(),
+            Kind::Custom(30443),
+            key_package_data.tags_30443,
+            key_package_data.content,
+        );
+        unsigned.sign(&self.keys).await.expect("sign key package")
+    }
+
+    /// Create a KeyPackage event whose content is hex-encoded and whose
+    /// tags omit the required `encoding` tag -- the pre-MIP-00/MIP-02 wire
+    /// format MDK 0.8.0 rejects as a peer-version mismatch rather than a
+    /// generic parse failure. All other required tags are left intact.
+    pub async fn create_key_package_event_missing_encoding_tag(
+        &self,
+        relays: Vec<String>,
+    ) -> Event {
+        let relay_urls: Vec<RelayUrl> = relays
+            .into_iter()
+            .filter_map(|r| RelayUrl::parse(&r).ok())
+            .collect();
+        let key_package_data = self
+            .engine
+            .create_key_package_for_event(&self.keys.public_key(), relay_urls)
+            .expect("create key package");
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(&key_package_data.content)
+            .expect("decode base64 key package content");
+        let hex_content = hex::encode(raw);
+        let tags: Vec<Tag> = key_package_data
+            .tags_443
+            .into_iter()
+            .filter(|t| t.as_slice().first().map(String::as_str) != Some("encoding"))
+            .collect();
+        let unsigned = UnsignedEvent::new(
+            self.keys.public_key(),
+            Timestamp::now(),
+            Kind::MlsKeyPackage,
+            tags,
+            hex_content,
+        );
+        unsigned.sign(&self.keys).await.expect("sign key package")
+    }
+
     /// Create a key package with arbitrary content and timestamp.
     ///
     /// The signature is valid for this peer's public key, but the content may
@@ -110,6 +169,28 @@ impl MockMlsPeer {
             *recipient,
             Timestamp::now(),
             Kind::MlsKeyPackage,
+            tags,
+            content,
+        );
+        unsigned
+            .sign(&forger)
+            .await
+            .expect("sign forged key package")
+    }
+
+    /// Same as [`MockMlsPeer::create_forged_key_package_event`] but kind:30443,
+    /// to verify the kind-guard widening didn't weaken the authorship check.
+    pub async fn create_forged_key_package_event_kind_30443(
+        recipient: &nostr::PublicKey,
+        relays: Vec<String>,
+        content: String,
+    ) -> Event {
+        let forger = Keys::generate();
+        let tags = relays_to_tags(relays);
+        let unsigned = UnsignedEvent::new(
+            *recipient,
+            Timestamp::now(),
+            Kind::Custom(30443),
             tags,
             content,
         );

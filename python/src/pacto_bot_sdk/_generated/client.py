@@ -131,7 +131,7 @@ class PactoClient:
                 break
             yield notification
 
-    async def admin_create_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminCreateMlsGroupResponse:
+    async def admin_create_mls_group(self, bot_id: str, group_name: str, recipient: str, admins: list[str] | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminCreateMlsGroupResponse:
         """
         Call JSON-RPC method `admin.create_mls_group`.
 
@@ -144,7 +144,7 @@ class PactoClient:
 
         jsonrpc_method: ``"admin.create_mls_group"``
         """
-        params = models.AdminCreateMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params = models.AdminCreateMlsGroupParams(admins=admins, bot_id=bot_id, group_name=group_name, recipient=recipient)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("admin.create_mls_group", params_dict, timeout=timeout)
         result = response.get('result')
@@ -169,6 +169,25 @@ class PactoClient:
         result = response.get('result')
         return models.AdminInviteToMlsGroupResponse.model_validate(result)
 
+    async def admin_repair_mls_group_admins(self, bot_id: str, group_name: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminRepairMlsGroupAdminsResponse:
+        """
+        Call JSON-RPC method `admin.repair_mls_group_admins`.
+
+        Expand a sole-admin MLS group's admin set to every current member (admin-only).
+
+        Example:
+
+            >>> result = await client.admin_repair_mls_group_admins(...)
+            >>> isinstance(result, AdminRepairMlsGroupAdminsResponse)
+
+        jsonrpc_method: ``"admin.repair_mls_group_admins"``
+        """
+        params = models.AdminRepairMlsGroupAdminsParams(bot_id=bot_id, group_name=group_name)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("admin.repair_mls_group_admins", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AdminRepairMlsGroupAdminsResponse.model_validate(result)
+
     async def admin_send_test_dm(self, bot_id: str, content: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AdminSendTestDmResponse:
         """
         Call JSON-RPC method `admin.send_test_dm`.
@@ -188,7 +207,7 @@ class PactoClient:
         result = response.get('result')
         return models.AdminSendTestDmResponse.model_validate(result)
 
-    async def agent_create_mls_group(self, bot_id: str, group_name: str, recipient: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentCreateMlsGroupResponse:
+    async def agent_create_mls_group(self, bot_id: str, group_name: str, recipient: str, admins: list[str] | None = None, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentCreateMlsGroupResponse:
         """
         Call JSON-RPC method `agent.create_mls_group`.
 
@@ -201,7 +220,7 @@ class PactoClient:
 
         jsonrpc_method: ``"agent.create_mls_group"``
         """
-        params = models.AgentCreateMlsGroupParams(bot_id=bot_id, group_name=group_name, recipient=recipient)
+        params = models.AgentCreateMlsGroupParams(admins=admins, bot_id=bot_id, group_name=group_name, recipient=recipient)
         params_dict = params.model_dump(mode='json', exclude_none=True)
         response = await self._request("agent.create_mls_group", params_dict, timeout=timeout)
         result = response.get('result')
@@ -325,7 +344,7 @@ class PactoClient:
         """
         Call JSON-RPC method `agent.publish_key_package`.
 
-        Publish a Nostr MLS KeyPackage event (kind:443) for the specified bot.
+        Publish a Nostr MLS KeyPackage event (kind:443, base64-encoded content with an `encoding` tag per MIP-00/MIP-02) for the specified bot.
 
         Example:
 

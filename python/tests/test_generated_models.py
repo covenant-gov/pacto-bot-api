@@ -232,17 +232,23 @@ def test_agent_error_params_requires_bot_id_and_message():
 def test_agent_status_params_constructs_with_valid_data():
     params = AgentStatusParams(
         state="ready",
+        daemon_version="0.10.0",
+        mls_wire_generation="mip-00-02-base64",
         identity="npub1bot",
         capabilities=["ReadMessages", "SendMessages"],
     )
     assert params.state == "ready"
+    assert params.daemon_version == "0.10.0"
+    assert params.mls_wire_generation == "mip-00-02-base64"
     assert params.identity == "npub1bot"
     assert params.capabilities == ["ReadMessages", "SendMessages"]
     assert params.jsonrpc_method == "agent.status"
 
 
 def test_agent_status_params_optional_fields_default_to_none():
-    params = AgentStatusParams(state="ready")
+    params = AgentStatusParams(
+        state="ready", daemon_version="0.10.0", mls_wire_generation="mip-00-02-base64"
+    )
     assert params.identity is None
     assert params.capabilities is None
 

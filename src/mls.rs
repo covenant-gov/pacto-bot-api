@@ -59,6 +59,27 @@ pub enum MlsError {
     #[error("invalid MLS key package")]
     InvalidKeyPackage,
 
+    /// The peer's KeyPackage or Welcome uses the pre-MIP-00/MIP-02 wire
+    /// format (hex content, no `encoding` tag) instead of base64 + an
+    /// explicit `encoding` tag. Distinct from [`MlsError::InvalidKeyPackage`]
+    /// and the generic [`MlsError::Engine`] fallback so a caller or the
+    /// aggregated diagnostics can name "peer needs to upgrade" apart from a
+    /// genuinely malformed KeyPackage/Welcome.
+    #[error("peer key package or welcome uses a version-mismatched wire format")]
+    PeerVersionMismatch,
+
+    /// U14: mid-restoration failure in `AddMember`'s remove-then-re-add
+    /// path. The remove commit was created and merged into this bot's
+    /// local engine state -- the bot's epoch already advanced -- but the
+    /// subsequent re-add of a fresh KeyPackage failed. The carried event
+    /// is the *remove* commit's evolution event; the caller MUST still
+    /// attempt to publish it (best effort) so that group peers converge on
+    /// "member removed", matching this bot's own local state, instead of
+    /// silently diverging from an unbroadcast commit. Reported to JSON-RPC
+    /// callers as `-32027`, naming the member as now outside the group.
+    #[error("MLS restoration incomplete: member removed but not re-added")]
+    RestorationIncomplete { remove_evolution_event: Box<Event> },
+
     /// The MLS database path is unsafe (symlink, mountpoint, or shared temp directory).
     #[error("MLS database path is insecure: {0}")]
     InsecurePath(String),
@@ -72,6 +93,40 @@ pub enum MlsError {
     Key(#[from] crate::mls_key::MlsKeyError),
 }
 
+/// Exact `(variant, message)` pairs MDK 0.8.0 uses to reject a KeyPackage or
+/// Welcome that is missing the required `encoding` tag (MIP-00/MIP-02) --
+/// i.e. a peer still speaking the pre-MIP-00/MIP-02 hex wire format:
+///   - `mdk_core::Error::KeyPackage("Missing required encoding tag")`
+///     (mdk-core-0.8.0/src/key_packages.rs:379-380), reached from
+///     `engine.create_group`/`engine.add_members` because
+///     `validate_key_package_tags` does not itself check for `encoding`.
+///   - `mdk_core::Error::Welcome("Missing required encoding tag")`
+///     (mdk-core-0.8.0/src/welcomes.rs:449-472). This variant is NOT
+///     reachable through `engine.process_welcome` in 0.8.0: its own
+///     structural gate (`validate_welcome_event`) intercepts a missing
+///     `encoding` tag first and returns `Error::InvalidWelcomeMessage` --
+///     the same variant returned for eleven other, unrelated structural
+///     checks in that file. Matching `InvalidWelcomeMessage` here would
+///     misreport every malformed Welcome as a peer-version-mismatch, so
+///     inbound Welcome rumors are pre-checked by
+///     [`welcome_missing_encoding_tag`] before ever reaching the engine;
+///     this constant/helper stay in place so a future MDK release that
+///     defers the encoding check to `preview_welcome` is still classified
+///     correctly, and so an upstream message change fails visibly in this
+///     one place instead of silently.
+const MISSING_ENCODING_TAG_MESSAGE: &str = "Missing required encoding tag";
+
+/// True when `err` is one of the two exact MDK rejections named in
+/// [`MISSING_ENCODING_TAG_MESSAGE`]'s doc comment.
+fn is_missing_encoding_tag(err: &mdk_core::Error) -> bool {
+    match err {
+        mdk_core::Error::KeyPackage(msg) | mdk_core::Error::Welcome(msg) => {
+            msg == MISSING_ENCODING_TAG_MESSAGE
+        }
+        _ => false,
+    }
+}
+
 impl From<mdk_core::Error> for MlsError {
     fn from(err: mdk_core::Error) -> Self {
         // Log only a sanitized error category at DEBUG; never expose raw MDK
@@ -83,6 +138,7 @@ impl From<mdk_core::Error> for MlsError {
         match err {
             mdk_core::Error::GroupNotFound => MlsError::GroupNotFound,
             mdk_core::Error::Crypto(_) => MlsError::CryptoError,
+            _ if is_missing_encoding_tag(&err) => MlsError::PeerVersionMismatch,
             _ => {
                 // Any unclassified MDK error is rewritten to a fixed, generic message
                 // so that raw MDK strings never reach callers.
@@ -211,15 +267,23 @@ impl MdkCallback for MdkRollbackObserver {
     }
 }
 
+/// The kind:30443 addressable (NIP-33) KeyPackage kind. MDK 0.8.0 accepts
+/// both this and the legacy `Kind::MlsKeyPackage` (443) through May 31,
+/// 2026; the daemon still only *publishes* kind:443 (per R8), but must
+/// accept either kind when fetching or validating a peer's KeyPackage.
+const MLS_KEY_PACKAGE_KIND_ADDRESSABLE: Kind = Kind::Custom(30443);
+
 /// Validate a KeyPackage event before passing it to the MDK engine.
 ///
-/// The event must have a valid signature, be kind:443, have non-empty content,
-/// and be authored by the expected recipient.
+/// The event must have a valid signature, be kind:443 or kind:30443, have
+/// non-empty content, and be authored by the expected recipient.
 fn validate_key_package(key_package: &Event, recipient: &PublicKey) -> Result<(), MlsError> {
     if key_package.verify().is_err() {
         return Err(MlsError::InvalidKeyPackage);
     }
-    if key_package.kind != Kind::MlsKeyPackage {
+    if key_package.kind != Kind::MlsKeyPackage
+        && key_package.kind != MLS_KEY_PACKAGE_KIND_ADDRESSABLE
+    {
         return Err(MlsError::InvalidKeyPackage);
     }
     if key_package.content.is_empty() {
@@ -229,6 +293,22 @@ fn validate_key_package(key_package: &Event, recipient: &PublicKey) -> Result<()
         return Err(MlsError::InvalidKeyPackage);
     }
     Ok(())
+}
+
+/// True when a Welcome rumor's tags are missing a valid `["encoding",
+/// "base64"]` tag.
+///
+/// Checked before handing the rumor to `engine.process_welcome`: as
+/// documented on [`MISSING_ENCODING_TAG_MESSAGE`], MDK 0.8.0's own
+/// structural gate rejects this case with the generic
+/// `Error::InvalidWelcomeMessage` (shared with eleven unrelated checks)
+/// before ever reaching its encoding-specific error, so this is the only
+/// way to name a peer-version-mismatch distinctly for Welcomes.
+fn welcome_missing_encoding_tag(rumor: &UnsignedEvent) -> bool {
+    !rumor.tags.iter().any(|tag| {
+        let slice = tag.as_slice();
+        slice.len() >= 2 && slice[0] == "encoding" && slice[1].eq_ignore_ascii_case("base64")
+    })
 }
 
 /// Fill a fixed-size byte buffer with random bytes from `getrandom`.
@@ -277,17 +357,32 @@ enum MlsCommand {
         key_package: Event,
         group_name: String,
         relays: Vec<RelayUrl>,
+        /// U14: explicit admin set. Callers pass creator+recipient by
+        /// default (`do_create_mls_group` computes the default before
+        /// sending this command); an explicit list is additive-only and
+        /// forwarded verbatim. MDK itself rejects an admin set omitting
+        /// the creator, so this can never strand the bot outside its own
+        /// group.
+        admins: Vec<PublicKey>,
         tx: oneshot::Sender<Result<(String, UnsignedEvent), MlsError>>,
     },
     AddMember {
         wire_id: String,
         recipient: PublicKey,
         key_package: Event,
-        tx: oneshot::Sender<Result<(UnsignedEvent, Event), MlsError>>,
+        tx: oneshot::Sender<Result<AddMemberOutcome, MlsError>>,
+    },
+    /// U14 repair command: expand a group's admin set to include every
+    /// current member, closing the sole-admin-squad hole for a group this
+    /// bot still holds live state for. Refused by the engine itself
+    /// (`Error::NotAdmin`) if the bot is not currently an admin.
+    RepairGroupAdmins {
+        wire_id: String,
+        tx: oneshot::Sender<Result<(Event, Vec<PublicKey>), MlsError>>,
     },
     LeaveGroup {
         wire_id: String,
-        tx: oneshot::Sender<Result<Event, MlsError>>,
+        tx: oneshot::Sender<Result<LeaveGroupOutcome, MlsError>>,
     },
     ResolveWireId {
         wire_id: String,
@@ -444,6 +539,9 @@ impl MlsEngineHandle {
                         let result: Result<String, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
+                                    if welcome_missing_encoding_tag(&welcome_rumor) {
+                                        return Err(MlsError::PeerVersionMismatch);
+                                    }
                                     engine.process_welcome(&event_id, &welcome_rumor)?;
 
                                     // Idempotency: if this welcome was already processed,
@@ -478,6 +576,9 @@ impl MlsEngineHandle {
                         let result: Result<(), MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
+                                    if welcome_missing_encoding_tag(&welcome_rumor) {
+                                        return Err(MlsError::PeerVersionMismatch);
+                                    }
                                     engine.process_welcome(&event_id, &welcome_rumor)?;
                                     Ok(())
                                 })()
@@ -505,6 +606,9 @@ impl MlsEngineHandle {
                                         tags: welcome_rumor.tags.clone(),
                                         content: welcome_rumor.content.clone(),
                                     };
+                                    if welcome_missing_encoding_tag(&unsigned) {
+                                        return Err(MlsError::PeerVersionMismatch);
+                                    }
                                     engine.process_welcome(&event_id, &unsigned)?;
                                     Ok(())
                                 })()
@@ -550,6 +654,7 @@ impl MlsEngineHandle {
                         key_package,
                         group_name,
                         relays,
+                        admins,
                         tx,
                     } => {
                         let result: Result<(String, UnsignedEvent), MlsError> =
@@ -568,7 +673,7 @@ impl MlsEngineHandle {
                                         Some(image_key),
                                         Some(image_nonce),
                                         relays,
-                                        vec![creator],
+                                        admins,
                                     );
 
                                     let result =
@@ -594,7 +699,7 @@ impl MlsEngineHandle {
                         key_package,
                         tx,
                     } => {
-                        let result: Result<(UnsignedEvent, Event), MlsError> =
+                        let result: Result<AddMemberOutcome, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
                                     let groups = engine.get_groups()?;
@@ -604,20 +709,101 @@ impl MlsEngineHandle {
                                             hex::encode(g.nostr_group_id.as_slice()) == wire_id
                                         })
                                         .ok_or(MlsError::GroupNotFound)?;
+                                    let group_id = &group.mls_group_id;
 
                                     validate_key_package(&key_package, &recipient)?;
 
-                                    let update =
-                                        engine.add_members(&group.mls_group_id, &[key_package])?;
-                                    engine.merge_pending_commit(&group.mls_group_id)?;
+                                    // U14: a recipient who already holds a leaf is being
+                                    // restored (removed then re-added within this one
+                                    // command), not invited for the first time. Detected
+                                    // via the engine's live membership, never a cached
+                                    // set, so this reflects the true current leaf state.
+                                    let is_restoration =
+                                        engine.get_members(group_id)?.contains(&recipient);
 
-                                    let welcome_rumor = update
-                                        .welcome_rumors
-                                        .and_then(|v| v.into_iter().next())
-                                        .ok_or_else(|| {
-                                            MlsError::Engine("missing welcome rumor".into())
-                                        })?;
-                                    Ok((welcome_rumor, update.evolution_event))
+                                    let mut remove_evolution_event: Option<Event> = None;
+                                    if is_restoration {
+                                        let remove_update =
+                                            engine.remove_members(group_id, &[recipient])?;
+                                        engine.merge_pending_commit(group_id)?;
+                                        remove_evolution_event =
+                                            Some(remove_update.evolution_event);
+                                    }
+
+                                    let add_result: Result<(UnsignedEvent, Event), MlsError> =
+                                        (|| {
+                                            let update =
+                                                engine.add_members(group_id, &[key_package])?;
+                                            engine.merge_pending_commit(group_id)?;
+                                            let welcome_rumor = update
+                                                .welcome_rumors
+                                                .and_then(|v| v.into_iter().next())
+                                                .ok_or_else(|| {
+                                                    MlsError::Engine("missing welcome rumor".into())
+                                                })?;
+                                            Ok((welcome_rumor, update.evolution_event))
+                                        })();
+
+                                    match (add_result, remove_evolution_event) {
+                                        (Ok((welcome_rumor, evolution_event)), remove) => {
+                                            Ok(AddMemberOutcome {
+                                                welcome_rumor,
+                                                evolution_event,
+                                                remove_evolution_event: remove,
+                                            })
+                                        }
+                                        // The remove commit already merged into this
+                                        // bot's local engine state -- its epoch already
+                                        // advanced -- but the re-add failed. Surface the
+                                        // remove evolution event so the caller can still
+                                        // publish it and converge peers on "member
+                                        // removed", matching local state.
+                                        (Err(_), Some(remove_evt)) => {
+                                            Err(MlsError::RestorationIncomplete {
+                                                remove_evolution_event: Box::new(remove_evt),
+                                            })
+                                        }
+                                        (Err(e), None) => Err(e),
+                                    }
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
+                    MlsCommand::RepairGroupAdmins { wire_id, tx } => {
+                        let result: Result<(Event, Vec<PublicKey>), MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let group = groups
+                                        .iter()
+                                        .find(|g| {
+                                            hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                        })
+                                        .ok_or(MlsError::GroupNotFound)?;
+                                    let group_id = &group.mls_group_id;
+
+                                    // Expand admins to every current member -- closes
+                                    // the sole-admin hole for every member present, not
+                                    // just a single hand-picked successor.
+                                    let members = engine.get_members(group_id)?;
+                                    let mut new_admins: Vec<PublicKey> =
+                                        group.admin_pubkeys.iter().copied().collect();
+                                    for member in &members {
+                                        if !new_admins.contains(member) {
+                                            new_admins.push(*member);
+                                        }
+                                    }
+
+                                    let update = engine.update_group_data(
+                                        group_id,
+                                        NostrGroupDataUpdate::new().admins(new_admins.clone()),
+                                    )?;
+                                    engine.merge_pending_commit(group_id)?;
+                                    Ok((update.evolution_event, new_admins))
                                 })()
                             }))
                             .unwrap_or_else(|e| {
@@ -627,7 +813,7 @@ impl MlsEngineHandle {
                         let _ = tx.send(result);
                     }
                     MlsCommand::LeaveGroup { wire_id, tx } => {
-                        let result: Result<Event, MlsError> =
+                        let result: Result<LeaveGroupOutcome, MlsError> =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 (|| {
                                     let groups = engine.get_groups()?;
@@ -637,9 +823,30 @@ impl MlsEngineHandle {
                                             hex::encode(g.nostr_group_id.as_slice()) == wire_id
                                         })
                                         .ok_or(MlsError::GroupNotFound)?;
+                                    let group_id = &group.mls_group_id;
 
-                                    let update = engine.leave_group(&group.mls_group_id)?;
-                                    Ok(update.evolution_event)
+                                    // U14: under the new creator+recipient
+                                    // default admin set, the departing
+                                    // member is very often an admin. Per
+                                    // MIP-03 an admin must self-demote
+                                    // before sending a SelfRemove proposal
+                                    // -- do that transparently here so
+                                    // `leave_group` keeps working for both
+                                    // admin and non-admin callers.
+                                    let self_demote_event = match engine.self_demote(group_id) {
+                                        Ok(update) => {
+                                            engine.merge_pending_commit(group_id)?;
+                                            Some(update.evolution_event)
+                                        }
+                                        Err(mdk_core::Error::NotAdmin) => None,
+                                        Err(e) => return Err(MlsError::from(e)),
+                                    };
+
+                                    let update = engine.leave_group(group_id)?;
+                                    Ok(LeaveGroupOutcome {
+                                        self_demote_event,
+                                        leave_event: update.evolution_event,
+                                    })
                                 })()
                             }))
                             .unwrap_or_else(|e| {
@@ -767,6 +974,11 @@ impl MlsEngineHandle {
                                             wire_id: hex::encode(group.nostr_group_id.as_slice()),
                                             name: group.name.clone(),
                                             members,
+                                            admin_pubkeys: group
+                                                .admin_pubkeys
+                                                .iter()
+                                                .copied()
+                                                .collect(),
                                             mls_group_id: group.mls_group_id.as_slice().to_vec(),
                                         });
                                     }
@@ -994,9 +1206,11 @@ impl MlsEngineHandle {
 
     /// Leave an existing MLS group identified by its wire id.
     ///
-    /// Returns the signed kind:445 evolution event containing the leave
-    /// proposal. The caller is responsible for publishing it to relays.
-    pub async fn leave_group(&self, wire_id: &str) -> Result<Event, MlsError> {
+    /// Per MIP-03, an admin must self-demote before sending a SelfRemove
+    /// proposal -- done transparently here when needed. See
+    /// [`LeaveGroupOutcome`] for the resulting publish obligations and
+    /// their required order.
+    pub async fn leave_group(&self, wire_id: &str) -> Result<LeaveGroupOutcome, MlsError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(MlsCommand::LeaveGroup {
@@ -1068,7 +1282,9 @@ impl MlsEngineHandle {
     /// Create a new MLS group with the recipient as the initial member.
     ///
     /// Returns the Squad wire id (`hex(nostr_group_id)`) and the unsigned welcome
-    /// rumor for the new member.
+    /// rumor for the new member. `admins` is the explicit admin set; MDK
+    /// rejects a set omitting `creator`, so an explicit caller-supplied
+    /// list can never strand the bot outside its own group.
     pub async fn create_group(
         &self,
         creator: PublicKey,
@@ -1076,6 +1292,7 @@ impl MlsEngineHandle {
         key_package: Event,
         group_name: String,
         relays: Vec<RelayUrl>,
+        admins: Vec<PublicKey>,
     ) -> Result<(String, UnsignedEvent), MlsError> {
         let (tx, rx) = oneshot::channel();
         self.tx
@@ -1085,6 +1302,7 @@ impl MlsEngineHandle {
                 key_package,
                 group_name,
                 relays,
+                admins,
                 tx,
             })
             .await
@@ -1094,14 +1312,16 @@ impl MlsEngineHandle {
 
     /// Add a member to an existing MLS group identified by its wire id.
     ///
-    /// Returns the unsigned welcome rumor for the new member and the signed group
-    /// evolution event (kind:445) to publish to existing members.
+    /// If `recipient` already holds a leaf (a restoration, not a first
+    /// invite), removes then re-adds them within this one call; see
+    /// [`AddMemberOutcome::remove_evolution_event`] for the resulting
+    /// publish obligation.
     pub async fn add_member(
         &self,
         wire_id: &str,
         recipient: PublicKey,
         key_package: Event,
-    ) -> Result<(UnsignedEvent, Event), MlsError> {
+    ) -> Result<AddMemberOutcome, MlsError> {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(MlsCommand::AddMember {
@@ -1114,6 +1334,55 @@ impl MlsEngineHandle {
             .map_err(|_| MlsError::WorkerDisconnected)?;
         rx.await.map_err(|_| MlsError::WorkerDisconnected)?
     }
+
+    /// U14 repair command: expand a group's admin set to include every
+    /// current member. Returns the signed evolution event to publish and
+    /// the resulting admin public keys. Refused with a non-admin engine
+    /// error if this bot is not currently an admin of the group.
+    pub async fn repair_group_admins(
+        &self,
+        wire_id: &str,
+    ) -> Result<(Event, Vec<PublicKey>), MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::RepairGroupAdmins {
+                wire_id: wire_id.to_string(),
+                tx,
+            })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+}
+
+/// Outcome of [`MlsEngineHandle::add_member`].
+#[derive(Debug, Clone)]
+pub struct AddMemberOutcome {
+    /// Unsigned welcome rumor (kind:444) for the added/restored member.
+    pub welcome_rumor: UnsignedEvent,
+    /// Signed evolution event (kind:445) for the add commit. Publish this
+    /// AFTER `remove_evolution_event`, when present.
+    pub evolution_event: Event,
+    /// Present only when `recipient` already held a leaf: the signed
+    /// evolution event (kind:445) for the remove commit that preceded the
+    /// re-add. MUST be published to group relays BEFORE `evolution_event`
+    /// -- dropping it desyncs this bot's epoch from every peer's, the same
+    /// failure class U5 prevents for `Proposal` handling.
+    pub remove_evolution_event: Option<Event>,
+}
+
+/// Outcome of [`MlsEngineHandle::leave_group`].
+#[derive(Debug, Clone)]
+pub struct LeaveGroupOutcome {
+    /// Present only when the departing member was an admin: the signed
+    /// GroupContextExtensions commit self-demoting them per MIP-03. MUST
+    /// be published to group relays BEFORE `leave_event` so peers see the
+    /// demotion before the leave proposal.
+    pub self_demote_event: Option<Event>,
+    /// The signed SelfRemove (or legacy Remove) proposal event (kind:445).
+    /// Another member must commit it -- the departing member cannot
+    /// commit their own removal.
+    pub leave_event: Event,
 }
 
 /// Group information returned after accepting a Welcome.
@@ -1136,6 +1405,8 @@ pub struct MlsGroupListEntry {
     pub name: String,
     /// MLS group members as reported by the engine.
     pub members: Vec<PublicKey>,
+    /// MLS group admin public keys as reported by the engine (U14).
+    pub admin_pubkeys: Vec<PublicKey>,
     /// Raw MLS group id; primarily useful for further engine queries.
     pub mls_group_id: Vec<u8>,
 }
@@ -1376,6 +1647,7 @@ mod tests {
                 key_package,
                 "test-group".to_string(),
                 relays,
+                vec![creator_keys.public_key(), recipient_keys.public_key()],
             )
             .await
             .expect("create_group failed");
@@ -1402,18 +1674,20 @@ mod tests {
                 key_package1,
                 "test-group".to_string(),
                 relays.clone(),
+                vec![creator_keys.public_key(), member1_keys.public_key()],
             )
             .await
             .expect("create_group failed");
 
         let key_package2 = build_key_package(&engine, &member2_keys).await;
-        let (welcome_rumor, evolution_event) = engine
+        let outcome = engine
             .add_member(&wire_id, member2_keys.public_key(), key_package2)
             .await
             .expect("add_member failed");
 
-        assert!(!welcome_rumor.content.is_empty());
-        assert!(!evolution_event.content.is_empty());
+        assert!(!outcome.welcome_rumor.content.is_empty());
+        assert!(!outcome.evolution_event.content.is_empty());
+        assert!(outcome.remove_evolution_event.is_none());
     }
 
     #[tokio::test]
@@ -1434,13 +1708,11 @@ mod tests {
 
     #[tokio::test]
     async fn leave_group_returns_evolution_event() {
-        // MDK 0.8.0 enforces MIP-03: an admin must self-demote before it can
-        // send a SelfRemove proposal, and a sole admin has no one to demote
-        // to. `MlsEngineHandle::create_group` always makes the creator the
-        // sole admin (tracked as KD7/R11, deferred to a later unit), so this
-        // test exercises the other side of the membership: the invited
-        // recipient, who joins as a plain (non-admin) member and can leave
-        // directly.
+        // U14: the default admin set is now creator+recipient, so the
+        // invited recipient here is an admin and must self-demote (MIP-03)
+        // before it can send a SelfRemove proposal. `leave_group` handles
+        // that transparently -- this test proves both the demote commit
+        // and the leave proposal come back.
         let temp = test_tempdir();
         let creator_keys = Keys::generate();
         let recipient_keys = Keys::generate();
@@ -1457,6 +1729,7 @@ mod tests {
                 key_package,
                 "test-group".to_string(),
                 vec![RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![creator_keys.public_key(), recipient_keys.public_key()],
             )
             .await
             .expect("create_group failed");
@@ -1465,13 +1738,18 @@ mod tests {
             .await
             .expect("process_welcome_and_return_wire_id failed");
 
-        let evolution_event = member_engine
+        let outcome = member_engine
             .leave_group(&wire_id)
             .await
             .expect("leave_group failed");
 
-        assert!(!evolution_event.content.is_empty());
-        assert_eq!(evolution_event.kind, Kind::MlsGroupMessage);
+        let self_demote_event = outcome
+            .self_demote_event
+            .expect("recipient is an admin under the new default and must self-demote first");
+        assert!(!self_demote_event.content.is_empty());
+        assert_eq!(self_demote_event.kind, Kind::MlsGroupMessage);
+        assert!(!outcome.leave_event.content.is_empty());
+        assert_eq!(outcome.leave_event.kind, Kind::MlsGroupMessage);
     }
 
     #[tokio::test]
@@ -1522,6 +1800,7 @@ mod tests {
                 leaving_key_package,
                 "test-group".to_string(),
                 relays.clone(),
+                vec![admin_keys.public_key(), leaving_keys.public_key()],
             )
             .await
             .expect("create_group failed");
@@ -1533,10 +1812,12 @@ mod tests {
         // Admin adds a third, uninvolved member. The leaving member must
         // process that addition to stay in sync before it leaves.
         let staying_key_package = build_key_package(&staying_engine, &staying_keys).await;
-        let (staying_welcome, add_evolution_event) = admin_engine
+        let outcome = admin_engine
             .add_member(&wire_id, staying_keys.public_key(), staying_key_package)
             .await
             .expect("add_member failed");
+        let (staying_welcome, add_evolution_event) =
+            (outcome.welcome_rumor, outcome.evolution_event);
         staying_engine
             .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), staying_welcome)
             .await
@@ -1546,19 +1827,35 @@ mod tests {
             .await
             .expect("leaving member failed to sync the add-member commit");
 
-        // The member leaves: MDK builds a SelfRemove proposal but does not
-        // merge it locally -- the departing member cannot commit its own
-        // removal, per MDK's `leave_group` contract.
-        let leave_event = leaving_engine
+        // The member leaves. It is an admin under the new creator+
+        // recipient default, so it must self-demote first (MIP-03) --
+        // that commit is already merged locally but must still reach
+        // every peer before the leave proposal, same ordering discipline
+        // as U14's remove-then-add. MDK builds the SelfRemove proposal
+        // itself but does not merge it locally -- the departing member
+        // cannot commit its own removal, per MDK's `leave_group` contract.
+        let leave_outcome = leaving_engine
             .leave_group(&wire_id)
             .await
             .expect("leave_group failed");
+        let self_demote_event = leave_outcome
+            .self_demote_event
+            .expect("leaving member is an admin under the new default and must self-demote");
 
-        // Admin receives the proposal and, because it is an admin,
+        admin_engine
+            .decrypt_group_message(&self_demote_event)
+            .await
+            .expect("admin failed to process the self-demote commit");
+        staying_engine
+            .decrypt_group_message(&self_demote_event)
+            .await
+            .expect("staying member failed to process the self-demote commit");
+
+        // Admin receives the proposal and, because it is (still) an admin,
         // auto-commits it. The daemon must surface the resulting evolution
         // event as a publish obligation rather than silently drop it.
         let outcome = admin_engine
-            .decrypt_group_message(&leave_event)
+            .decrypt_group_message(&leave_outcome.leave_event)
             .await
             .expect("admin failed to process the self-remove proposal");
         let removal_evolution_event = match outcome {
@@ -1623,6 +1920,7 @@ mod tests {
                 wrong_kind,
                 "test-group".to_string(),
                 vec![],
+                vec![],
             )
             .await;
         assert!(matches!(result, Err(MlsError::InvalidKeyPackage)));
@@ -1638,6 +1936,7 @@ mod tests {
                 recipient_keys.public_key(),
                 empty_content,
                 "test-group".to_string(),
+                vec![],
                 vec![],
             )
             .await;
@@ -1659,6 +1958,7 @@ mod tests {
                 recipient_keys.public_key(),
                 wrong_author,
                 "test-group".to_string(),
+                vec![],
                 vec![],
             )
             .await;
@@ -1682,6 +1982,7 @@ mod tests {
                 recipient_keys.public_key(),
                 forged_signature,
                 "test-group".to_string(),
+                vec![],
                 vec![],
             )
             .await;
@@ -1707,6 +2008,7 @@ mod tests {
                 recipient_keys.public_key(),
                 bad_key_package,
                 "test-group".to_string(),
+                vec![],
                 vec![],
             )
             .await;
@@ -1811,5 +2113,62 @@ mod tests {
             DaemonError::from(result.unwrap_err()).to_json_rpc_code(),
             -32018
         );
+    }
+
+    #[tokio::test]
+    async fn validate_key_package_accepts_kind_30443() {
+        let recipient_keys = Keys::generate();
+        let key_package = crate::nostr_json::sign_builder(
+            EventBuilder::new(MLS_KEY_PACKAGE_KIND_ADDRESSABLE, "valid key package"),
+            &recipient_keys,
+        )
+        .expect("sign");
+
+        let result = validate_key_package(&key_package, &recipient_keys.public_key());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn mdk_error_missing_encoding_tag_maps_to_peer_version_mismatch() {
+        let key_package_err: MlsError =
+            mdk_core::Error::KeyPackage(MISSING_ENCODING_TAG_MESSAGE.to_string()).into();
+        assert!(matches!(key_package_err, MlsError::PeerVersionMismatch));
+
+        let welcome_err: MlsError =
+            mdk_core::Error::Welcome(MISSING_ENCODING_TAG_MESSAGE.to_string()).into();
+        assert!(matches!(welcome_err, MlsError::PeerVersionMismatch));
+
+        // A different KeyPackage/Welcome message must not be misclassified.
+        let other_err: MlsError = mdk_core::Error::KeyPackage("some other failure".into()).into();
+        assert!(matches!(other_err, MlsError::Engine(_)));
+
+        // `InvalidWelcomeMessage` (the twelve unrelated structural checks)
+        // must never be classified as a peer-version-mismatch.
+        let invalid_welcome_err: MlsError = mdk_core::Error::InvalidWelcomeMessage.into();
+        assert!(matches!(invalid_welcome_err, MlsError::Engine(_)));
+    }
+
+    #[test]
+    fn welcome_missing_encoding_tag_detects_absent_and_accepts_present() {
+        let with_encoding = UnsignedEvent::new(
+            Keys::generate().public_key(),
+            nostr::Timestamp::now(),
+            Kind::MlsWelcome,
+            vec![nostr::Tag::custom(
+                nostr::TagKind::Custom("encoding".into()),
+                ["base64"],
+            )],
+            "content",
+        );
+        assert!(!welcome_missing_encoding_tag(&with_encoding));
+
+        let without_encoding = UnsignedEvent::new(
+            Keys::generate().public_key(),
+            nostr::Timestamp::now(),
+            Kind::MlsWelcome,
+            Vec::<nostr::Tag>::new(),
+            "content",
+        );
+        assert!(welcome_missing_encoding_tag(&without_encoding));
     }
 }

@@ -16,7 +16,8 @@
         "attachment_max_bytes": { "type": "integer", "minimum": 1, "description": "Maximum plaintext attachment size in bytes, applied to inbound payloads before spooling and to outbound payloads before encryption" },
         "spool_outbound_retention_secs": { "type": "integer", "minimum": 1, "description": "Seconds an abandoned outbound spool entry is retained before the retention sweep deletes it" },
         "blob_servers": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Ordered list of Blossom hosts attachment ciphertext is uploaded to; entries are tried in order until one accepts the blob" },
-        "mls_archive_retention_days": { "type": "integer", "minimum": 0, "description": "Days to keep an archived legacy MLS store after a reset before it is pruned; 0 (default) deletes the legacy store immediately instead of archiving it. An encrypted store archived because its key was wrong or missing is always kept regardless of this setting." }
+        "mls_archive_retention_days": { "type": "integer", "minimum": 0, "description": "Days to keep an archived legacy MLS store after a reset before it is pruned; 0 (default) deletes the legacy store immediately instead of archiving it. An encrypted store archived because its key was wrong or missing is always kept regardless of this setting." },
+        "stuck_bot_warning_min_age_secs": { "type": "integer", "minimum": 0, "description": "Minimum age in seconds a stuck bot or MLS group must reach before the periodic tick warns about it: a group still state-lost, a bot whose MLS engine is still unavailable, or a sole-admin squad still unrepaired." }
       }
     },
     "bots": {

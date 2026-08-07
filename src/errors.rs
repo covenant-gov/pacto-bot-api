@@ -169,6 +169,31 @@ pub enum DaemonError {
     /// never configured for MLS at all.
     #[error("MLS engine unavailable: bot store failed a fail-closed classification")]
     MlsEngineUnavailable,
+
+    /// U13/KTD9: a caller-initiated fetch resolved a peer's KeyPackage or
+    /// Welcome that is missing the required `encoding` tag -- the peer is
+    /// on the pre-MIP-00/MIP-02 wire format. Distinct from
+    /// [`DaemonError::InvalidKeyPackage`], which covers a genuinely
+    /// malformed KeyPackage/Welcome, so an operator can tell "peer needs to
+    /// upgrade" apart from "this KeyPackage is corrupt".
+    #[error("peer key package or welcome uses a version-mismatched wire format")]
+    PeerVersionMismatch,
+
+    /// U14/KTD9: `AddMember`'s remove-then-re-add restoration merged the
+    /// remove commit locally but failed before the re-add committed. The
+    /// member is genuinely outside the group now (matching this bot's own
+    /// advanced local state) -- this names that resulting condition rather
+    /// than surfacing a generic engine error.
+    #[error("MLS restoration incomplete: {recipient_npub} is now outside the group")]
+    MlsRestorationIncomplete { recipient_npub: String },
+
+    /// U14: `admin.repair_mls_group_admins` refuses to run against a group
+    /// this bot no longer holds live MLS state for. Distinct message from
+    /// [`DaemonError::MlsGroupStateLost`] (send refusal, -32026) so the
+    /// operator sees the actual next step instead of a raw engine
+    /// `GroupNotFound`.
+    #[error("MLS group repair refused: state was lost; {prerequisite} required first")]
+    MlsGroupRepairPrerequisite { prerequisite: &'static str },
 }
 
 impl DaemonError {
@@ -193,7 +218,10 @@ impl DaemonError {
             DaemonError::InvalidReaction => -32023,
             DaemonError::SpoolEntryMissing => -32024,
             DaemonError::MlsGroupStateLost => -32026,
+            DaemonError::PeerVersionMismatch => -32025,
             DaemonError::MlsEngineUnavailable => -32028,
+            DaemonError::MlsRestorationIncomplete { .. } => -32027,
+            DaemonError::MlsGroupRepairPrerequisite { .. } => -32029,
             DaemonError::MlsEngineNotConfigured => -32013,
             DaemonError::MlsGroupAlreadyExists => -32014,
             DaemonError::MlsGroupNotFound => -32015,
@@ -219,6 +247,7 @@ impl From<crate::mls::MlsError> for DaemonError {
         match err {
             crate::mls::MlsError::GroupNotFound => DaemonError::MlsGroupNotFound,
             crate::mls::MlsError::InvalidKeyPackage => DaemonError::InvalidKeyPackage,
+            crate::mls::MlsError::PeerVersionMismatch => DaemonError::PeerVersionMismatch,
             other => DaemonError::Mls(other),
         }
     }
@@ -337,9 +366,41 @@ mod tests {
     fn u11_error_codes_match_plan() {
         // KTD9: -32026 group state lost / awaiting re-invitation (R28),
         // -32028 bot engine unavailable after a fail-closed classification
-        // (R49). -32025 and -32027 are reserved by KTD9 for other units.
+        // (R49). -32027 is U14's `MlsRestorationIncomplete`, asserted in
+        // `u14_error_codes_match_plan` below.
         assert_eq!(DaemonError::MlsGroupStateLost.to_json_rpc_code(), -32026);
         assert_eq!(DaemonError::MlsEngineUnavailable.to_json_rpc_code(), -32028);
+    }
+
+    #[test]
+    fn u13_error_codes_match_plan() {
+        // U13/KTD9: -32025 peer-version-mismatch (peer KeyPackage/Welcome
+        // missing the required `encoding` tag).
+        assert_eq!(DaemonError::PeerVersionMismatch.to_json_rpc_code(), -32025);
+    }
+
+    #[test]
+    fn u14_error_codes_match_plan() {
+        // U14/KTD9: -32027 restoration incomplete / member outside group
+        // (R12). -32029 is a fresh allocation (next unused after -32028)
+        // for `admin.repair_mls_group_admins`'s state-lost refusal --
+        // distinct from -32026 (`MlsGroupStateLost`, a send-path refusal
+        // with a fixed message) because the repair command's refusal
+        // message must vary by prerequisite (restoration vs re-creation).
+        assert_eq!(
+            DaemonError::MlsRestorationIncomplete {
+                recipient_npub: "npub1…".into(),
+            }
+            .to_json_rpc_code(),
+            -32027
+        );
+        assert_eq!(
+            DaemonError::MlsGroupRepairPrerequisite {
+                prerequisite: "restoration",
+            }
+            .to_json_rpc_code(),
+            -32029
+        );
     }
 
     #[test]
@@ -414,6 +475,19 @@ mod tests {
             ("SpoolEntryMissing", DaemonError::SpoolEntryMissing),
             ("MlsGroupStateLost", DaemonError::MlsGroupStateLost),
             ("MlsEngineUnavailable", DaemonError::MlsEngineUnavailable),
+            ("PeerVersionMismatch", DaemonError::PeerVersionMismatch),
+            (
+                "MlsRestorationIncomplete",
+                DaemonError::MlsRestorationIncomplete {
+                    recipient_npub: "npub1…".into(),
+                },
+            ),
+            (
+                "MlsGroupRepairPrerequisite",
+                DaemonError::MlsGroupRepairPrerequisite {
+                    prerequisite: "restoration",
+                },
+            ),
         ];
 
         let mut seen: std::collections::HashMap<i32, &str> = std::collections::HashMap::new();

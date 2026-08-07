@@ -194,6 +194,76 @@ Reference material:
 - [`tests/example_http_handler.rs`](tests/example_http_handler.rs) and
   [`tests/example_multi_bot.rs`](tests/example_multi_bot.rs) — Rust example tests.
 
+## Upgrading to nostr 0.44 / MDK 0.8.0
+
+This release moves the MLS engine from `mdk-*` 0.5.2 to 0.8.0 and requires a
+per-bot store encryption key MDK now mandates. Every bot's existing MLS
+groups need re-invitation after the upgrade. Follow this procedure in order:
+
+1. **Back up `$DATA_DIR` before installing.** This is the only recovery path
+   if a bot's MLS store fails closed after the upgrade — there is no other
+   way back. Stop the daemon first so the backup is not taken mid-write.
+2. **Install the new binaries and start the daemon** following
+   [Install](#1-install) and [Run the daemon](#4-run-the-daemon) above.
+3. **Run `pacto-bot-admin diagnose --format json`** and read, per bot:
+   - `reset_at` — set when the daemon reset this bot's MLS store on a past
+     start (missing key, wrong key, or a legacy pre-key store); absent means
+     never reset.
+   - `mls_groups[].state_held` — `false` means that group needs
+     re-invitation (below); `true` needs nothing.
+   - `error` — a non-null value starting with `"MLS engine unavailable: "`
+     means the bot's MLS engine failed to construct after a fail-closed
+     store classification; see step 6.
+   - The sole-admin buckets — `repairable_now` (this bot still holds live
+     state; run `mls-group repair-admins`, no external action needed),
+     `unrestorable` (this bot was the squad's only admin; the squad must be
+     re-created), and `admin_set_unknown` (the store was archived under an
+     always-archived encrypted-store reset and its prior admin set cannot be
+     recovered — treat as unrestorable).
+4. **For every group with `state_held: false`, contact that Squad's admin**
+   and ask them to re-invite the bot. There is no daemon-side action that
+   recovers a state-lost group other than re-invitation — the archived
+   credential is deliberately unrecoverable. For every `unrestorable` or
+   `admin_set_unknown` group, re-create the Squad instead of waiting on a
+   repair that cannot happen.
+5. **What success looks like:** every bot's `reset_at` reflects a completed,
+   expected reset (not a repeated reset on the next start); every group has
+   `state_held: true` or a pending re-invitation request with its admin;
+   `pacto-bot-admin mls-group repair-admins` has been run for every
+   `repairable_now` entry, so no group the bot still holds state for stays
+   sole-admin.
+6. **If a bot fails closed** (its `error` field starts with `"MLS engine
+   unavailable: "` in diagnose, or the daemon logs an MLS engine
+   construction failure for that bot): restore `$DATA_DIR` from the step-1
+   backup and re-run this procedure. There is no other recovery — the
+   failed-closed classification exists specifically so the daemon never
+   guesses at store contents it cannot verify.
+7. **On suspected key or archive compromise** (the per-bot store key, or an
+   archived legacy store under `mls_archive_retention_days`, may have been
+   read by an unauthorized party): treat every Squad the affected bot
+   belongs to as compromised — the key protects the store at rest, not the
+   plaintext message content already inside it (see Security notes below).
+   Rotate the bot's Nostr identity, have every Squad admin remove and
+   re-create the bot in a fresh group, and delete the compromised store,
+   key, and any archive under `$DATA_DIR` once every affected Squad has
+   migrated off them.
+
+**Security notes:**
+
+- The per-bot store key lives beside the store as `<store-filename>.key`.
+  Backing it up together with the store is intentional, but it also means
+  **the encryption buys nothing against anyone who can already read
+  `$DATA_DIR`** — it is not a substitute for filesystem and backup access
+  control.
+- The MLS store, and any archive of a legacy pre-upgrade store, hold the
+  plaintext content of every group message the bot has decrypted. Enabling
+  `mls_archive_retention_days` (default `0`, meaning no archive) retains that
+  history, and any backup or file-sync tool watching `$DATA_DIR` will capture
+  it.
+- A rollback to a pre-upgrade binary can invalidate messages a handler
+  already acted on, because MDK enforces stricter forward-secrecy bounds
+  than the store previously carried.
+
 ## pacto-app interoperability check
 
 Live interoperability is a release check because this repository does not bundle the
@@ -208,6 +278,15 @@ host, then verify both DM and Squad surfaces:
    correct, and the attachment path is readable with the expected plaintext hash.
 3. Repeat in an MLS Squad, then confirm a handler subscribed only to text receives none
    of the reaction/attachment events.
+4. Have the bot create a Squad and invite an app user; confirm the app decodes the
+   bot's `kind:443` KeyPackage (base64 content, `encoding` tag) and joins from the
+   resulting Welcome. Then have the app create a Squad and invite the bot; confirm the
+   bot decrypts the app's Welcome and both directions exchange a message.
+5. Simulate a restoration: after the bot's MLS store has been reset (or its group
+   marked state-lost via `pacto-bot-admin diagnose`), have the Squad admin re-invite
+   the bot with `pacto-bot-admin mls-group repair-admins` run first if the group is
+   sole-admin. Confirm the bot resumes receiving and sending messages in that Squad
+   afterward, and that other members' history is undisturbed.
 
 Record the app commit, blob host, relay, event ids, and observed hashes in the release
 run. Automated mock-relay/blob tests cover the same wire tags and crypto parameters,

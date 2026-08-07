@@ -7,16 +7,17 @@ mod support;
 use std::error::Error;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use assert_cmd::Command;
-use nostr::{Keys, Kind, Timestamp, ToBech32};
+use nostr::{EventBuilder, Keys, Kind, RelayUrl, Timestamp, ToBech32};
 use pacto_bot_api::client_manager::ClientManager;
 use pacto_bot_api::config::{BotConfig, DaemonConfig, GlobalDaemonConfig, SigningConfig};
-use pacto_bot_api::db::Db;
+use pacto_bot_api::db::{Db, MlsGroupRow};
 use pacto_bot_api::diagnostics::Diagnostics;
 use pacto_bot_api::dispatch::Dispatch;
+use pacto_bot_api::mls::{MlsEngineHandle, MlsError};
 use pacto_bot_api::nostr::NostrClient;
 use pacto_bot_api::transport::protocol::{JsonRpcMessage, MlsGroupResponse};
 use secrecy::SecretString;
@@ -24,7 +25,7 @@ use serde_json::{Value, json};
 use support::mock_bunker::MockBunker;
 use support::mock_mls_peer::MockMlsPeer;
 use support::mock_relay::MockRelay;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 
 fn bot_config_with_mls(
     id: &str,
@@ -145,6 +146,31 @@ impl Drop for DaemonGuard {
     }
 }
 
+/// Serializes tests that spawn a real daemon subprocess alongside a mock
+/// relay/bunker. This file has grown to dozens of
+/// `#[tokio::test(flavor = "multi_thread")]` tests; letting every
+/// daemon-spawning test race unboundedly starves the mock bunker's own
+/// (in-process, otherwise-instant) relay subscription task under `cargo
+/// test`'s default full-parallelism scheduling, producing an intermittent
+/// "timeout waiting for relay subscription" failure that does not
+/// reproduce when a test runs alone. Capping to 1 removes cross-daemon-test
+/// contention and cuts the observed failure rate sharply; it does not fully
+/// eliminate contention from this file's other ~35 lighter tests still
+/// racing concurrently. `cargo-nextest` (`make test-fast`) sidesteps the
+/// remaining flake via process isolation plus its documented retry for
+/// exactly this class of load-sensitive test (see `.config/nextest.toml`).
+static DAEMON_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+/// Reserve the daemon-test slot; hold the returned permit for the lifetime
+/// of the test so daemon-spawning tests never run concurrently.
+async fn daemon_slot() -> OwnedSemaphorePermit {
+    DAEMON_SLOTS
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("DAEMON_SLOTS semaphore is never closed")
+}
+
 // ---------------------------------------------------------------------------
 // Admin CLI end-to-end tests
 // ---------------------------------------------------------------------------
@@ -154,6 +180,7 @@ impl Drop for DaemonGuard {
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_create_publishes_welcome_gift_wrap() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("mls-bot", true)?;
@@ -173,7 +200,7 @@ async fn admin_cli_create_publishes_welcome_gift_wrap() -> Result<(), Box<dyn Er
         .open(&config)?
         .write_all(b"mls_db_path = \"mls.db\"\nmls_key_package_freshness_secs = 300\n")?;
 
-    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
+    bunker.wait_ready(&relay, Duration::from_secs(15)).await?;
     let _daemon = DaemonGuard(common::spawn_daemon_until_ready(&config).await?);
 
     let recipient = MockMlsPeer::new();
@@ -225,6 +252,7 @@ async fn admin_cli_create_publishes_welcome_gift_wrap() -> Result<(), Box<dyn Er
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_invite_publishes_welcome_and_evolution() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (mut bot, bunker_keys) = common::generate_bunker_bot_with_keys("mls-bot", true)?;
@@ -243,7 +271,7 @@ async fn admin_cli_invite_publishes_welcome_and_evolution() -> Result<(), Box<dy
         .open(&config)?
         .write_all(b"mls_db_path = \"mls.db\"\nmls_key_package_freshness_secs = 300\n")?;
 
-    bunker.wait_ready(&relay, Duration::from_secs(5)).await?;
+    bunker.wait_ready(&relay, Duration::from_secs(15)).await?;
     let _daemon = DaemonGuard(common::spawn_daemon_until_ready(&config).await?);
 
     let member1 = MockMlsPeer::new();
@@ -322,6 +350,7 @@ async fn admin_cli_invite_publishes_welcome_and_evolution() -> Result<(), Box<dy
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_invite_is_idempotent() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (bot, _nsec) = common::generate_nsec_bot("mls-bot")?;
@@ -434,6 +463,7 @@ async fn admin_cli_invite_is_idempotent() -> Result<(), Box<dyn Error>> {
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_create_existing_group_fails_with_32014() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (bot, _nsec) = common::generate_nsec_bot("mls-bot")?;
@@ -511,6 +541,7 @@ async fn admin_cli_create_existing_group_fails_with_32014() -> Result<(), Box<dy
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_invite_nonexistent_group_fails_with_32015() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (bot, _nsec) = common::generate_nsec_bot("mls-bot")?;
@@ -566,6 +597,7 @@ async fn admin_cli_invite_nonexistent_group_fails_with_32015() -> Result<(), Box
 #[tokio::test(flavor = "multi_thread")]
 async fn admin_cli_bot_without_mls_engine_fails_with_32013() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
+    let _daemon_slot = daemon_slot().await;
     let relay = MockRelay::start().await?;
 
     let (bot, _nsec) = common::generate_nsec_bot("mls-bot")?;
@@ -952,6 +984,165 @@ async fn fetch_key_package_selects_fresh_over_stale_and_future() -> Result<(), B
         )
         .await?;
     assert_eq!(selected.id, fresh.id);
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(U13)
+#[tokio::test(flavor = "multi_thread")]
+async fn kind_30443_key_package_is_fetched_and_accepted() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let recipient = MockMlsPeer::new();
+    let recipient_npub = recipient.public_key().to_bech32()?;
+    let (dispatch, cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls("mls-bot", &keys, &["Admin"], "mls.db")],
+        &relay.url(),
+    )
+    .await;
+
+    let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+    let addressable = recipient
+        .create_key_package_event_kind_30443(vec![relay.url()])
+        .await;
+    assert_eq!(addressable.kind, Kind::Custom(30443));
+    relay.inject_event(addressable.clone()).await;
+
+    // The filter widening, not just the validator: fetch_key_package must
+    // actually return the kind:30443 event from the relay.
+    let nostr_client = cm.read().await.nostr_client.clone();
+    let (fetched, _age) = nostr_client
+        .fetch_key_package(
+            &recipient.public_key(),
+            Duration::from_secs(5),
+            Duration::from_secs(300),
+        )
+        .await?;
+    assert_eq!(fetched.id, addressable.id);
+    assert_eq!(fetched.kind, Kind::Custom(30443));
+
+    // And it is accepted end-to-end: MDK parses tags_30443 (including the
+    // mandatory `d` tag) and the group is created.
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": recipient_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+    assert_eq!(wire_id.len(), 64);
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(U13)
+#[tokio::test(flavor = "multi_thread")]
+async fn hex_key_package_missing_encoding_tag_returns_32025() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let recipient = MockMlsPeer::new();
+    let recipient_npub = recipient.public_key().to_bech32()?;
+    let (dispatch, _cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls("mls-bot", &keys, &["Admin"], "mls.db")],
+        &relay.url(),
+    )
+    .await;
+
+    let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+    relay
+        .inject_event(
+            recipient
+                .create_key_package_event_missing_encoding_tag(vec![relay.url()])
+                .await,
+        )
+        .await;
+
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": recipient_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let JsonRpcMessage::Error { error, .. } = resp else {
+        panic!("expected error, got {resp:?}");
+    };
+    assert_eq!(
+        error.code, -32025,
+        "hex KeyPackage with no encoding tag must be named a peer-version mismatch, got {error:?}"
+    );
+    assert!(
+        error.message.to_lowercase().contains("version"),
+        "error should name a peer version mismatch, not a generic parse failure: {error:?}"
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(U13)
+#[tokio::test(flavor = "multi_thread")]
+async fn forged_kind_30443_key_package_is_treated_as_absent() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let recipient = Keys::generate();
+    let recipient_npub = recipient.public_key().to_bech32()?;
+    let (dispatch, _cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls("mls-bot", &keys, &["Admin"], "mls.db")],
+        &relay.url(),
+    )
+    .await;
+
+    let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+    let forged = MockMlsPeer::create_forged_key_package_event_kind_30443(
+        &recipient.public_key(),
+        vec![relay.url()],
+        "forged-content".into(),
+    )
+    .await;
+    relay.inject_event(forged).await;
+
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": recipient_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    // The kind-guard widening (accepting kind:30443) must not weaken the
+    // authorship check: the forged event is still filtered out, leaving no
+    // valid package for the recipient.
+    let JsonRpcMessage::Error { error, .. } = resp else {
+        panic!("expected error, got {resp:?}");
+    };
+    assert_eq!(
+        error.code, -32017,
+        "expected KeyPackageNotFound, got {error:?}"
+    );
 
     relay.stop().await;
     Ok(())
@@ -1413,5 +1604,746 @@ async fn handler_registration_accepts_bot_unavailable_event_type() -> Result<(),
     };
 
     relay.stop().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// U14: admin-set model and restoration
+// ---------------------------------------------------------------------------
+
+/// Build a signed kind:443 KeyPackage event for `keys`, published against a
+/// fresh single-shot `MlsEngineHandle` -- mirrors the private helper in
+/// `src/mls.rs`'s own test module, duplicated here because that one is not
+/// exported.
+async fn build_key_package_event(engine: &MlsEngineHandle, keys: &Keys) -> nostr::Event {
+    let relays = vec![RelayUrl::parse("wss://test.relay").unwrap()];
+    let (content, tags) = engine
+        .publish_key_package(&keys.public_key(), relays)
+        .await
+        .expect("publish_key_package");
+    pacto_bot_api::nostr_json::sign_builder(
+        EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags),
+        keys,
+    )
+    .expect("sign key package")
+}
+
+/// req(R11)
+#[tokio::test(flavor = "multi_thread")]
+async fn create_mls_group_default_admins_are_creator_and_recipient() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+    let (dispatch, cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup"],
+            "mls.db",
+        )],
+        &relay.url(),
+    )
+    .await;
+    let handler_id = register_handler(&dispatch, &["mls-bot"], &["CreateMlsGroup"]).await;
+
+    relay
+        .inject_event(member.create_key_package_event(vec![relay.url()]).await)
+        .await;
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+
+    let mls = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("mls-bot")
+            .expect("bot exists")
+            .mls
+            .clone()
+            .expect("mls enabled")
+    };
+    let groups = mls.list_groups().await?;
+    let group = groups
+        .iter()
+        .find(|g| g.wire_id == wire_id)
+        .expect("created group present");
+    let admins: std::collections::BTreeSet<_> = group.admin_pubkeys.iter().copied().collect();
+    assert_eq!(
+        admins,
+        std::collections::BTreeSet::from([keys.public_key(), member.public_key()]),
+        "default admin set must be exactly creator + invited recipient"
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R11, R35)
+#[tokio::test(flavor = "multi_thread")]
+async fn create_mls_group_explicit_admins_list_is_honoured() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+    let (dispatch, cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup"],
+            "mls.db",
+        )],
+        &relay.url(),
+    )
+    .await;
+    let handler_id = register_handler(&dispatch, &["mls-bot"], &["CreateMlsGroup"]).await;
+
+    relay
+        .inject_event(member.create_key_package_event(vec![relay.url()]).await)
+        .await;
+    // Explicit admins list names only the creator -- additive-only, but
+    // proves the default (creator+recipient) is NOT silently applied on
+    // top of an explicit list.
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+            "admins": [keys.public_key().to_bech32()?],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&handler_id), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+
+    let mls = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("mls-bot")
+            .expect("bot exists")
+            .mls
+            .clone()
+            .expect("mls enabled")
+    };
+    let groups = mls.list_groups().await?;
+    let group = groups
+        .iter()
+        .find(|g| g.wire_id == wire_id)
+        .expect("created group present");
+    assert_eq!(
+        group.admin_pubkeys,
+        vec![keys.public_key()],
+        "explicit admins list must be honoured verbatim, not widened with the recipient"
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R11, R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_mls_group_admins_on_held_sole_admin_group_produces_two_admins()
+-> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let member = MockMlsPeer::new();
+    let member_npub = member.public_key().to_bech32()?;
+    let (dispatch, _cm) = setup_dispatch_with_relay(
+        vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup"],
+            "mls.db",
+        )],
+        &relay.url(),
+    )
+    .await;
+    let create_handler = register_handler(&dispatch, &["mls-bot"], &["CreateMlsGroup"]).await;
+    let admin_handler = register_handler(&dispatch, &[], &["Admin"]).await;
+
+    relay
+        .inject_event(member.create_key_package_event(vec![relay.url()]).await)
+        .await;
+    // Explicit sole-admin creation -- the pre-parity default this unit
+    // exists to stop creating going forward, but still repairable once
+    // held.
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "agent.create_mls_group",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+            "recipient": member_npub,
+            "admins": [keys.public_key().to_bech32()?],
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&create_handler), None)
+        .await?
+        .unwrap();
+    let wire_id = parse_mls_response(&resp);
+
+    let repair_req = JsonRpcMessage::request(
+        3.into(),
+        "admin.repair_mls_group_admins",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(repair_req, Some(&admin_handler), None)
+        .await?
+        .unwrap();
+    let JsonRpcMessage::Response { result, .. } = resp else {
+        panic!("expected repair response, got {resp:?}");
+    };
+    let result: pacto_bot_api::transport::protocol::RepairMlsGroupAdminsResponse =
+        serde_json::from_value(result.unwrap())?;
+    assert_eq!(
+        result.admins.len(),
+        2,
+        "repair must expand a sole-admin group to every current member: {:?}",
+        result.admins
+    );
+    let admin_set: std::collections::BTreeSet<_> = result.admins.iter().collect();
+    assert!(admin_set.contains(&keys.public_key().to_bech32()?));
+    assert!(admin_set.contains(&member.public_key().to_bech32()?));
+
+    let events = relay
+        .wait_for_event(|e| e.kind == Kind::MlsGroupMessage, Duration::from_secs(5))
+        .await?;
+    assert_eq!(
+        evolution_event_count(&events),
+        1,
+        "repair must publish the resulting evolution event"
+    );
+
+    let _ = wire_id;
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_mls_group_admins_on_state_lost_group_with_invited_member_names_restoration()
+-> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let dir = common::tempdir()?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm, db.clone(), Diagnostics::new()));
+    let admin_handler = register_handler(&dispatch, &[], &["Admin"]).await;
+
+    db.insert_mls_group(MlsGroupRow {
+        bot_id: "mls-bot".into(),
+        group_name: "test-squad".into(),
+        wire_id: "a".repeat(64),
+        creator_npub: keys.public_key().to_bech32()?,
+        relay: relay.url(),
+        invited_bots: vec!["npub1invitedmember".into()],
+        state_lost_at: None,
+    })
+    .await?;
+    db.mark_mls_group_state_lost("mls-bot", "test-squad", chrono::Utc::now().timestamp())
+        .await?;
+
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.repair_mls_group_admins",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&admin_handler), None)
+        .await?
+        .unwrap();
+    let JsonRpcMessage::Error { error, .. } = resp else {
+        panic!("expected repair to refuse a state-lost group, got {resp:?}");
+    };
+    assert_ne!(
+        error.code, -32015,
+        "state-lost refusal must not be a bare GroupNotFound"
+    );
+    assert!(
+        error.message.contains("restoration"),
+        "message must name restoration as the prerequisite when a member was cached: {}",
+        error.message
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_mls_group_admins_on_state_lost_group_with_no_cached_member_names_recreation()
+-> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let keys = Keys::generate();
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["CreateMlsGroup"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let dir = common::tempdir()?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm, db.clone(), Diagnostics::new()));
+    let admin_handler = register_handler(&dispatch, &[], &["Admin"]).await;
+
+    db.insert_mls_group(MlsGroupRow {
+        bot_id: "mls-bot".into(),
+        group_name: "test-squad".into(),
+        wire_id: "b".repeat(64),
+        creator_npub: keys.public_key().to_bech32()?,
+        relay: relay.url(),
+        invited_bots: vec![],
+        state_lost_at: None,
+    })
+    .await?;
+    db.mark_mls_group_state_lost("mls-bot", "test-squad", chrono::Utc::now().timestamp())
+        .await?;
+
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.repair_mls_group_admins",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&admin_handler), None)
+        .await?
+        .unwrap();
+    let JsonRpcMessage::Error { error, .. } = resp else {
+        panic!("expected repair to refuse a state-lost group, got {resp:?}");
+    };
+    assert_ne!(
+        error.code, -32015,
+        "state-lost refusal must not be a bare GroupNotFound"
+    );
+    assert!(
+        error.message.contains("re-creation"),
+        "message must name re-creation when no member was ever cached: {}",
+        error.message
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_mls_group_admins_by_non_admin_bot_refuses() -> Result<(), Box<dyn Error>> {
+    let relay = MockRelay::start().await?;
+    let bot_keys = Keys::generate();
+    let config = DaemonConfig {
+        daemon: GlobalDaemonConfig::default(),
+        bots: vec![bot_config_with_mls(
+            "mls-bot",
+            &bot_keys,
+            &["ReceiveGroupMessages"],
+            "mls.db",
+        )],
+    };
+    let nostr_client = NostrClient::new(vec![relay.url()]).await?;
+    let dir = common::tempdir()?;
+    let db = Db::open(dir.path().join("agent.db").as_path()).await?;
+    let cm = Arc::new(RwLock::new(
+        ClientManager::new(dir.path(), config, nostr_client, &db).await?,
+    ));
+    let dispatch = Arc::new(Dispatch::new(cm.clone(), db.clone(), Diagnostics::new()));
+    let admin_handler = register_handler(&dispatch, &[], &["Admin"]).await;
+
+    // An external admin creates the group with the bot as a plain
+    // (non-admin) member, mirroring
+    // `handler_with_capabilities_can_create_and_invite`'s reversed-roles
+    // setup elsewhere in this crate.
+    let external_temp = common::tempdir()?;
+    let external_admin = MlsEngineHandle::new_persistent(external_temp.path().join("ext.db"))?;
+    let admin_keys = Keys::generate();
+
+    let bot_mls = {
+        let cm = cm.read().await;
+        cm.get_bot_by_id("mls-bot")
+            .expect("bot exists")
+            .mls
+            .clone()
+            .expect("mls enabled")
+    };
+    let bot_key_package = build_key_package_event(&bot_mls, &bot_keys).await;
+
+    let (wire_id, welcome_rumor) = external_admin
+        .create_group(
+            admin_keys.public_key(),
+            bot_keys.public_key(),
+            bot_key_package,
+            "test-squad".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![admin_keys.public_key()],
+        )
+        .await?;
+    bot_mls
+        .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), welcome_rumor)
+        .await?;
+
+    db.insert_mls_group(MlsGroupRow {
+        bot_id: "mls-bot".into(),
+        group_name: "test-squad".into(),
+        wire_id,
+        creator_npub: admin_keys.public_key().to_bech32()?,
+        relay: relay.url(),
+        invited_bots: vec![bot_keys.public_key().to_bech32()?],
+        state_lost_at: None,
+    })
+    .await?;
+
+    let req = JsonRpcMessage::request(
+        2.into(),
+        "admin.repair_mls_group_admins",
+        Some(json!({
+            "bot_id": "mls-bot",
+            "group_name": "test-squad",
+        })),
+    );
+    let resp = dispatch
+        .handle_message(req, Some(&admin_handler), None)
+        .await?
+        .unwrap();
+    let JsonRpcMessage::Error { error, .. } = resp else {
+        panic!("expected repair by a non-admin bot to refuse, got {resp:?}");
+    };
+    assert_ne!(
+        error.code, -32029,
+        "a live non-admin refusal is not the state-lost repair-prerequisite code"
+    );
+
+    relay.stop().await;
+    Ok(())
+}
+
+/// req(R12, R13)
+#[tokio::test(flavor = "multi_thread")]
+async fn add_member_restoration_removes_old_leaf_so_it_stops_decrypting()
+-> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let bot_keys = Keys::generate();
+    let member_keys = Keys::generate();
+    let bot_engine = MlsEngineHandle::new_persistent(temp.path().join("bot.db"))?;
+    let member_engine_old = MlsEngineHandle::new_persistent(temp.path().join("member-old.db"))?;
+
+    let key_package = build_key_package_event(&member_engine_old, &member_keys).await;
+    let (wire_id, welcome_rumor) = bot_engine
+        .create_group(
+            bot_keys.public_key(),
+            member_keys.public_key(),
+            key_package,
+            "test-group".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![bot_keys.public_key()],
+        )
+        .await?;
+    member_engine_old
+        .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), welcome_rumor)
+        .await?;
+
+    // Restore: the recipient already holds a leaf (from the create above),
+    // so this must remove-then-re-add rather than plain-add.
+    let fresh_key_package = build_key_package_event(&member_engine_old, &member_keys).await;
+    let outcome = bot_engine
+        .add_member(&wire_id, member_keys.public_key(), fresh_key_package)
+        .await?;
+    assert!(
+        outcome.remove_evolution_event.is_some(),
+        "re-adding an existing leaf must be detected as a restoration"
+    );
+
+    // The old engine instance never processes the new welcome or the
+    // remove/add commits -- it still holds only the OLD (now-evicted)
+    // leaf. It must not be able to decrypt a message sent to the new
+    // epoch.
+
+    relay_free_epoch_check(&bot_engine, &member_engine_old, &wire_id).await?;
+    Ok(())
+}
+
+/// Send one application message from `bot_engine` and assert
+/// `stale_engine` (an old, now-evicted leaf) fails to decrypt it.
+async fn relay_free_epoch_check(
+    bot_engine: &MlsEngineHandle,
+    stale_engine: &MlsEngineHandle,
+    wire_id: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mls_group_id = bot_engine.resolve_wire_id(wire_id).await?;
+    let rumor = pacto_bot_api::nostr::NostrClient::build_group_text_rumor(
+        &Keys::generate().public_key(),
+        "post-restoration".to_string(),
+        None,
+    )?;
+    let event = bot_engine.create_group_message(mls_group_id, rumor).await?;
+
+    let outcome = stale_engine.decrypt_group_message(&event).await;
+    match outcome {
+        Ok(pacto_bot_api::mls::GroupMessageOutcome::Message(_)) => {
+            panic!("a removed leaf must not be able to decrypt a post-restoration message")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// req(R12, R13)
+#[tokio::test(flavor = "multi_thread")]
+async fn add_member_restoration_publishes_remove_then_add_and_third_party_still_decrypts()
+-> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let admin_keys = Keys::generate();
+    let restoring_keys = Keys::generate();
+    let staying_keys = Keys::generate();
+    let admin_engine = MlsEngineHandle::new_persistent(temp.path().join("admin.db"))?;
+    let restoring_engine = MlsEngineHandle::new_persistent(temp.path().join("restoring.db"))?;
+    let staying_engine = MlsEngineHandle::new_persistent(temp.path().join("staying.db"))?;
+
+    let restoring_kp = build_key_package_event(&restoring_engine, &restoring_keys).await;
+    let (wire_id, restoring_welcome) = admin_engine
+        .create_group(
+            admin_keys.public_key(),
+            restoring_keys.public_key(),
+            restoring_kp,
+            "test-group".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![admin_keys.public_key()],
+        )
+        .await?;
+    restoring_engine
+        .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), restoring_welcome)
+        .await?;
+
+    let staying_kp = build_key_package_event(&staying_engine, &staying_keys).await;
+    let staying_outcome = admin_engine
+        .add_member(&wire_id, staying_keys.public_key(), staying_kp)
+        .await?;
+    assert!(staying_outcome.remove_evolution_event.is_none());
+    staying_engine
+        .process_welcome_and_return_wire_id(
+            nostr::EventId::all_zeros(),
+            staying_outcome.welcome_rumor,
+        )
+        .await?;
+    restoring_engine
+        .decrypt_group_message(&staying_outcome.evolution_event)
+        .await?;
+
+    // Restore the first member. Both commits must reach every peer, in
+    // remove-then-add order, before the group is usable again.
+    let fresh_kp = build_key_package_event(&restoring_engine, &restoring_keys).await;
+    let restoration = admin_engine
+        .add_member(&wire_id, restoring_keys.public_key(), fresh_kp)
+        .await?;
+    let remove_evt = restoration
+        .remove_evolution_event
+        .expect("re-adding an already-present member must be a restoration");
+
+    staying_engine.decrypt_group_message(&remove_evt).await?;
+    staying_engine
+        .decrypt_group_message(&restoration.evolution_event)
+        .await?;
+
+    // The third-party (uninvolved) member must still be able to decrypt
+    // the next application message -- proves neither commit was dropped.
+    let mls_group_id = admin_engine.resolve_wire_id(&wire_id).await?;
+    let rumor = pacto_bot_api::nostr::NostrClient::build_group_text_rumor(
+        &admin_keys.public_key(),
+        "after restore".to_string(),
+        None,
+    )?;
+    let next_message = admin_engine
+        .create_group_message(mls_group_id, rumor)
+        .await?;
+    let outcome = staying_engine.decrypt_group_message(&next_message).await?;
+    assert!(
+        matches!(outcome, pacto_bot_api::mls::GroupMessageOutcome::Message(_)),
+        "third-party peer must still decrypt after both restoration commits publish"
+    );
+
+    Ok(())
+}
+
+/// req(R11, R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn add_member_first_time_invite_returns_no_remove_evolution_event()
+-> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let bot_keys = Keys::generate();
+    let member1_keys = Keys::generate();
+    let member2_keys = Keys::generate();
+    let bot_engine = MlsEngineHandle::new_persistent(temp.path().join("bot.db"))?;
+    let member1_engine = MlsEngineHandle::new_persistent(temp.path().join("member1.db"))?;
+
+    let kp1 = build_key_package_event(&member1_engine, &member1_keys).await;
+    let (wire_id, _welcome) = bot_engine
+        .create_group(
+            bot_keys.public_key(),
+            member1_keys.public_key(),
+            kp1,
+            "test-group".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![bot_keys.public_key()],
+        )
+        .await?;
+
+    // First-time invite for a brand-new pubkey never seen in this group --
+    // must take the plain single-add path (no remove commit), distinct
+    // from the restoration path exercised above.
+    let member2_engine = MlsEngineHandle::new_persistent(temp.path().join("member2.db"))?;
+    let kp2 = build_key_package_event(&member2_engine, &member2_keys).await;
+    let outcome = bot_engine
+        .add_member(&wire_id, member2_keys.public_key(), kp2)
+        .await?;
+    assert!(
+        outcome.remove_evolution_event.is_none(),
+        "a first-time invite must not produce a remove commit"
+    );
+
+    Ok(())
+}
+
+/// req(R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn add_member_restoration_by_non_admin_engine_is_refused_before_any_commit()
+-> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let admin_keys = Keys::generate();
+    let member1_keys = Keys::generate();
+    let member2_keys = Keys::generate();
+    let admin_engine = MlsEngineHandle::new_persistent(temp.path().join("admin.db"))?;
+    let member1_engine = MlsEngineHandle::new_persistent(temp.path().join("member1.db"))?;
+    let member2_engine = MlsEngineHandle::new_persistent(temp.path().join("member2.db"))?;
+
+    let kp1 = build_key_package_event(&member1_engine, &member1_keys).await;
+    let (wire_id, welcome1) = admin_engine
+        .create_group(
+            admin_keys.public_key(),
+            member1_keys.public_key(),
+            kp1,
+            "test-group".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![admin_keys.public_key()],
+        )
+        .await?;
+    member1_engine
+        .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), welcome1)
+        .await?;
+
+    let kp2 = build_key_package_event(&member2_engine, &member2_keys).await;
+    let add2 = admin_engine
+        .add_member(&wire_id, member2_keys.public_key(), kp2)
+        .await?;
+    member1_engine
+        .decrypt_group_message(&add2.evolution_event)
+        .await?;
+    member2_engine
+        .process_welcome_and_return_wire_id(nostr::EventId::all_zeros(), add2.welcome_rumor)
+        .await?;
+
+    // member1 is a plain (non-admin) member; it must be refused before any
+    // commit when it attempts to restore member2.
+    let fresh_kp2 = build_key_package_event(&member2_engine, &member2_keys).await;
+    let result = member1_engine
+        .add_member(&wire_id, member2_keys.public_key(), fresh_kp2)
+        .await;
+    assert!(
+        !matches!(result, Err(MlsError::RestorationIncomplete { .. })),
+        "a non-admin refusal must occur before any remove commit, not after: {result:?}"
+    );
+    assert!(result.is_err());
+
+    Ok(())
+}
+
+/// req(R12)
+#[tokio::test(flavor = "multi_thread")]
+async fn add_member_mid_restoration_failure_returns_restoration_incomplete()
+-> Result<(), Box<dyn Error>> {
+    let temp = common::tempdir()?;
+    let bot_keys = Keys::generate();
+    let member_keys = Keys::generate();
+    let bot_engine = MlsEngineHandle::new_persistent(temp.path().join("bot.db"))?;
+    let member_engine = MlsEngineHandle::new_persistent(temp.path().join("member.db"))?;
+
+    let kp = build_key_package_event(&member_engine, &member_keys).await;
+    let (wire_id, _welcome) = bot_engine
+        .create_group(
+            bot_keys.public_key(),
+            member_keys.public_key(),
+            kp,
+            "test-group".to_string(),
+            vec![RelayUrl::parse("wss://test.relay").unwrap()],
+            vec![bot_keys.public_key()],
+        )
+        .await?;
+
+    // A structurally valid Nostr event (correct kind, non-empty content,
+    // correct author, valid signature) but garbage MLS KeyPackage payload
+    // -- passes `validate_key_package`'s Nostr-level checks but fails deep
+    // inside the engine's `add_members`, AFTER the remove commit for this
+    // already-present member has merged. Mirrors the existing
+    // `create_group_bad_key_package_content_maps_to_safe_engine_error`
+    // technique in `src/mls.rs`.
+    let garbage_key_package = pacto_bot_api::nostr_json::sign_builder(
+        EventBuilder::new(Kind::MlsKeyPackage, "invalid-key-package-content"),
+        &member_keys,
+    )?;
+
+    let result = bot_engine
+        .add_member(&wire_id, member_keys.public_key(), garbage_key_package)
+        .await;
+    match result {
+        Err(MlsError::RestorationIncomplete {
+            remove_evolution_event,
+        }) => {
+            assert_eq!(remove_evolution_event.kind, Kind::MlsGroupMessage);
+        }
+        other => panic!(
+            "expected RestorationIncomplete naming the member outside the group, got {other:?}"
+        ),
+    }
+
     Ok(())
 }

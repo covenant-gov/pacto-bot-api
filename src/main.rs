@@ -480,6 +480,15 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                 if let Err(e) = diagnostics.flush_report(Path::new(&data_dir)).await {
                     warn!(error = %e, "failed to flush diagnostics report");
                 }
+
+                if let Err(e) = dispatch
+                    .warn_stuck_bots(Duration::from_secs(
+                        config.daemon.stuck_bot_warning_min_age_secs,
+                    ))
+                    .await
+                {
+                    warn!(error = %e, "failed to check for stuck bots/groups");
+                }
             }
             event_result = event_stream.next() => {
                 match event_result {

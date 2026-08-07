@@ -39,6 +39,9 @@ pub struct DaemonConfigGenerated {
     /// Seconds an abandoned outbound spool entry is retained before the retention sweep deletes it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spool_outbound_retention_secs: Option<u64>,
+    /// Minimum age in seconds a stuck bot or MLS group must reach before the periodic tick warns about it: a group still state-lost, a bot whose MLS engine is still unavailable, or a sole-admin squad still unrepaired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck_bot_warning_min_age_secs: Option<u64>,
 }
 
 /// Per-bot identity configuration.

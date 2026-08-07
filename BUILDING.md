@@ -28,8 +28,15 @@ We use [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) so Zig a
 | macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` |
 | Linux | x86_64 | `x86_64-unknown-linux-musl` |
 | Linux | arm64 | `aarch64-unknown-linux-musl` |
-| Windows | x86_64 | `x86_64-pc-windows-gnu` |
-| FreeBSD | x86_64 | `x86_64-unknown-freebsd` |
+
+Windows (`x86_64-pc-windows-gnu`) and FreeBSD (`x86_64-unknown-freebsd`) are
+**not** part of the release artifact matrix: [rusqlite#1025](https://github.com/rusqlite/rusqlite/issues/1025)
+blocks the Windows SQLCipher/crypto link, and [cargo-zigbuild#356](https://github.com/rust-cross/cargo-zigbuild/issues/356)
+blocks FreeBSD `kvm` symbol resolution. Windows still gets a `cargo check`
+compile-only gate in CI (see "Windows cross-check" in `.github/workflows/ci.yml`)
+so the `cfg(windows)` code paths stay compiled; FreeBSD has no CI gate. Both
+targets can still be built manually with `make cross-compile-windows` /
+`make cross-compile-freebsd` — they are just excluded from `make package`.
 
 ### Install tooling
 
@@ -68,18 +75,18 @@ This creates `dist/` with archives named `pacto-bot-api_<version>_<os>_<arch>.<e
 
 - `pacto-bot-api_0.1.0_darwin_amd64.tar.gz`
 - `pacto-bot-api_0.1.0_darwin_amd64.tar.gz.sha256`
-- `pacto-bot-api_0.1.0_windows_amd64.zip`
-- `pacto-bot-api_0.1.0_windows_amd64.zip.sha256`
+- `pacto-bot-api_0.1.0_linux_arm64.tar.gz`
+- `pacto-bot-api_0.1.0_linux_arm64.tar.gz.sha256`
 
 Binaries are written to `target/<triple>/release/`.
 
 ### Build per platform
 
 ```bash
-make cross-compile-macos     # x86_64 + arm64
-make cross-compile-linux     # x86_64 + arm64 static musl
-make cross-compile-windows   # x86_64
-make cross-compile-freebsd   # x86_64
+make cross-compile-macos     # x86_64 + arm64 -- shipped
+make cross-compile-linux     # x86_64 + arm64 static musl -- shipped
+make cross-compile-windows   # x86_64 -- build-only, not shipped (rusqlite#1025)
+make cross-compile-freebsd   # x86_64 -- build-only, not shipped (cargo-zigbuild#356)
 ```
 
 ### Direct `cargo-zigbuild` commands
