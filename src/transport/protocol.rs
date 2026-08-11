@@ -306,6 +306,8 @@ pub enum Method {
     AgentIsSquadMember,
     #[serde(rename = "agent.exit_mls_group")]
     AgentExitMlsGroup,
+    #[serde(rename = "agent.delete_mls_group")]
+    AgentDeleteMlsGroup,
     #[serde(rename = "agent.send_group_message")]
     AgentSendGroupMessage,
     #[serde(rename = "agent.send_group_reaction")]
@@ -352,6 +354,7 @@ impl Method {
             Method::AgentRateLimited,
             Method::AgentIsSquadMember,
             Method::AgentExitMlsGroup,
+            Method::AgentDeleteMlsGroup,
             Method::AgentSendGroupMessage,
             Method::AgentSendGroupReaction,
             Method::AgentSendGroupAttachment,
@@ -390,6 +393,7 @@ impl FromStr for Method {
             "agent.version" => Ok(Self::AgentVersion),
             "agent.rate_limited" => Ok(Self::AgentRateLimited),
             "agent.is_squad_member" => Ok(Self::AgentIsSquadMember),
+            "agent.delete_mls_group" => Ok(Self::AgentDeleteMlsGroup),
             "agent.exit_mls_group" => Ok(Self::AgentExitMlsGroup),
             "agent.send_group_message" => Ok(Self::AgentSendGroupMessage),
             "agent.send_group_reaction" => Ok(Self::AgentSendGroupReaction),
@@ -739,6 +743,27 @@ pub struct AgentExitMlsGroupParams {
 pub struct AgentExitMlsGroupResponse {
     /// Hex id of the published kind:445 evolution event containing the leave proposal.
     pub event_id: String,
+}
+
+/// Typed payload for the `agent.delete_mls_group` JSON-RPC method.
+///
+/// Not declared in `schemas/jsonrpc.json` -- this method is a daemon-local
+/// addition exposed only through `pacto-bot-admin mls-group delete`, not
+/// part of the published handler SDK surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDeleteMlsGroupParams {
+    /// Bot identity whose local state is being dropped.
+    pub bot_id: String,
+    /// Hex-encoded Squad wire id (MLS nostr_group_id).
+    pub group_id: String,
+}
+
+/// Typed payload returned by the `agent.delete_mls_group` JSON-RPC method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentDeleteMlsGroupResponse {
+    /// `true` when local state existed and was deleted; `false` when the
+    /// bot already had no local state for this group (idempotent no-op).
+    pub deleted: bool,
 }
 
 /// Typed payload returned by the `agent.version` JSON-RPC method.

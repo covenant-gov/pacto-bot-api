@@ -232,6 +232,42 @@ class AgentCreateMlsGroupResponse(BaseModel):
     wire_id: str
 
 
+class AgentDeleteMlsGroupParams(BaseModel):
+    """
+    Model for JSON-RPC method `agent.delete_mls_group`.
+
+    Remove this bot's local MLS state for a Squad. Local-only: other members are not notified.
+
+    Example:
+
+        >>> AgentDeleteMlsGroupParams(bot_id="...", group_id="...")
+
+    jsonrpc_method: ``"agent.delete_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.delete_mls_group"
+    # Bot identity whose local Squad state is removed.
+    bot_id: str
+    # Hex-encoded Squad wire id.
+    group_id: str
+
+
+class AgentDeleteMlsGroupResponse(BaseModel):
+    """
+    Model for JSON-RPC method `agent.delete_mls_group`.
+
+    Remove this bot's local MLS state for a Squad. Local-only: other members are not notified.
+
+    Example:
+
+        >>> AgentDeleteMlsGroupResponse(deleted=True)
+
+    jsonrpc_method: ``"agent.delete_mls_group"``
+    """
+    jsonrpc_method: ClassVar[str] = "agent.delete_mls_group"
+    # True when local state was removed, false when the group was already absent.
+    deleted: bool
+
+
 class AgentErrorParams(BaseModel):
     """
     Model for JSON-RPC method `agent.error`.
@@ -982,4 +1018,4 @@ class SystemVersionParams(BaseModel):
     jsonrpc_method: ClassVar[str] = "system.version"
     pass
 
-__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminRepairMlsGroupAdminsParams', 'AdminRepairMlsGroupAdminsResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsBotUnavailableModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']
+__all__: list[str] = ['AgentMetricsResponse', 'AgentPublishKeyPackageResponse', 'AgentSendAttachmentResponse', 'AgentSendDmResponse', 'AgentSendGroupAttachmentResponse', 'AgentSendGroupMessageResponse', 'AgentSendGroupReactionResponse', 'AgentSendReactionResponse', 'AgentSetProfileResponse', 'AgentVersionResponse', 'SystemHealthResponse', 'SystemVersionResponse', 'AdminCreateMlsGroupParams', 'AdminCreateMlsGroupResponse', 'AdminInviteToMlsGroupParams', 'AdminInviteToMlsGroupResponse', 'AdminRepairMlsGroupAdminsParams', 'AdminRepairMlsGroupAdminsResponse', 'AdminSendTestDmParams', 'AdminSendTestDmResponse', 'AgentCreateMlsGroupParams', 'AgentCreateMlsGroupResponse', 'AgentDeleteMlsGroupParams', 'AgentDeleteMlsGroupResponse', 'AgentErrorParams', 'AgentEventParams', 'AgentEventParamsAttachmentModel', 'AgentEventParamsBotUnavailableModel', 'AgentEventParamsReactionModel', 'AgentExitMlsGroupParams', 'AgentExitMlsGroupResponse', 'AgentInviteToMlsGroupParams', 'AgentInviteToMlsGroupResponse', 'AgentIsSquadMemberParams', 'AgentIsSquadMemberResponse', 'AgentListHandlersParams', 'AgentListHandlersResponse', 'AgentListHandlersResponseHandlersModel', 'AgentMetricsParams', 'AgentPublishKeyPackageParams', 'AgentRateLimitedParams', 'AgentSendAttachmentParams', 'AgentSendDmParams', 'AgentSendGroupAttachmentParams', 'AgentSendGroupMessageParams', 'AgentSendGroupReactionParams', 'AgentSendReactionParams', 'AgentSetProfileParams', 'AgentStatusParams', 'AgentUnregisterHandlerParams', 'AgentUnregisterHandlerResponse', 'AgentVersionParams', 'HandlerReconnectParams', 'HandlerReconnectResponse', 'HandlerRegisterParams', 'HandlerRegisterResponse', 'HandlerResponseParams', 'HandlerUnregisterParams', 'HandlerUnregisterResponse', 'SystemHealthParams', 'SystemVersionParams']

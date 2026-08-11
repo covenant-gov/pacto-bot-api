@@ -540,6 +540,42 @@
       }
     },
     {
+      "name": "agent.delete_mls_group",
+      "summary": "Remove this bot's local MLS state for a Squad. Local-only: other members are not notified.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bot_id": {
+                "type": "string",
+                "description": "Bot identity whose local Squad state is removed."
+              },
+              "group_id": {
+                "type": "string",
+                "description": "Hex-encoded Squad wire id."
+              }
+            },
+            "required": ["bot_id", "group_id"]
+          }
+        }
+      ],
+      "result": {
+        "name": "delete_mls_group",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "deleted": {
+              "type": "boolean",
+              "description": "True when local state was removed, false when the group was already absent."
+            }
+          },
+          "required": ["deleted"]
+        }
+      }
+    },
+    {
       "name": "agent.status",
       "summary": "Daemon lifecycle status notification. Carries the daemon-wide version and MLS wire generation only -- never a per-bot or per-group map. Per-bot reset state, per-group state-held/state-lost, and sole-admin squad detail are reported by `pacto-bot-admin diagnose` instead, since this notification fans out to every registered handler regardless of which bots it registered for.",
       "params": [

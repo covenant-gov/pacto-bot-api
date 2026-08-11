@@ -226,6 +226,25 @@ class PactoClient:
         result = response.get('result')
         return models.AgentCreateMlsGroupResponse.model_validate(result)
 
+    async def agent_delete_mls_group(self, bot_id: str, group_id: str, timeout: float | None = _DEFAULT_TIMEOUT) -> models.AgentDeleteMlsGroupResponse:
+        """
+        Call JSON-RPC method `agent.delete_mls_group`.
+
+        Remove this bot's local MLS state for a Squad. Local-only: other members are not notified.
+
+        Example:
+
+            >>> result = await client.agent_delete_mls_group(...)
+            >>> isinstance(result, AgentDeleteMlsGroupResponse)
+
+        jsonrpc_method: ``"agent.delete_mls_group"``
+        """
+        params = models.AgentDeleteMlsGroupParams(bot_id=bot_id, group_id=group_id)
+        params_dict = params.model_dump(mode='json', exclude_none=True)
+        response = await self._request("agent.delete_mls_group", params_dict, timeout=timeout)
+        result = response.get('result')
+        return models.AgentDeleteMlsGroupResponse.model_validate(result)
+
     async def agent_error(self, bot_id: str, message: str, code: str | None = None, data: Any | None = None) -> None:
         """
         Send JSON-RPC notification `agent.error`.

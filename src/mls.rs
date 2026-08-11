@@ -404,6 +404,12 @@ enum MlsCommand {
     ListGroups {
         tx: oneshot::Sender<Result<Vec<MlsGroupListEntry>, MlsError>>,
     },
+    /// Delete all locally stored MLS state for a group, local-only (no
+    /// Nostr publish). `Ok(false)` when no group matches `wire_id`.
+    DeleteGroup {
+        wire_id: String,
+        tx: oneshot::Sender<Result<bool, MlsError>>,
+    },
 }
 
 /// Cloneable handle to the per-bot MLS engine.
@@ -1036,6 +1042,26 @@ impl MlsEngineHandle {
                             });
                         let _ = tx.send(result);
                     }
+                    MlsCommand::DeleteGroup { wire_id, tx } => {
+                        let result: Result<bool, MlsError> =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                (|| {
+                                    let groups = engine.get_groups()?;
+                                    let Some(group) = groups.iter().find(|g| {
+                                        hex::encode(g.nostr_group_id.as_slice()) == wire_id
+                                    }) else {
+                                        return Ok(false);
+                                    };
+                                    engine.delete_group(&group.mls_group_id)?;
+                                    Ok(true)
+                                })()
+                            }))
+                            .unwrap_or_else(|e| {
+                                tracing::error!(panic = ?e, "MLS worker panic");
+                                Err(MlsError::Engine("MLS worker panic".into()))
+                            });
+                        let _ = tx.send(result);
+                    }
                 }
             }
 
@@ -1274,6 +1300,30 @@ impl MlsEngineHandle {
         let (tx, rx) = oneshot::channel();
         self.tx
             .send(MlsCommand::ListGroups { tx })
+            .await
+            .map_err(|_| MlsError::WorkerDisconnected)?;
+        rx.await.map_err(|_| MlsError::WorkerDisconnected)?
+    }
+
+    /// Delete all locally stored MLS state for `wire_id`: messages,
+    /// processed-message records, MLS tree state, epoch secrets, key
+    /// material, relay associations, proposals, and snapshots.
+    ///
+    /// This is local-only cleanup -- no MLS proposal or Nostr event is
+    /// published and no other member is notified. It does not perform a
+    /// self-removal commit, so it is appropriate for dropping a bot's own
+    /// copy of a group (e.g. one it solely administers), not for a
+    /// membership departure other members need to observe.
+    ///
+    /// Returns `Ok(true)` when a group matched and was deleted, `Ok(false)`
+    /// when no group matches `wire_id` -- idempotent for repeated calls.
+    pub async fn delete_group(&self, wire_id: &str) -> Result<bool, MlsError> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(MlsCommand::DeleteGroup {
+                wire_id: wire_id.to_string(),
+                tx,
+            })
             .await
             .map_err(|_| MlsError::WorkerDisconnected)?;
         rx.await.map_err(|_| MlsError::WorkerDisconnected)?
@@ -1762,6 +1812,60 @@ mod tests {
         let result = engine.leave_group(&wire_id).await;
 
         assert!(matches!(result, Err(MlsError::GroupNotFound)));
+    }
+
+    #[tokio::test]
+    async fn delete_group_missing_wire_id_is_idempotent() {
+        let temp = test_tempdir();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let wire_id = "a".repeat(64);
+        assert!(!engine.delete_group(&wire_id).await.expect("delete_group"));
+        // Calling again on a group that was never present is still a
+        // successful no-op, not an error -- reclaim must be able to run
+        // this repeatedly.
+        assert!(!engine.delete_group(&wire_id).await.expect("delete_group"));
+    }
+
+    #[tokio::test]
+    async fn delete_group_removes_local_state_and_is_then_idempotent() {
+        let temp = test_tempdir();
+        let creator_keys = Keys::generate();
+        let recipient_keys = Keys::generate();
+        let engine = MlsEngineHandle::new_persistent(temp.path().join("vector-mls.db"))
+            .expect("new_persistent");
+
+        let key_package = build_key_package(&engine, &recipient_keys).await;
+        let (wire_id, _welcome_rumor) = engine
+            .create_group(
+                creator_keys.public_key(),
+                recipient_keys.public_key(),
+                key_package,
+                "test-group".to_string(),
+                vec![RelayUrl::parse("wss://test.relay").unwrap()],
+                vec![creator_keys.public_key(), recipient_keys.public_key()],
+            )
+            .await
+            .expect("create_group failed");
+
+        assert!(
+            engine
+                .has_group_with_wire_id(&wire_id)
+                .await
+                .expect("has_group_with_wire_id")
+        );
+
+        assert!(engine.delete_group(&wire_id).await.expect("delete_group"));
+        assert!(
+            !engine
+                .has_group_with_wire_id(&wire_id)
+                .await
+                .expect("has_group_with_wire_id")
+        );
+
+        // Deleting again finds nothing left to delete -- still success.
+        assert!(!engine.delete_group(&wire_id).await.expect("delete_group"));
     }
 
     #[tokio::test]

@@ -706,6 +706,41 @@ impl Database {
             .optional()?;
         Ok(state_lost_at.flatten())
     }
+
+    /// Delete a group's bookkeeping row -- and its member rows -- by wire
+    /// id, for local-only MLS group deletion (`mls-group delete`).
+    ///
+    /// Returns `Ok(true)` when a row was deleted, `Ok(false)` when no
+    /// matching `(bot_id, wire_id)` row existed -- idempotent for repeated
+    /// calls.
+    pub fn delete_mls_group_by_wire_id(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let group_name: Option<String> = tx
+            .query_row(
+                "SELECT group_name FROM mls_groups WHERE bot_id = ?1 AND wire_id = ?2",
+                (bot_id, wire_id),
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(group_name) = group_name else {
+            tx.commit()?;
+            return Ok(false);
+        };
+        tx.execute(
+            "DELETE FROM mls_group_members WHERE bot_id = ?1 AND group_name = ?2",
+            (bot_id, &group_name),
+        )?;
+        tx.execute(
+            "DELETE FROM mls_groups WHERE bot_id = ?1 AND wire_id = ?2",
+            (bot_id, wire_id),
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
 }
 
 /// A single row from the MLS groups table.
@@ -1068,6 +1103,18 @@ impl Db {
         let bot_id = bot_id.to_string();
         let wire_id = wire_id.to_string();
         self.run(move |db| db.load_mls_group_state_lost_at(&bot_id, &wire_id))
+            .await
+    }
+
+    /// Delete a group's bookkeeping row by wire id (`mls-group delete`).
+    pub async fn delete_mls_group_by_wire_id(
+        &self,
+        bot_id: &str,
+        wire_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let bot_id = bot_id.to_string();
+        let wire_id = wire_id.to_string();
+        self.run(move |db| db.delete_mls_group_by_wire_id(&bot_id, &wire_id))
             .await
     }
 }

@@ -289,6 +289,7 @@ fn jsonrpc_method_catalog_matches_handwritten_types() {
                 | "admin.send_test_dm"
                 | "agent.is_squad_member"
                 | "agent.exit_mls_group"
+                | "agent.delete_mls_group"
                 | "admin.create_mls_group"
                 | "admin.invite_to_mls_group"
                 | "agent.create_mls_group"
