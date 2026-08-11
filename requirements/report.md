@@ -23,7 +23,7 @@ The following requirements were tagged directly in test source files:
 - **R8** — tests/daemon_startup.rs, tests/mls_group.rs
 - **R9** — tests/admin_cli_creation.rs, tests/mls_group.rs
 - **R10** — tests/admin_cli_migration.rs, tests/mls_group.rs
-- **R11** — tests/admin_cli_creation.rs
+- **R11** — tests/admin_cli_creation.rs, tests/mls_group.rs
 - **R12** — tests/agent_event.rs, tests/integration_test.rs, tests/mls_group.rs, tests/multi_bot.rs, tests/nostr_client.rs
 - **R13** — tests/integration_test.rs, tests/mls_group.rs, tests/mls_inbound.rs, tests/multi_bot.rs, tests/nostr_client.rs
 - **R14** — tests/dispatch_integration.rs, tests/mls_group.rs
@@ -47,7 +47,7 @@ The following requirements were tagged directly in test source files:
 - **R32** — tests/metrics_response_schema.rs, tests/schema_sync.rs
 - **R33** — tests/integration_test.rs, tests/multi_bot.rs
 - **R34** — tests/secret_redaction.rs
-- **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs
+- **R35** — tests/admin_cli_migration.rs, tests/diagnostics.rs, tests/mls_group.rs
 - **R36** — tests/dev_env_probe.rs
 - **R37** — tests/daemon_shutdown.rs, tests/diagnostics.rs, tests/mls_group.rs
 
@@ -65,7 +65,7 @@ The following requirements were tagged directly in test source files:
 | R8 | A `bot_id` is a daemon-local label for a configured bot identity. The daemon maintains a bidirectional `bot_id` ↔ `npub` mapping, and duplicate `bot_id` values within a single config are a validati... | tests/daemon_startup.rs<br>tests/mls_group.rs | src/client_manager.rs<br>src/db.rs | — | ✅ covered |
 | R9 | Bot identities are created and deleted only through the `pacto-bot-admin` CLI; the daemon runtime never creates or deletes identities. | tests/admin_cli_creation.rs<br>tests/mls_group.rs | src/admin.rs | Daemon runtime exposes no create/delete identity endpoints; lifecycle is isolated in pacto-bot-admin. | ✅ covered |
 | R10 | Bot state (event cursors, handler registrations, capability grants) is exportable as a JSON file via `pacto-bot-admin export <bot_id>`. A bot can be moved to a new daemon instance by copying the co... | tests/admin_cli_migration.rs<br>tests/mls_group.rs | src/admin.rs<br>src/db.rs | — | ✅ covered |
-| R11 | The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations. | tests/admin_cli_creation.rs | src/main.rs<br>src/admin.rs | Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods. | ✅ covered |
+| R11 | The daemon never creates or deletes bot identities. It only manages bots that already exist in its config file. Bot creation and deletion are admin operations, not runtime operations. | tests/admin_cli_creation.rs<br>tests/mls_group.rs | src/main.rs<br>src/admin.rs | Enforced by API boundary: the daemon's JSON-RPC surface has no identity-mutation methods. | ✅ covered |
 | R12 | The daemon sends and receives NIP-17/44/59 DMs (gift wrap pipeline) for each registered bot identity. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/agent_event.rs<br>tests/mls_group.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/bot_state.rs | — | ✅ covered |
 | R13 | The daemon subscribes to `kind:1059` gift wraps `#p`-tagged to each bot's npub, unwraps and decrypts them, and forwards the decrypted rumor to registered handlers as `agent.event` notifications. | tests/nostr_client.rs<br>tests/integration_test.rs<br>tests/mls_group.rs<br>tests/mls_inbound.rs<br>tests/multi_bot.rs | src/nostr.rs<br>src/dispatch.rs<br>src/events.rs | — | ✅ covered |
 | R14 | Handlers send DM replies via `agent.send_dm` notifications to the daemon. The daemon encrypts, wraps, and publishes the gift wrap. The daemon verifies that the calling handler is authorized for the... | tests/dispatch_integration.rs<br>tests/mls_group.rs | src/dispatch.rs<br>src/handlers.rs | — | ✅ covered |
@@ -89,6 +89,6 @@ The following requirements were tagged directly in test source files:
 | R32 | **Machine-readable contract.** The daemon's config schema, JSON-RPC method catalog, and metrics schema are published as JSON Schema/OpenRPC artifacts in `schemas/`. Rust types used for serializatio... | tests/schema_sync.rs<br>tests/metrics_response_schema.rs | schemas/<br>src/config_generated.rs<br>src/transport/protocol_generated.rs | — | ✅ covered |
 | R33 | **Deterministic test modes.** The default `cargo test` suite runs in-process with mock relay and mock bunker implementations and completes without external services. Integration tests against the `... | tests/support/mock_relay.rs<br>tests/support/mock_bunker.rs<br>tests/integration_test.rs<br>tests/multi_bot.rs | tests/support/ | — | ✅ covered |
 | R34 | **Secret-redaction verification.** Sensitive values (nsec, bunker URI, HTTP secret token) are never emitted in logs, error responses, binary strings, or process memory dumps. A dedicated test suite... | tests/secret_redaction.rs | src/errors.rs<br>src/config.rs<br>src/transport/http.rs | — | ✅ covered |
-| R35 | **Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing. | tests/diagnostics.rs<br>tests/admin_cli_migration.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
+| R35 | **Machine-parseable diagnostics.** `pacto-bot-admin diagnose --format json` and `agent.metrics` emit structured health and metric data that an agent can consume without log parsing. | tests/diagnostics.rs<br>tests/admin_cli_migration.rs<br>tests/mls_group.rs | src/diagnostics.rs<br>src/admin.rs | — | ✅ covered |
 | R36 | **Service-version compatibility probing.** When running against `pacto-dev-env`, the daemon probes the versions of external services (relay, bunker, Nostra, Aztec) and warns when they fall outside ... | tests/dev_env_probe.rs | src/dev_env_probe.rs<br>src/main.rs<br>xtask/src/dev_env_probe.rs<br>schemas/service-compatibility.json | — | ✅ covered |
 | R37 | **Last-run report.** On shutdown and periodically during runtime, the daemon flushes a structured JSON report to `$DATA_DIR/reports/latest.json` containing startup diagnostics, event counters, curs... | tests/diagnostics.rs<br>tests/daemon_shutdown.rs<br>tests/mls_group.rs | src/diagnostics.rs<br>src/main.rs | — | ✅ covered |

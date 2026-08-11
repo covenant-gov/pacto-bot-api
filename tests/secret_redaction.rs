@@ -22,8 +22,7 @@ use pacto_bot_api::transport::protocol::{JsonRpcMessage, serialize_message};
 #[cfg(unix)]
 use pacto_bot_api::transport::unix::UnixTransport;
 use support::secret_scan::{
-    SensitiveFixture, assert_no_leak, assert_no_leak_bytes, capture_logs_during, strings_output,
-    write_config_file,
+    SensitiveFixture, assert_no_leak, capture_logs_during, strings_output, write_config_file,
 };
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -416,11 +415,14 @@ fn simulated_core_dump_after_nsec_load_does_not_leak_marker() {
     // zeroized, so a concurrently-running sibling test's marker can never be
     // mistaken for a leak from this test.
     let _exclusive_scan = SensitiveFixture::acquire_exclusive_scan_lock();
-    let Some(memory) = fixture.scan_memory() else {
+    let Some(leaked) = fixture.scan_memory_for_leaks() else {
         // Core-dump simulation is only implemented on Linux.
         return;
     };
-    assert_no_leak_bytes(&memory, &fixture);
+    assert!(
+        leaked.is_empty(),
+        "secret markers leaked in process memory: {leaked:?}"
+    );
 }
 
 async fn write_token_file(data_dir: &Path, token: &str) -> std::io::Result<()> {
