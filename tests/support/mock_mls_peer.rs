@@ -280,11 +280,14 @@ impl MockMlsPeer {
     ///
     /// The returned event is signed by an ephemeral key derived from the group
     /// exporter secret, matching the production NIP-104 format.
+    ///
+    /// The inner rumor is kind 14 (`PrivateDirectMessage`), matching the
+    /// group text rumor kind pacto-app and pacto-bot-api both send.
     pub async fn create_group_message(&self, content: &str) -> Event {
         let rumor = nostr::UnsignedEvent::new(
             self.keys.public_key(),
             nostr::Timestamp::now(),
-            nostr::Kind::TextNote,
+            nostr::Kind::PrivateDirectMessage,
             Vec::new(),
             content,
         );
