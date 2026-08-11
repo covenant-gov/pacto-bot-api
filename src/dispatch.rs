@@ -2711,9 +2711,7 @@ impl Dispatch {
         let group_id = params
             .get("group_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                DaemonError::Config("agent.delete_mls_group missing group_id".into())
-            })?;
+            .ok_or_else(|| DaemonError::Config("agent.delete_mls_group missing group_id".into()))?;
 
         let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
         let authorized = {
