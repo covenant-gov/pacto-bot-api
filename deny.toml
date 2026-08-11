@@ -28,6 +28,18 @@ ignore = [
     "RUSTSEC-2026-0207", # libcrux-sha3 incremental SHAKE squeeze output
     "RUSTSEC-2026-0208", # libcrux-sha3 AVX2 SHAKE-256 panic
     "RUSTSEC-2026-0212", # libcrux-secrets aarch64 constant-time swap/select
+
+    # nostr-relay-pool 0.44.3 is flagged unmaintained (informational, not a
+    # vulnerability): its functionality was folded into nostr-sdk starting
+    # with 0.45.0, and upstream wants users to migrate there. We reach it
+    # transitively through nostr-sdk 0.44.1 and nostr-connect 0.44.1, plus a
+    # direct dependency, and `cargo update -p nostr-relay-pool` resolves
+    # nothing (no semver-compatible fix exists on the 0.44.x line). We can't
+    # move off it without bumping the whole nostr-sdk line to >=0.45.0, and
+    # that's out of scope here: pacto-app pins nostr-sdk 0.44.1, and
+    # pacto-bot-api must stay wire-compatible with that pin. Revisit once
+    # pacto-app moves to nostr-sdk 0.45.0 and this daemon can follow.
+    "RUSTSEC-2026-0243", # nostr-relay-pool is unmaintained
 ]
 
 [licenses]

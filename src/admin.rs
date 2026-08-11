@@ -2855,8 +2855,7 @@ async fn cmd_mls_group_send(
             })),
         );
         let value =
-            with_capability_session(&socket_path, bot_id, &["SendGroupMessages"], request)
-                .await?;
+            with_capability_session(&socket_path, bot_id, &["SendGroupMessages"], request).await?;
         let event_id = value
             .as_str()
             .ok_or_else(|| DaemonError::Config("unexpected daemon response".into()))?;
@@ -2908,8 +2907,8 @@ async fn cmd_mls_group_delete(
                 "group_id": group_id,
             })),
         );
-        let value = with_capability_session(&socket_path, bot_id, &["ExitMlsGroup"], request)
-            .await?;
+        let value =
+            with_capability_session(&socket_path, bot_id, &["ExitMlsGroup"], request).await?;
         let _response: AgentDeleteMlsGroupResponse = serde_json::from_value(value)?;
         println!("{group_id}");
         Ok(())
@@ -5323,8 +5322,8 @@ mod tests {
     /// behind it.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
-    async fn admin_session_call_ignores_stray_broadcast_before_response()
-    -> Result<(), DaemonError> {
+    async fn admin_session_call_ignores_stray_broadcast_before_response() -> Result<(), DaemonError>
+    {
         use tokio::net::UnixListener;
 
         let dir = tempfile::tempdir().map_err(DaemonError::Io)?;
@@ -5364,8 +5363,7 @@ mod tests {
 
             // Simulate the real race: an unrelated broadcast arrives on this
             // connection while the request is still being processed.
-            let stray =
-                JsonRpcMessage::notification("agent.metrics", Some(serde_json::json!({})));
+            let stray = JsonRpcMessage::notification("agent.metrics", Some(serde_json::json!({})));
             writer
                 .write_all(format!("{}\n", serialize_message(&stray).unwrap()).as_bytes())
                 .await
@@ -5463,10 +5461,8 @@ mod tests {
             reader.read_line(&mut line).await.expect("read request");
             let request = parse_message(line.trim_end()).expect("parse request");
             let request_id = request.id().cloned().expect("request id");
-            let response = JsonRpcMessage::response(
-                request_id,
-                Some(serde_json::json!({ "deleted": false })),
-            );
+            let response =
+                JsonRpcMessage::response(request_id, Some(serde_json::json!({ "deleted": false })));
             writer
                 .write_all(format!("{}\n", serialize_message(&response).unwrap()).as_bytes())
                 .await
