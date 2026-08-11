@@ -351,7 +351,7 @@ impl NostrClient {
         Ok(UnsignedEvent::new(
             *sender,
             Timestamp::now(),
-            Kind::TextNote,
+            Kind::PrivateDirectMessage,
             Vec::new(),
             payload,
         ))
@@ -1494,7 +1494,7 @@ impl NostrClient {
 
         let (event_type, reaction, attachment, content, mentions, pacto_virtual_bucket) =
             match decrypted.kind {
-                Kind::TextNote => {
+                Kind::PrivateDirectMessage => {
                     let (content, mentions, pacto_virtual_bucket) =
                         parse_mention_envelope(&decrypted.content);
                     (
@@ -2032,6 +2032,39 @@ mod tests {
             nostr_tags::find_e_tag(&rumor.tags).and_then(Tag::content),
             Some(target.to_hex().as_str())
         );
+    }
+
+    #[test]
+    fn build_group_text_rumor_uses_kind_14_private_direct_message() {
+        let sender = Keys::generate();
+        let rumor =
+            NostrClient::build_group_text_rumor(&sender.public_key(), "hello squad".into(), None)
+                .unwrap();
+
+        // pacto-app's message views only render kinds 14 / 15 / 30078
+        // (PRIVATE_DIRECT_MESSAGE / FILE_ATTACHMENT / APPLICATION_SPECIFIC);
+        // a group text rumor must be kind 14 or it is stored but never shown.
+        assert_eq!(rumor.kind, Kind::PrivateDirectMessage);
+        assert_eq!(rumor.kind.as_u16(), 14);
+        assert_eq!(rumor.content, "hello squad");
+    }
+
+    #[test]
+    fn build_group_text_rumor_mention_envelope_payload_is_unchanged() {
+        let sender = Keys::generate();
+        let rumor = NostrClient::build_group_text_rumor(
+            &sender.public_key(),
+            "hey @bot".into(),
+            Some("bucket-1".into()),
+        )
+        .unwrap();
+
+        assert_eq!(rumor.kind, Kind::PrivateDirectMessage);
+        let envelope: serde_json::Value = serde_json::from_str(&rumor.content).unwrap();
+        assert_eq!(envelope["kind"], MENTION_ENVELOPE_KIND);
+        assert_eq!(envelope["body"], "hey @bot");
+        assert_eq!(envelope["mentions"], serde_json::json!([]));
+        assert_eq!(envelope["pacto_virtual_bucket"], "bucket-1");
     }
 
     #[tokio::test]

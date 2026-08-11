@@ -470,6 +470,53 @@ async fn authorized_handler_receives_group_message() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// pacto-app builds group text rumors as kind 14 (PRIVATE_DIRECT_MESSAGE),
+/// not kind 1. Build the inner rumor explicitly (independent of
+/// `MockMlsPeer::create_group_message`'s default) to prove the daemon
+/// processes it instead of hitting the "skipping unrepresented MLS inner
+/// rumor kind" fallback arm.
+#[tokio::test]
+async fn inbound_kind_14_group_rumor_is_processed_not_skipped()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (keys, dispatch, cm, client, relay, _dir) =
+        setup_mls_dispatch(&["ReceiveGroupMessages", "SendGroupMessages"]).await?;
+    let (peer, _welcome_id, _wire_id) = peer_group_setup(&keys, &cm).await?;
+    let (_, mut rx) = register_handler(
+        &dispatch,
+        &["mls_group_message_received"],
+        &["ReceiveGroupMessages"],
+    )
+    .await?;
+
+    let rumor = nostr::UnsignedEvent::new(
+        peer.keys.public_key(),
+        nostr::Timestamp::now(),
+        nostr::Kind::PrivateDirectMessage,
+        Vec::new(),
+        "hello from a human",
+    );
+    let message_event = peer.create_group_rumor(rumor).await;
+    let expected_group_id = support::mock_mls_peer::group_wire_id(&message_event);
+    relay.inject_event(message_event).await;
+
+    let stream = client.receive_events();
+    let consumer = tokio::spawn(consume_stream(dispatch, stream));
+
+    let msg = next_message(&mut rx)
+        .await
+        .ok_or("no agent.event notification: kind-14 group rumor was dropped by the skip arm")?;
+    let event = parse_agent_event(&msg).ok_or("not an agent.event")?;
+    assert_eq!(event.bot_id, "mls-bot");
+    assert_eq!(event.event_type, EventType::MlsGroupMessageReceived);
+    assert_eq!(event.content, "hello from a human");
+    assert_eq!(event.chat_id, expected_group_id);
+
+    consumer.abort();
+    let _ = consumer.await;
+    relay.stop().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn group_reaction_delivers_only_to_group_reaction_subscribers()
 -> Result<(), Box<dyn std::error::Error>> {
