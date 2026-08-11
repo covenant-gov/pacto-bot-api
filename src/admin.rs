@@ -32,9 +32,9 @@ use pacto_bot_api::signer::SignerBackend;
 use pacto_bot_api::transport::protocol::MetricsResponse;
 #[cfg(unix)]
 use pacto_bot_api::transport::protocol::{
-    AdminSendTestDmResponse, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    HandlerRegisterResponse, JsonRpcMessage, MetricsResponse, MlsGroupResponse,
-    RepairMlsGroupAdminsResponse, parse_message, serialize_message,
+    AdminSendTestDmResponse, AgentDeleteMlsGroupResponse, AgentListHandlersResponse,
+    AgentUnregisterHandlerResponse, HandlerRegisterResponse, JsonRpcMessage, MetricsResponse,
+    MlsGroupResponse, RepairMlsGroupAdminsResponse, parse_message, serialize_message,
 };
 use percent_encoding::percent_decode_str;
 use rusqlite::Connection;
@@ -178,6 +178,8 @@ const MLS_GROUP_AFTER_HELP: &str = r#"Examples:
   pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1... --admin npub1recipient... --admin npub1other...
   pacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...
   pacto-bot-admin mls-group repair-admins --bot echo-bot --group my-squad
+  pacto-bot-admin mls-group send --bot echo-bot --group 3a1f...deadbeef --content "hello squad"
+  pacto-bot-admin mls-group delete --bot echo-bot --group 3a1f...deadbeef
 "#;
 
 const TRACE_EVENTS_AFTER_HELP: &str = r#"Examples:
@@ -626,6 +628,37 @@ enum MlsGroupCommand {
         #[arg(short, long, value_name = "GROUP_NAME")]
         group: String,
     },
+    /// Send a message into an existing MLS group as the bot.
+    Send {
+        /// Bot identity that owns the group.
+        #[arg(short, long, value_name = "BOT_ID")]
+        bot: String,
+
+        /// Hex-encoded Squad wire id (MLS nostr_group_id) of the group.
+        #[arg(short, long, value_name = "GROUP_WIRE_ID")]
+        group: String,
+
+        /// Message text to send.
+        #[arg(long, value_name = "TEXT")]
+        content: String,
+    },
+    /// Remove this bot's local MLS state for a group; does not notify other members.
+    ///
+    /// This is local-only cleanup: it deletes this bot's own copy of the
+    /// group's messages, key material, and membership state on this
+    /// daemon. It does not publish a leave proposal, so other members (if
+    /// any) are not notified and the group is unaffected for them.
+    /// Idempotent: a group this bot already has no local state for is
+    /// success, not an error.
+    Delete {
+        /// Bot identity whose local state is being dropped.
+        #[arg(short, long, value_name = "BOT_ID")]
+        bot: String,
+
+        /// Hex-encoded Squad wire id (MLS nostr_group_id) of the group.
+        #[arg(short, long, value_name = "GROUP_WIRE_ID")]
+        group: String,
+    },
 }
 
 #[tokio::main]
@@ -783,6 +816,14 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         }) => cmd_mls_group_invite(&cli.config, cli.data_dir, &bot, &group, &recipient).await,
         Command::MlsGroup(MlsGroupCommand::RepairAdmins { bot, group }) => {
             cmd_mls_group_repair_admins(&cli.config, cli.data_dir, &bot, &group).await
+        }
+        Command::MlsGroup(MlsGroupCommand::Send {
+            bot,
+            group,
+            content,
+        }) => cmd_mls_group_send(&cli.config, cli.data_dir, &bot, &group, &content).await,
+        Command::MlsGroup(MlsGroupCommand::Delete { bot, group }) => {
+            cmd_mls_group_delete(&cli.config, cli.data_dir, &bot, &group).await
         }
         Command::TraceEvents {
             bot_id,
@@ -2769,6 +2810,137 @@ async fn cmd_mls_group_repair_admins(
     }
 }
 
+/// Send a message into an existing MLS group as `bot_id`.
+///
+/// Routes through `agent.send_group_message` -- the same handler-callable
+/// RPC a bot's own SDK client uses -- over a short-lived, admin-initiated
+/// handler session registered with exactly the `SendGroupMessages`
+/// capability the daemon requires for that RPC. `handler.register` refuses
+/// to grant a capability the bot's roster config does not list, so this is
+/// the same enforcement a real handler registration would hit; the local
+/// `require_bot_capability` check below only makes the refusal message
+/// clear before the round trip instead of the daemon's generic sanitized
+/// one.
+async fn cmd_mls_group_send(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    group: &str,
+    content: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, group, content);
+        return Err(DaemonError::Config(
+            "mls-group is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = load_admin_config(config_path)?;
+        let bot = find_bot(&config.bots, bot_id)?;
+        require_bot_capability(bot, "SendGroupMessages")?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
+        let group_id = validate_mls_wire_id(group)?;
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "agent.send_group_message",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "group_id": group_id,
+                "content": content,
+            })),
+        );
+        let value =
+            with_capability_session(&socket_path, bot_id, &["SendGroupMessages"], request)
+                .await?;
+        let event_id = value
+            .as_str()
+            .ok_or_else(|| DaemonError::Config("unexpected daemon response".into()))?;
+        println!("{event_id}");
+        Ok(())
+    }
+}
+
+/// Drop `bot_id`'s local MLS state for a group.
+///
+/// This is local-only cleanup, not a full MLS self-removal: it deletes
+/// this bot's own copy of the group's messages, key material, and
+/// membership state on this daemon (see `agent.delete_mls_group` in
+/// `src/dispatch.rs`). It does not publish a leave proposal, so other
+/// members (if any) are not notified and keep the group unaffected. That
+/// is the deliberate choice for the group this command targets -- one the
+/// bot solely administers -- where a self-removal commit would need
+/// another member to ever commit it and would otherwise sit unprocessed
+/// forever. Idempotent: a group this bot already has no local state for is
+/// success, not an error, so a reclaim script can call this repeatedly.
+async fn cmd_mls_group_delete(
+    config_path: &Path,
+    data_dir_override: Option<PathBuf>,
+    bot_id: &str,
+    group: &str,
+) -> Result<(), DaemonError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (config_path, data_dir_override, bot_id, group);
+        return Err(DaemonError::Config(
+            "mls-group is only available on Unix platforms".into(),
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let config = load_admin_config(config_path)?;
+        let bot = find_bot(&config.bots, bot_id)?;
+        require_bot_capability(bot, "ExitMlsGroup")?;
+        let data_dir = resolve_data_dir(&config, data_dir_override);
+        let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
+        let group_id = validate_mls_wire_id(group)?;
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "agent.delete_mls_group",
+            Some(serde_json::json!({
+                "bot_id": bot_id,
+                "group_id": group_id,
+            })),
+        );
+        let value = with_capability_session(&socket_path, bot_id, &["ExitMlsGroup"], request)
+            .await?;
+        let _response: AgentDeleteMlsGroupResponse = serde_json::from_value(value)?;
+        println!("{group_id}");
+        Ok(())
+    }
+}
+
+/// Confirm `bot`'s roster config grants `capability` before attempting an
+/// operation that requires it, with a message that names the missing
+/// capability instead of the daemon's sanitized generic one.
+fn require_bot_capability(bot: &BotConfig, capability: &str) -> Result<(), DaemonError> {
+    if bot.capabilities.iter().any(|c| c == capability) {
+        Ok(())
+    } else {
+        Err(DaemonError::Config(format!(
+            "bot {} does not have the {capability} capability; grant it in the bot's roster config first",
+            bot.id
+        )))
+    }
+}
+
+/// Validate and normalize a Squad wire id (hex-encoded MLS `nostr_group_id`).
+fn validate_mls_wire_id(group: &str) -> Result<String, DaemonError> {
+    if !group.is_empty() && group.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(group.to_ascii_lowercase())
+    } else {
+        Err(DaemonError::Config(format!(
+            "invalid group wire id: {group}; expected a hex-encoded Squad wire id"
+        )))
+    }
+}
+
 fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
     let pk = PublicKey::parse(recipient)
         .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))?;
@@ -3188,27 +3360,51 @@ impl AdminSession {
         Ok(())
     }
 
+    /// Read frames until one whose `id` matches `expected_id`, or the
+    /// deadline elapses.
+    ///
+    /// The daemon can push unsolicited notifications (`agent.status`,
+    /// `agent.metrics`) onto this same connection at any time -- they are
+    /// broadcast to every registered handler regardless of its subscribed
+    /// event types, and race independently of the sequential per-request
+    /// response the connection is otherwise expected to produce. Skipping
+    /// anything that isn't this call's response keeps that broadcast noise
+    /// from being mistaken for a protocol error on a request that already
+    /// succeeded.
     async fn read_response(
         &mut self,
         timeout_duration: Duration,
+        expected_id: &Value,
     ) -> Result<JsonRpcMessage, DaemonError> {
-        let reader = self
-            .reader
-            .as_mut()
-            .ok_or_else(|| DaemonError::Config("admin session reader is closed".into()))?;
-        let mut buf = Vec::new();
-        let n = tokio::time::timeout(timeout_duration, reader.read_until(b'\n', &mut buf))
-            .await
-            .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
-        if n == 0 {
-            return Err(DaemonError::Config("unix socket closed".into()));
+        let deadline = tokio::time::Instant::now() + timeout_duration;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(DaemonError::Config("unix socket read timed out".into()));
+            }
+            let reader = self
+                .reader
+                .as_mut()
+                .ok_or_else(|| DaemonError::Config("admin session reader is closed".into()))?;
+            let mut buf = Vec::new();
+            let n = tokio::time::timeout(remaining, reader.read_until(b'\n', &mut buf))
+                .await
+                .map_err(|_| DaemonError::Config("unix socket read timed out".into()))??;
+            if n == 0 {
+                return Err(DaemonError::Config("unix socket closed".into()));
+            }
+            if buf.last() == Some(&b'\n') {
+                buf.pop();
+            }
+            let line = String::from_utf8(buf)
+                .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
+            let msg = parse_message(&line)?;
+            if msg.id() == Some(expected_id) {
+                return Ok(msg);
+            }
+            // Not this request's response (an unrelated notification, or a
+            // frame carrying a different id) -- keep reading.
         }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-        }
-        let line = String::from_utf8(buf)
-            .map_err(|_| DaemonError::Config("daemon response is not valid UTF-8".into()))?;
-        parse_message(&line)
     }
 
     async fn cleanup(&mut self) {
@@ -3216,13 +3412,14 @@ impl AdminSession {
             self.cleaned_up = true;
             return;
         }
+        let id: Value = 3.into();
         let unregister = JsonRpcMessage::request(
-            3.into(),
+            id.clone(),
             "handler.unregister",
             Some(Value::Object(Default::default())),
         );
         let _ = self.write_request(&unregister).await;
-        let _ = self.read_response(Duration::from_secs(2)).await;
+        let _ = self.read_response(Duration::from_secs(2), &id).await;
         self.cleaned_up = true;
     }
 }
@@ -3318,6 +3515,40 @@ async fn admin_session_call(
     bot_id: &str,
     request: JsonRpcMessage,
 ) -> Result<Value, DaemonError> {
+    handler_session_call(socket_path, bot_id, &["Admin"], request).await
+}
+
+/// Like [`with_admin_session`], but registers the temporary handler with an
+/// arbitrary capability set instead of `Admin`. Used for operations
+/// (`mls-group send`, `mls-group delete`) whose underlying `agent.*` RPC is
+/// gated on the same per-bot capability a long-lived handler would need,
+/// not on the `Admin` bypass `mls-group create`/`invite`/`repair-admins`
+/// use: the daemon's `handler.register` already refuses to grant a
+/// capability the bot's roster config does not list, which is exactly the
+/// enforcement these operations need.
+#[cfg(unix)]
+async fn with_capability_session(
+    socket_path: &Path,
+    bot_id: &str,
+    capabilities: &[&str],
+    request: JsonRpcMessage,
+) -> Result<Value, DaemonError> {
+    tokio::select! {
+        biased;
+        result = handler_session_call(socket_path, bot_id, capabilities, request) => result,
+        _ = tokio::signal::ctrl_c() => {
+            Err(DaemonError::Config("admin session interrupted by SIGINT".into()))
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn handler_session_call(
+    socket_path: &Path,
+    bot_id: &str,
+    capabilities: &[&str],
+    request: JsonRpcMessage,
+) -> Result<Value, DaemonError> {
     let stream = tokio::time::timeout(Duration::from_secs(15), UnixStream::connect(socket_path))
         .await
         .map_err(|_| DaemonError::Config("unix socket connect timed out".into()))??;
@@ -3325,18 +3556,21 @@ async fn admin_session_call(
     let reader = BufReader::new(reader);
     let mut session = AdminSession::new(reader, writer);
 
-    // Register a temporary handler with Admin capability.
+    // Register a temporary handler with the requested capability set.
+    let register_id: Value = 1.into();
     let register = JsonRpcMessage::request(
-        1.into(),
+        register_id.clone(),
         "handler.register",
         Some(serde_json::json!({
             "bot_ids": [bot_id],
             "event_types": [],
-            "capabilities": ["Admin"],
+            "capabilities": capabilities,
         })),
     );
     session.write_request(&register).await?;
-    let response = session.read_response(Duration::from_secs(5)).await?;
+    let response = session
+        .read_response(Duration::from_secs(5), &register_id)
+        .await?;
     let admin_handler_id = match response {
         JsonRpcMessage::Response {
             result: Some(r), ..
@@ -3352,8 +3586,14 @@ async fn admin_session_call(
     session.set_handler_id(admin_handler_id);
 
     // Send the actual admin request on the same authenticated connection.
+    let request_id = request
+        .id()
+        .cloned()
+        .ok_or_else(|| DaemonError::Config("admin request missing id".into()))?;
     session.write_request(&request).await?;
-    let result = session.read_response(Duration::from_secs(15)).await?;
+    let result = session
+        .read_response(Duration::from_secs(15), &request_id)
+        .await?;
 
     // Clean up the temporary admin handler before returning.
     session.cleanup().await;
@@ -5024,11 +5264,248 @@ mod tests {
     }
 
     #[test]
+    fn require_bot_capability_refuses_bot_missing_send_group_messages() {
+        // A bot whose roster only grants ReadMessages must be refused for
+        // mls-group send, with a message naming the missing capability --
+        // not silently allowed through via the admin session's own
+        // privilege.
+        let bot = dummy_bot("mls-bot", "npub1a", "nsec1a");
+        assert_eq!(bot.capabilities, vec!["ReadMessages".to_string()]);
+
+        let err = require_bot_capability(&bot, "SendGroupMessages").unwrap_err();
+        assert!(matches!(err, DaemonError::Config(_)));
+        assert!(err.to_string().contains("SendGroupMessages"));
+        assert!(err.to_string().contains("mls-bot"));
+    }
+
+    #[test]
+    fn require_bot_capability_allows_bot_with_granted_capability() -> Result<(), DaemonError> {
+        let mut bot = dummy_bot("mls-bot", "npub1a", "nsec1a");
+        bot.capabilities = vec!["SendGroupMessages".to_string()];
+        require_bot_capability(&bot, "SendGroupMessages")
+    }
+
+    #[test]
+    fn validate_mls_wire_id_accepts_hex_and_lowercases() -> Result<(), DaemonError> {
+        let group_id = validate_mls_wire_id(&"AB".repeat(32))?;
+        assert_eq!(group_id, "ab".repeat(32));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_mls_wire_id_rejects_non_hex() {
+        let err = validate_mls_wire_id("my-squad").unwrap_err();
+        assert!(matches!(err, DaemonError::Config(_)));
+    }
+
+    #[test]
     fn daemon_status_str_uses_snake_case() {
         assert_eq!(daemon_status_str(DaemonStatus::Ready), "ready");
         assert_eq!(
             daemon_status_str(DaemonStatus::ShuttingDown),
             "shutting_down"
         );
+    }
+
+    /// Regression test for the P1 bug where `mls-group create` (and every
+    /// other admin RPC) could report failure for an operation that had
+    /// already succeeded server-side.
+    ///
+    /// The daemon broadcasts notifications like `agent.metrics` to every
+    /// registered handler's connection independently of that connection's
+    /// sequential request/response queue (`src/transport/unix.rs`), so a
+    /// broadcast can land on the wire before the response to an in-flight
+    /// admin request. Before the fix, `AdminSession::read_response` blindly
+    /// treated the next line on the socket as the answer to the outstanding
+    /// request; a stray notification there was neither a `Response` nor an
+    /// `Error`, so it fell through to "unexpected daemon response" and
+    /// discarded the real, already-successful result that followed right
+    /// behind it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn admin_session_call_ignores_stray_broadcast_before_response()
+    -> Result<(), DaemonError> {
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().map_err(DaemonError::Io)?;
+        let socket_path = dir.path().join("admin-race.sock");
+        let listener = UnixListener::bind(&socket_path).map_err(DaemonError::Io)?;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            // handler.register
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read register");
+            let register = parse_message(line.trim_end()).expect("parse register");
+            let register_id = register.id().cloned().expect("register id");
+            let register_response = JsonRpcMessage::response(
+                register_id,
+                Some(serde_json::json!({
+                    "handler_id": "test-handler",
+                    "reconnect_token": "token",
+                    "registered_events": [],
+                })),
+            );
+            writer
+                .write_all(
+                    format!("{}\n", serialize_message(&register_response).unwrap()).as_bytes(),
+                )
+                .await
+                .expect("write register response");
+
+            // The actual admin request (e.g. `admin.create_mls_group`).
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read request");
+            let request = parse_message(line.trim_end()).expect("parse request");
+            let request_id = request.id().cloned().expect("request id");
+
+            // Simulate the real race: an unrelated broadcast arrives on this
+            // connection while the request is still being processed.
+            let stray =
+                JsonRpcMessage::notification("agent.metrics", Some(serde_json::json!({})));
+            writer
+                .write_all(format!("{}\n", serialize_message(&stray).unwrap()).as_bytes())
+                .await
+                .expect("write stray notification");
+
+            // The operation actually completed; its real response follows.
+            let real_response = JsonRpcMessage::response(
+                request_id,
+                Some(serde_json::json!({ "wire_id": "wire-123" })),
+            );
+            writer
+                .write_all(format!("{}\n", serialize_message(&real_response).unwrap()).as_bytes())
+                .await
+                .expect("write real response");
+
+            // Cleanup: handler.unregister.
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read unregister");
+            let unregister = parse_message(line.trim_end()).expect("parse unregister");
+            let unregister_id = unregister.id().cloned().expect("unregister id");
+            let unregister_response = JsonRpcMessage::response(
+                unregister_id,
+                Some(serde_json::json!({ "unregistered": true })),
+            );
+            writer
+                .write_all(
+                    format!("{}\n", serialize_message(&unregister_response).unwrap()).as_bytes(),
+                )
+                .await
+                .expect("write unregister response");
+        });
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "admin.create_mls_group",
+            Some(serde_json::json!({})),
+        );
+        let value = admin_session_call(&socket_path, "test-bot", request).await?;
+        let response: MlsGroupResponse = serde_json::from_value(value)?;
+        assert_eq!(response.wire_id, "wire-123");
+
+        server.await.expect("server task");
+        Ok(())
+    }
+
+    /// `mls-group delete` on a group the daemon has no local state for
+    /// must be reported as success, not an error, so a reclaim script can
+    /// call it repeatedly. This drives the exact round trip
+    /// `cmd_mls_group_delete` uses -- register a handler with the
+    /// `ExitMlsGroup` capability, call `agent.delete_mls_group`, and parse
+    /// the response -- against a fake daemon that answers `deleted: false`
+    /// the way the real daemon does when `agent.delete_mls_group` finds no
+    /// matching wire id (`src/dispatch.rs::handle_delete_mls_group`).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn delete_mls_group_missing_group_is_reported_as_success() -> Result<(), DaemonError> {
+        use tokio::net::UnixListener;
+
+        let dir = tempfile::tempdir().map_err(DaemonError::Io)?;
+        let socket_path = dir.path().join("delete-idempotent.sock");
+        let listener = UnixListener::bind(&socket_path).map_err(DaemonError::Io)?;
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+
+            // handler.register -- assert the CLI asked for exactly the
+            // capability the underlying RPC needs, not a bare "Admin" one.
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read register");
+            let register = parse_message(line.trim_end()).expect("parse register");
+            let register_id = register.id().cloned().expect("register id");
+            let params = register.params().cloned().expect("register params");
+            let capabilities = params["capabilities"].as_array().expect("capabilities");
+            assert_eq!(capabilities, &[serde_json::json!("ExitMlsGroup")]);
+            let register_response = JsonRpcMessage::response(
+                register_id,
+                Some(serde_json::json!({
+                    "handler_id": "test-handler",
+                    "reconnect_token": "token",
+                    "registered_events": [],
+                })),
+            );
+            writer
+                .write_all(
+                    format!("{}\n", serialize_message(&register_response).unwrap()).as_bytes(),
+                )
+                .await
+                .expect("write register response");
+
+            // agent.delete_mls_group -- the daemon found no local state for
+            // this wire id, so it reports success with deleted: false.
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read request");
+            let request = parse_message(line.trim_end()).expect("parse request");
+            let request_id = request.id().cloned().expect("request id");
+            let response = JsonRpcMessage::response(
+                request_id,
+                Some(serde_json::json!({ "deleted": false })),
+            );
+            writer
+                .write_all(format!("{}\n", serialize_message(&response).unwrap()).as_bytes())
+                .await
+                .expect("write response");
+
+            // Cleanup: handler.unregister.
+            let mut line = String::new();
+            reader.read_line(&mut line).await.expect("read unregister");
+            let unregister = parse_message(line.trim_end()).expect("parse unregister");
+            let unregister_id = unregister.id().cloned().expect("unregister id");
+            let unregister_response = JsonRpcMessage::response(
+                unregister_id,
+                Some(serde_json::json!({ "unregistered": true })),
+            );
+            writer
+                .write_all(
+                    format!("{}\n", serialize_message(&unregister_response).unwrap()).as_bytes(),
+                )
+                .await
+                .expect("write unregister response");
+        });
+
+        let request = JsonRpcMessage::request(
+            1.into(),
+            "agent.delete_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "test-bot",
+                "group_id": "a".repeat(64),
+            })),
+        );
+        let value =
+            with_capability_session(&socket_path, "test-bot", &["ExitMlsGroup"], request).await?;
+        let response: AgentDeleteMlsGroupResponse = serde_json::from_value(value)?;
+        assert!(
+            !response.deleted,
+            "an already-absent group must be reported as success, not an error"
+        );
+
+        server.await.expect("server task");
+        Ok(())
     }
 }

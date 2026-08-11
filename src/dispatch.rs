@@ -27,12 +27,12 @@ use crate::mls::MlsEngineHandle;
 use crate::nostr::NostrClient;
 use crate::signer::{Signer, SignerBackend};
 use crate::transport::protocol::{
-    AdminSendTestDmResponse, AgentExitMlsGroupResponse, AgentIsSquadMemberResponse,
-    AgentListHandlersEntry, AgentListHandlersResponse, AgentUnregisterHandlerResponse,
-    AgentVersionResponse, CreateMlsGroupParams, HandlerReconnectParams, HandlerReconnectResponse,
-    HandlerRegisterResponse, HandlerUnregisterResponse, InviteToMlsGroupParams, JsonRpcMessage,
-    Method, MetricsResponse, MlsGroupResponse, RepairMlsGroupAdminsParams,
-    RepairMlsGroupAdminsResponse, parse_method,
+    AdminSendTestDmResponse, AgentDeleteMlsGroupResponse, AgentExitMlsGroupResponse,
+    AgentIsSquadMemberResponse, AgentListHandlersEntry, AgentListHandlersResponse,
+    AgentUnregisterHandlerResponse, AgentVersionResponse, CreateMlsGroupParams,
+    HandlerReconnectParams, HandlerReconnectResponse, HandlerRegisterResponse,
+    HandlerUnregisterResponse, InviteToMlsGroupParams, JsonRpcMessage, Method, MetricsResponse,
+    MlsGroupResponse, RepairMlsGroupAdminsParams, RepairMlsGroupAdminsResponse, parse_method,
 };
 
 use secrecy::{ExposeSecret, SecretString};
@@ -1002,6 +1002,7 @@ impl Dispatch {
             }
             Method::AgentIsSquadMember => self.handle_is_squad_member(handler_id, params).await,
             Method::AgentExitMlsGroup => self.handle_exit_mls_group(handler_id, params).await,
+            Method::AgentDeleteMlsGroup => self.handle_delete_mls_group(handler_id, params).await,
             Method::AgentEvent | Method::AgentStatus | Method::AgentRateLimited => {
                 Err(DaemonError::MethodNotFound)
             }
@@ -2686,6 +2687,65 @@ impl Dispatch {
             .send_evolution_event(&outcome.leave_event)
             .await?;
         Ok(event_id)
+    }
+
+    /// `agent.delete_mls_group`: local-only cleanup exposed to
+    /// `pacto-bot-admin mls-group delete`. Unlike [`Self::handle_exit_mls_group_inner`]
+    /// this never publishes a leave proposal or notifies other members --
+    /// it only drops this bot's own copy of the group, which is the
+    /// practical option for a sandbox reclaiming a Squad it solely
+    /// administers (nobody else exists to ever commit a self-removal
+    /// proposal). Idempotent: a group this bot has no local state for is
+    /// success (`deleted: false`), not an error.
+    async fn handle_delete_mls_group(
+        &self,
+        handler_id: Option<&str>,
+        params: Option<&Value>,
+    ) -> Result<Option<Value>, DaemonError> {
+        let params = params
+            .ok_or_else(|| DaemonError::Config("agent.delete_mls_group missing params".into()))?;
+        let bot_id = params
+            .get("bot_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| DaemonError::Config("agent.delete_mls_group missing bot_id".into()))?;
+        let group_id = params
+            .get("group_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                DaemonError::Config("agent.delete_mls_group missing group_id".into())
+            })?;
+
+        let hid = handler_id.ok_or(DaemonError::HandlerNotRegistered)?;
+        let authorized = {
+            let cm = self.client_manager.read().await;
+            cm.is_authorized(hid, bot_id, "ExitMlsGroup")?
+        };
+        if !authorized {
+            return Err(DaemonError::UnauthorizedBot);
+        }
+
+        let mls_engine = {
+            let cm = self.client_manager.read().await;
+            let bot = cm
+                .get_bot_by_id(bot_id)
+                .ok_or_else(|| DaemonError::UnknownBot(bot_id.into()))?;
+            bot.mls.clone().ok_or_else(|| bot.mls_unavailable_error())?
+        };
+        let deleted = mls_engine.delete_group(group_id).await?;
+        self.db
+            .delete_mls_group_by_wire_id(bot_id, group_id)
+            .await?;
+
+        info!(
+            bot_id = %bot_id,
+            group_id = %group_id,
+            deleted,
+            "deleted local mls group state"
+        );
+
+        Ok(Some(serde_json::to_value(AgentDeleteMlsGroupResponse {
+            deleted,
+        })?))
     }
 
     /// Spawn a background task that removes disconnected handlers that have
@@ -4635,6 +4695,76 @@ mod tests {
             panic!("expected error response");
         };
         assert_eq!(error.code, -32006);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_delete_mls_group_without_capability_returns_unauthorized() {
+        let keys = test_keys();
+        let (dispatch, _cm) =
+            dispatch_with_bots(vec![bot_config("mls-bot", &keys, &["Admin"])]).await;
+        let handler_id = register_handler(&dispatch, &["mls-bot"], &["Admin"]).await;
+
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "agent.delete_mls_group",
+            Some(serde_json::json!({
+                "bot_id": "mls-bot",
+                "group_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            })),
+        );
+        let resp = dispatch
+            .handle_message(req, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Error { error, .. } = resp else {
+            panic!("expected error response");
+        };
+        assert_eq!(error.code, -32006);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn agent_delete_mls_group_missing_group_is_idempotent() {
+        let keys = test_keys();
+        let (dispatch, _cm) = dispatch_with_bots(vec![bot_config_with_mls(
+            "mls-bot",
+            &keys,
+            &["Admin", "ExitMlsGroup"],
+            "vector-mls.db",
+        )])
+        .await;
+        let handler_id =
+            register_handler(&dispatch, &["mls-bot"], &["Admin", "ExitMlsGroup"]).await;
+
+        let group_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let req = JsonRpcMessage::request(
+            2.into(),
+            "agent.delete_mls_group",
+            Some(serde_json::json!({ "bot_id": "mls-bot", "group_id": group_id })),
+        );
+        let resp = dispatch
+            .handle_message(req.clone(), Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        let JsonRpcMessage::Response { result, .. } = resp else {
+            panic!("expected response, not an error, for an already-absent group");
+        };
+        let result: AgentDeleteMlsGroupResponse = serde_json::from_value(result.unwrap()).unwrap();
+        assert!(!result.deleted);
+
+        // Reclaim runs this repeatedly; a second call must still succeed.
+        let req2 = JsonRpcMessage::request(
+            3.into(),
+            "agent.delete_mls_group",
+            Some(serde_json::json!({ "bot_id": "mls-bot", "group_id": group_id })),
+        );
+        let resp2 = dispatch
+            .handle_message(req2, Some(&handler_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(resp2, JsonRpcMessage::Response { .. }));
     }
 
     #[tokio::test(flavor = "multi_thread")]

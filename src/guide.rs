@@ -185,8 +185,8 @@ pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
         out,
         "mls-group",
         "Create or manage MLS groups for group messaging.",
-        "pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1...\npacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...",
-        "`create` bootstraps a new MLS group and invites the recipient. `invite` adds a recipient to an existing group. Both require the bot to have an MLS engine configured (`mls_db_path`) and the `Admin` capability.",
+        "pacto-bot-admin mls-group create --bot echo-bot --group my-squad --recipient npub1...\npacto-bot-admin mls-group invite --bot echo-bot --group my-squad --recipient npub1...\npacto-bot-admin mls-group repair-admins --bot echo-bot --group my-squad\npacto-bot-admin mls-group send --bot echo-bot --group 3a1f...deadbeef --content \"hello squad\"\npacto-bot-admin mls-group delete --bot echo-bot --group 3a1f...deadbeef",
+        "`create` bootstraps a new MLS group and invites the recipient; `invite` adds a recipient to an existing group; `repair-admins` expands a sole-admin group's admin set to every current member. All three require the bot to have an MLS engine configured (`mls_db_path`) and the `Admin` capability. `send` posts a message into an existing group as the bot (requires the `SendGroupMessages` capability) -- `--group` is the group's hex-encoded wire id, not its name, since that is what the underlying `agent.send_group_message` RPC addresses by. `delete` drops the bot's own local copy of a group's messages, key material, and membership state (requires the `ExitMlsGroup` capability); it does not publish a leave proposal or notify other members, so it is local-only cleanup for a group the bot solely administers, not a full MLS self-removal. `delete` is idempotent: a group the bot already has no local state for is success.",
     );
 
     render_command(
