@@ -90,10 +90,10 @@ impl SensitiveFixture {
             .expect("UUID simple form is hex");
         let nsec_marker_bytes = *nsec_bytes_buf;
 
-        // Build each concatenated marker with a pre-allocated buffer so the
-        // `+` operator's reallocate-and-free path cannot leave a reconstructible
-        // copy of the full marker in freed heap memory. UUID temporaries are
-        // wrapped in `Zeroizing` so they are cleared on drop.
+        // Build each concatenated marker into a single pre-allocated buffer:
+        // growing a `String` reallocates and frees the old buffer without
+        // zeroing it, which would leave a partial marker in freed heap. UUID
+        // temporaries are wrapped in `Zeroizing` for the same reason.
         let bunker_uuid = Zeroizing::new(Uuid::new_v4().as_simple().to_string());
         let mut bunker_uri_marker = String::with_capacity("pacto-test-bunker-".len() + 32);
         bunker_uri_marker.push_str("pacto-test-bunker-");
@@ -162,59 +162,16 @@ impl Default for SensitiveFixture {
 ///
 /// The panic message lists every marker that leaked so failures are actionable.
 pub fn assert_no_leak(haystack: impl AsRef<str>, fixture: &SensitiveFixture) {
-    let hay = haystack.as_ref();
-    let mut leaked = Vec::new();
-    if hay.contains(&fixture.nsec_marker) {
-        leaked.push("nsec");
-    }
-    if hay.contains(&fixture.bunker_uri_marker) {
-        leaked.push("bunker_uri");
-    }
-    if hay.contains(&fixture.http_token_marker) {
-        leaked.push("http_token");
-    }
-    if hay.contains(&fixture.attachment_key_marker) {
-        leaked.push("attachment_key");
-    }
-    if hay.contains(&fixture.attachment_nonce_marker) {
-        leaked.push("attachment_nonce");
-    }
-    if hay.contains(&fixture.attachment_plaintext_marker) {
-        leaked.push("attachment_plaintext");
-    }
+    let hay = haystack.as_ref().as_bytes();
+    let leaked: Vec<&'static str> = fixture
+        .needles()
+        .into_iter()
+        .filter(|(_, needle)| contains_subsequence(hay, needle))
+        .map(|(label, _)| label)
+        .collect();
     assert!(
         leaked.is_empty(),
         "secret markers leaked in haystack: {leaked:?}"
-    );
-}
-
-/// Panic if any synthetic secret marker appears in `haystack`.
-pub fn assert_no_leak_bytes(haystack: &[u8], fixture: &SensitiveFixture) {
-    let mut leaked = Vec::new();
-    if contains_subsequence(haystack, fixture.nsec_marker.as_bytes()) {
-        leaked.push("nsec");
-    }
-    if contains_subsequence(haystack, &fixture.nsec_marker_bytes) {
-        leaked.push("nsec_bytes");
-    }
-    if contains_subsequence(haystack, fixture.bunker_uri_marker.as_bytes()) {
-        leaked.push("bunker_uri");
-    }
-    if contains_subsequence(haystack, fixture.http_token_marker.as_bytes()) {
-        leaked.push("http_token");
-    }
-    if contains_subsequence(haystack, fixture.attachment_key_marker.as_bytes()) {
-        leaked.push("attachment_key");
-    }
-    if contains_subsequence(haystack, fixture.attachment_nonce_marker.as_bytes()) {
-        leaked.push("attachment_nonce");
-    }
-    if contains_subsequence(haystack, fixture.attachment_plaintext_marker.as_bytes()) {
-        leaked.push("attachment_plaintext");
-    }
-    assert!(
-        leaked.is_empty(),
-        "secret markers leaked in binary haystack: {leaked:?}"
     );
 }
 
@@ -300,90 +257,154 @@ pub fn write_config_file(dir: &Path, content: &str) -> std::io::Result<PathBuf> 
 }
 
 impl SensitiveFixture {
-    /// Simulate a core-dump memory scan of the current process.
+    /// Every synthetic marker paired with the label reported when it leaks.
+    fn needles(&self) -> [(&'static str, &[u8]); 7] {
+        [
+            ("nsec", self.nsec_marker.as_bytes()),
+            ("nsec_bytes", &self.nsec_marker_bytes),
+            ("bunker_uri", self.bunker_uri_marker.as_bytes()),
+            ("http_token", self.http_token_marker.as_bytes()),
+            ("attachment_key", self.attachment_key_marker.as_bytes()),
+            ("attachment_nonce", self.attachment_nonce_marker.as_bytes()),
+            (
+                "attachment_plaintext",
+                self.attachment_plaintext_marker.as_bytes(),
+            ),
+        ]
+    }
+
+    /// Address ranges of the live markers. These are the fixture's own
+    /// reference copies, not residue, so they are masked out of the scan.
+    fn marker_ranges(&self) -> [(usize, usize); 7] {
+        self.needles()
+            .map(|(_, bytes)| (bytes.as_ptr() as usize, bytes.len()))
+    }
+
+    /// Simulate a core-dump scan of the current process and return the label
+    /// of every marker still reachable in writable memory.
     ///
-    /// On Linux this reads the writable regions of `/proc/self/mem`, scrubs the
-    /// exact heap locations of the live fixture markers, and returns the rest of
-    /// the dump. On unsupported platforms it returns `None` so the caller can
-    /// skip the test.
-    pub fn scan_memory(&self) -> Option<Vec<u8>> {
-        let exclusions = [
-            (self.nsec_marker.as_ptr() as usize, self.nsec_marker.len()),
-            (
-                self.nsec_marker_bytes.as_ptr() as usize,
-                self.nsec_marker_bytes.len(),
-            ),
-            (
-                self.bunker_uri_marker.as_ptr() as usize,
-                self.bunker_uri_marker.len(),
-            ),
-            (
-                self.http_token_marker.as_ptr() as usize,
-                self.http_token_marker.len(),
-            ),
-            (
-                self.attachment_key_marker.as_ptr() as usize,
-                self.attachment_key_marker.len(),
-            ),
-            (
-                self.attachment_nonce_marker.as_ptr() as usize,
-                self.attachment_nonce_marker.len(),
-            ),
-            (
-                self.attachment_plaintext_marker.as_ptr() as usize,
-                self.attachment_plaintext_marker.len(),
-            ),
-        ];
-        read_proc_mem_writable(&exclusions)
+    /// Returns `None` on platforms where the scan is not implemented, so the
+    /// caller can skip the test.
+    pub fn scan_memory_for_leaks(&self) -> Option<Vec<&'static str>> {
+        scan_writable_memory(&self.marker_ranges(), &self.needles())
     }
 }
 
+/// Bytes pulled from `/proc/self/mem` per `pread(2)`.
 #[cfg(target_os = "linux")]
-fn read_proc_mem_writable(exclusions: &[(usize, usize)]) -> Option<Vec<u8>> {
+const SCAN_CHUNK: usize = 1 << 20;
+
+/// Scan every writable region of the current process for `needles`, returning
+/// the labels that were found outside `exclusions`.
+///
+/// The scanner must not perturb what it observes. A scratch buffer obtained
+/// from the allocator is itself writable process memory, and `pread(2)` on
+/// `/proc/self/mem` will happily copy a region into a buffer that lives inside
+/// that very region: the copy duplicates every byte of the region -- including
+/// the fixture's own live markers -- at addresses the caller's exclusion list
+/// does not cover, and reads back as a leak. (Worse, the copy self-overlaps,
+/// so the kernel re-copies bytes it has already written and the duplicate
+/// appears more than once.) So the scratch buffer is allocated once, never
+/// resized, and its address range is masked out of every chunk alongside the
+/// caller's exclusions.
+#[cfg(target_os = "linux")]
+fn scan_writable_memory(
+    exclusions: &[(usize, usize)],
+    needles: &[(&'static str, &[u8])],
+) -> Option<Vec<&'static str>> {
     use std::os::unix::fs::FileExt;
+
+    // Carried between chunks so a marker straddling a chunk boundary is found.
+    let overlap = needles
+        .iter()
+        .map(|(_, needle)| needle.len())
+        .max()
+        .unwrap_or(0)
+        .saturating_sub(1);
+
+    // Allocated before the maps snapshot so its mapping is visible to the
+    // scan, and never resized: a reallocation would move the masked range
+    // mid-scan and leave an unscrubbed copy of the last chunk in freed heap.
+    let mut scratch = vec![0u8; overlap + SCAN_CHUNK];
+    let scratch_range = [(scratch.as_ptr() as usize, scratch.len())];
 
     let maps = fs::read_to_string("/proc/self/maps").ok()?;
     let mem = fs::File::open("/proc/self/mem").ok()?;
-    let mut dump = Vec::new();
 
-    for line in maps.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let perms = parts[1];
-        if !perms.starts_with('r') || !perms.contains('w') {
-            continue;
-        }
-        let mut range = parts[0].split('-');
-        let start = usize::from_str_radix(range.next()?, 16).ok()?;
-        let end = usize::from_str_radix(range.next()?, 16).ok()?;
-        let len = end.saturating_sub(start);
-        if len == 0 {
-            continue;
-        }
+    let mut leaked: Vec<&'static str> = Vec::new();
+    for (start, end) in writable_regions(&maps) {
+        let len = end - start;
+        let mut offset = 0;
+        // Reset per region: distinct mappings never share one allocation.
+        let mut carried = 0;
+        while offset < len {
+            let chunk_len = SCAN_CHUNK.min(len - offset);
+            let chunk_addr = start + offset;
+            let Some(chunk) = scratch.get_mut(overlap..overlap + chunk_len) else {
+                break;
+            };
+            if mem.read_exact_at(chunk, chunk_addr as u64).is_err() {
+                break;
+            }
+            mask(chunk, chunk_addr, exclusions);
+            mask(chunk, chunk_addr, &scratch_range);
 
-        let mut buf = vec![0u8; len];
-        if mem.read_at(&mut buf, start as u64).is_err() {
-            continue;
-        }
-
-        for &(addr, exc_len) in exclusions {
-            if addr >= start && addr + exc_len <= end {
-                let offset = addr - start;
-                for byte in &mut buf[offset..offset + exc_len] {
-                    *byte = 0;
+            let window = &scratch[overlap - carried..overlap + chunk_len];
+            for &(label, needle) in needles {
+                if !leaked.contains(&label) && contains_subsequence(window, needle) {
+                    leaked.push(label);
                 }
             }
-        }
 
-        dump.extend_from_slice(&buf);
+            carried = overlap.min(chunk_len);
+            scratch.copy_within(
+                overlap + chunk_len - carried..overlap + chunk_len,
+                overlap - carried,
+            );
+            offset += chunk_len;
+        }
     }
 
-    Some(dump)
+    Some(leaked)
+}
+
+/// Zero every byte of `buf` (a snapshot of the memory at `buf_addr`) that
+/// falls inside one of `exclusions`. Overlaps are clamped, so an exclusion
+/// that straddles a chunk boundary is masked in both chunks.
+#[cfg(target_os = "linux")]
+fn mask(buf: &mut [u8], buf_addr: usize, exclusions: &[(usize, usize)]) {
+    let buf_end = buf_addr + buf.len();
+    for &(addr, len) in exclusions {
+        let lo = addr.max(buf_addr);
+        let hi = (addr + len).min(buf_end);
+        if lo < hi {
+            buf[lo - buf_addr..hi - buf_addr].fill(0);
+        }
+    }
+}
+
+/// Parse `/proc/self/maps` into the `(start, end)` bounds of every readable,
+/// writable mapping.
+#[cfg(target_os = "linux")]
+fn writable_regions(maps: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    maps.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        let range = fields.next()?;
+        let perms = fields.next()?;
+        if !perms.starts_with('r') || !perms.contains('w') {
+            return None;
+        }
+        let (start, end) = range.split_once('-')?;
+        let start = usize::from_str_radix(start, 16).ok()?;
+        let end = usize::from_str_radix(end, 16).ok()?;
+        (end > start).then_some((start, end))
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_proc_mem_writable(_exclusions: &[(usize, usize)]) -> Option<Vec<u8>> {
+fn scan_writable_memory(
+    _exclusions: &[(usize, usize)],
+    _needles: &[(&'static str, &[u8])],
+) -> Option<Vec<&'static str>> {
     None
 }
