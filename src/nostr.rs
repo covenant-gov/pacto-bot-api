@@ -39,6 +39,11 @@ use crate::signer::Signer;
 /// Bot signer storage: maps recipient public key to bot id and signer.
 type BotSigners = HashMap<PublicKey, (String, Arc<dyn Signer>)>;
 
+/// Shared slot holding the sender half of the stream `receive_events()`
+/// handed out, so `deliver_locally` can push into that same stream.
+type LocalDeliveryTx =
+    Arc<std::sync::Mutex<Option<UnboundedSender<Result<AgentEvent, DaemonError>>>>>;
+
 /// Wrapper around [`nostr_sdk::Client`] providing Pacto-specific relay operations.
 #[derive(Clone)]
 pub struct NostrClient {
@@ -51,7 +56,7 @@ pub struct NostrClient {
     /// set once `receive_events()` is called, so a later self-published
     /// event addressed to another locally managed bot can still reach the
     /// same stream `receive_events()` returned.
-    local_delivery_tx: Arc<std::sync::Mutex<Option<UnboundedSender<Result<AgentEvent, DaemonError>>>>>,
+    local_delivery_tx: LocalDeliveryTx,
     /// Each configured bot's own relay URLs, used only to scope
     /// `deliver_locally`'s same-daemon delivery correction to a recipient
     /// that is genuinely reachable through at least one connected relay
@@ -1113,10 +1118,10 @@ impl NostrClient {
             // `shutdown()`. Guarded by `same_channel` so a newer
             // `receive_events()` call's sender already in the slot is left
             // alone.
-            if let Ok(mut slot) = local_delivery_tx.lock() {
-                if slot.as_ref().is_some_and(|s| s.same_channel(&tx)) {
-                    *slot = None;
-                }
+            if let Ok(mut slot) = local_delivery_tx.lock()
+                && slot.as_ref().is_some_and(|s| s.same_channel(&tx))
+            {
+                *slot = None;
             }
         });
 
@@ -2415,8 +2420,11 @@ mod tests {
             .publish_key_package(&keys.public_key(), relays)
             .await
             .expect("publish_key_package");
-        crate::nostr_json::sign_builder(EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags), keys)
-            .expect("sign key package")
+        crate::nostr_json::sign_builder(
+            EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags),
+            keys,
+        )
+        .expect("sign key package")
     }
 
     /// Regression test for the squad-conversation epoch-desync bug:
@@ -2458,7 +2466,11 @@ mod tests {
             .expect("new_persistent");
 
         client
-            .add_signer(alice_keys.public_key(), "alice-bot".into(), alice_signer.clone())
+            .add_signer(
+                alice_keys.public_key(),
+                "alice-bot".into(),
+                alice_signer.clone(),
+            )
             .await;
         client
             .add_signer(bob_keys.public_key(), "bob-bot".into(), bob_signer.clone())
@@ -2467,13 +2479,21 @@ mod tests {
             .add_signer(carol_keys.public_key(), "carol-bot".into(), carol_signer)
             .await;
         client
-            .add_mls_engine(alice_keys.public_key(), "alice-bot".into(), alice_engine.clone())
+            .add_mls_engine(
+                alice_keys.public_key(),
+                "alice-bot".into(),
+                alice_engine.clone(),
+            )
             .await;
         client
             .add_mls_engine(bob_keys.public_key(), "bob-bot".into(), bob_engine.clone())
             .await;
         client
-            .add_mls_engine(carol_keys.public_key(), "carol-bot".into(), carol_engine.clone())
+            .add_mls_engine(
+                carol_keys.public_key(),
+                "carol-bot".into(),
+                carol_engine.clone(),
+            )
             .await;
 
         let mut stream = client.receive_events();
@@ -2503,7 +2523,11 @@ mod tests {
             .await
             .expect("add_member failed");
         client
-            .send_welcome(alice_signer.as_ref(), &carol_keys.public_key(), outcome.welcome_rumor)
+            .send_welcome(
+                alice_signer.as_ref(),
+                &carol_keys.public_key(),
+                outcome.welcome_rumor,
+            )
             .await
             .expect("send_welcome(carol) failed");
         client

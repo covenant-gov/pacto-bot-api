@@ -181,9 +181,7 @@ pub enum ScenarioError {
         action: String,
     },
 
-    #[error(
-        "step {step} ({actor} {action}): `{field}` names unknown participant \"{who}\""
-    )]
+    #[error("step {step} ({actor} {action}): `{field}` names unknown participant \"{who}\"")]
     UnknownParticipantRef {
         step: usize,
         actor: String,
@@ -257,8 +255,7 @@ impl From<ScenarioError> for DaemonError {
 /// I/O-free: every failure mode here is a parse-time refusal, never a
 /// mid-run one (U12a bullet 3/4).
 pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
-    let raw: RawScenario =
-        toml::from_str(text).map_err(|e| ScenarioError::Toml(e.to_string()))?;
+    let raw: RawScenario = toml::from_str(text).map_err(|e| ScenarioError::Toml(e.to_string()))?;
 
     if raw.version != SCENARIO_VERSION {
         return Err(ScenarioError::UnsupportedVersion { found: raw.version });
@@ -316,18 +313,25 @@ pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
 
         let step = match action.as_str() {
             "create_group" => {
-                let group = raw_step.group.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "group",
-                })?;
-                let invite = raw_step.invite.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "invite",
-                })?;
+                let group = raw_step
+                    .group
+                    .clone()
+                    .ok_or_else(|| ScenarioError::MissingField {
+                        step: step_no,
+                        actor: actor.clone(),
+                        action: action.clone(),
+                        field: "group",
+                    })?;
+                let invite =
+                    raw_step
+                        .invite
+                        .clone()
+                        .ok_or_else(|| ScenarioError::MissingField {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            field: "invite",
+                        })?;
                 if !names.contains(&invite) {
                     return Err(ScenarioError::UnknownParticipantRef {
                         step: step_no,
@@ -353,18 +357,25 @@ pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
                 }
             }
             "invite" => {
-                let group = raw_step.group.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "group",
-                })?;
-                let invite = raw_step.invite.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "invite",
-                })?;
+                let group = raw_step
+                    .group
+                    .clone()
+                    .ok_or_else(|| ScenarioError::MissingField {
+                        step: step_no,
+                        actor: actor.clone(),
+                        action: action.clone(),
+                        field: "group",
+                    })?;
+                let invite =
+                    raw_step
+                        .invite
+                        .clone()
+                        .ok_or_else(|| ScenarioError::MissingField {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            field: "invite",
+                        })?;
                 if !names.contains(&invite) {
                     return Err(ScenarioError::UnknownParticipantRef {
                         step: step_no,
@@ -374,12 +385,15 @@ pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
                         who: invite,
                     });
                 }
-                let members = group_members.get_mut(&group).ok_or_else(|| ScenarioError::UnknownGroup {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    group: group.clone(),
-                })?;
+                let members =
+                    group_members
+                        .get_mut(&group)
+                        .ok_or_else(|| ScenarioError::UnknownGroup {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            group: group.clone(),
+                        })?;
                 if !members.contains(&actor) {
                     return Err(ScenarioError::NotAMember {
                         step: step_no,
@@ -398,24 +412,34 @@ pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
                 }
             }
             "send_group_message" => {
-                let group = raw_step.group.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "group",
-                })?;
-                let content = raw_step.content.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "content",
-                })?;
-                let members = group_members.get(&group).ok_or_else(|| ScenarioError::UnknownGroup {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    group: group.clone(),
-                })?;
+                let group = raw_step
+                    .group
+                    .clone()
+                    .ok_or_else(|| ScenarioError::MissingField {
+                        step: step_no,
+                        actor: actor.clone(),
+                        action: action.clone(),
+                        field: "group",
+                    })?;
+                let content =
+                    raw_step
+                        .content
+                        .clone()
+                        .ok_or_else(|| ScenarioError::MissingField {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            field: "content",
+                        })?;
+                let members =
+                    group_members
+                        .get(&group)
+                        .ok_or_else(|| ScenarioError::UnknownGroup {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            group: group.clone(),
+                        })?;
                 if !members.contains(&actor) {
                     return Err(ScenarioError::NotAMember {
                         step: step_no,
@@ -437,18 +461,25 @@ pub fn parse(text: &str) -> Result<Scenario, ScenarioError> {
                 }
             }
             "send_dm" => {
-                let to = raw_step.to.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "to",
-                })?;
-                let content = raw_step.content.clone().ok_or_else(|| ScenarioError::MissingField {
-                    step: step_no,
-                    actor: actor.clone(),
-                    action: action.clone(),
-                    field: "content",
-                })?;
+                let to = raw_step
+                    .to
+                    .clone()
+                    .ok_or_else(|| ScenarioError::MissingField {
+                        step: step_no,
+                        actor: actor.clone(),
+                        action: action.clone(),
+                        field: "to",
+                    })?;
+                let content =
+                    raw_step
+                        .content
+                        .clone()
+                        .ok_or_else(|| ScenarioError::MissingField {
+                            step: step_no,
+                            actor: actor.clone(),
+                            action: action.clone(),
+                            field: "content",
+                        })?;
                 if !names.contains(&to) {
                     return Err(ScenarioError::UnknownParticipantRef {
                         step: step_no,
@@ -540,10 +571,13 @@ pub async fn cmd_scenario_run(
     }
 
     let data_dir = crate::resolve_data_dir(&config, data_dir_override);
+    // Unreachable: the empty-participants guard above already returned, and
+    // every participant inserts a bot. Expressed as an error rather than a
+    // panic because the crate denies `expect_used`.
     let any_bot = bots
         .values()
         .next()
-        .expect("checked participants is non-empty above");
+        .ok_or_else(|| DaemonError::Config("scenario declares no participants".into()))?;
     let socket_path = crate::resolve_admin_socket_path(&config, any_bot, &data_dir)?;
 
     // A fresh bot has no live KeyPackage; publish one for every participant
@@ -568,7 +602,11 @@ pub async fn cmd_scenario_run(
         crate::call_agent_publish_key_package(&socket_path, bot_id).await?;
     }
 
-    let bot_ids: Vec<String> = scenario.participants.iter().map(|p| p.bot_id.clone()).collect();
+    let bot_ids: Vec<String> = scenario
+        .participants
+        .iter()
+        .map(|p| p.bot_id.clone())
+        .collect();
     let mut session = ScenarioSession::connect(&socket_path, &bot_ids).await?;
     let run_started = Utc::now();
     let step_timeout = StdDuration::from_secs(step_timeout_secs);
@@ -634,7 +672,9 @@ impl ScenarioSession {
             let mut buf = Vec::new();
             let n = timeout(connect_timeout, reader.read_until(b'\n', &mut buf))
                 .await
-                .map_err(|_| DaemonError::Config("scenario: handler.register timed out".into()))??;
+                .map_err(|_| {
+                    DaemonError::Config("scenario: handler.register timed out".into())
+                })??;
             if n == 0 {
                 return Err(DaemonError::Config(
                     "scenario: daemon closed connection during registration".into(),
@@ -846,13 +886,8 @@ async fn execute_steps(
                         "{label}: group \"{group}\" has no known wire id (its create_group step did not run)"
                     ))
                 })?;
-                crate::call_agent_send_group_message(
-                    socket_path,
-                    &actor_bot.id,
-                    &wire_id,
-                    content,
-                )
-                .await?;
+                crate::call_agent_send_group_message(socket_path, &actor_bot.id, &wire_id, content)
+                    .await?;
 
                 let mut targets = HashSet::new();
                 for recipient in recipients {
@@ -1320,7 +1355,10 @@ name = "alice"
 bot_id = "alice-bot"
 "#;
         let err = parse(text).unwrap_err();
-        assert!(matches!(err, ScenarioError::UnsupportedVersion { found: 2 }));
+        assert!(matches!(
+            err,
+            ScenarioError::UnsupportedVersion { found: 2 }
+        ));
     }
 
     #[test]
