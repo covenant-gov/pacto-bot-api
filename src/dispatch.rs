@@ -227,12 +227,17 @@ pub struct RateLimiter {
     handler_burst: f64,
     bot_rate: f64,
     bot_burst: f64,
+    group_rate: f64,
+    group_burst: f64,
     stale_after: Duration,
     max_buckets: usize,
 }
 
 impl RateLimiter {
     /// Create a rate limiter with the given per-handler and per-bot limits.
+    /// The per-Squad group-message notification limit defaults to the
+    /// compiled-in production value (`GROUP_RATE`/`GROUP_RATE_BURST`); use
+    /// [`RateLimiter::set_group_limits`] to override it from daemon config.
     pub fn new(handler_rate: f64, handler_burst: f64, bot_rate: f64, bot_burst: f64) -> Self {
         Self {
             handlers: TokioMutex::new(BucketMap::new()),
@@ -242,9 +247,21 @@ impl RateLimiter {
             handler_burst,
             bot_rate,
             bot_burst,
+            group_rate: GROUP_RATE,
+            group_burst: GROUP_RATE_BURST,
             stale_after: BUCKET_STALE_TIMEOUT,
             max_buckets: MAX_BUCKETS,
         }
+    }
+
+    /// Override the per-Squad group-message notification rate limit.
+    /// Intended for daemon startup, sourced from `[daemon]` config
+    /// (`group_message_rate`/`group_message_burst`); every existing bucket
+    /// keeps its current token count and simply refills at the new rate
+    /// going forward.
+    pub fn set_group_limits(&mut self, rate: f64, burst: f64) {
+        self.group_rate = rate;
+        self.group_burst = burst;
     }
 
     /// Remove the per-handler bucket for `handler_id`.
@@ -293,7 +310,7 @@ impl RateLimiter {
         let bucket = groups
             .map
             .entry(key)
-            .or_insert_with(|| Bucket::new(GROUP_RATE, GROUP_RATE_BURST));
+            .or_insert_with(|| Bucket::new(self.group_rate, self.group_burst));
         bucket.check(now)
     }
 }
@@ -416,6 +433,15 @@ pub struct Dispatch {
     rate_limiter: RateLimiter,
     mls_dedup_cache: Arc<TokioMutex<DedupCache>>,
     pending: Arc<TokioMutex<HashMap<String, PendingDispatch>>>,
+    // Serializes concurrent `dispatch_event` calls that share an
+    // `event_id`: a group message fans out as one `AgentEvent` per local
+    // recipient bot, all carrying the *same* underlying wire event id, and
+    // `handler.response` acks carry only `event_id` (no bot_id) -- without
+    // this, two concurrent dispatches for the same id race to insert into
+    // `pending` under the same key and the loser's tracker is silently
+    // overwritten, so its ack is never matched and its trace row is never
+    // recorded (see `acquire_event_dispatch_lock`).
+    event_dispatch_locks: MlsGroupLockPool,
     handlers_registered: AtomicU64,
     last_cursor: Arc<TokioMutex<HashMap<String, (String, i64)>>>,
     mls_group_locks: MlsGroupLockPool,
@@ -452,6 +478,7 @@ impl Dispatch {
             rate_limiter: RateLimiter::default(),
             mls_dedup_cache: Arc::new(TokioMutex::new(DedupCache::new(MLS_DEDUP_MAX_SIZE))),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
+            event_dispatch_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
             mls_group_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
@@ -475,6 +502,7 @@ impl Dispatch {
             rate_limiter,
             mls_dedup_cache: Arc::new(TokioMutex::new(DedupCache::new(MLS_DEDUP_MAX_SIZE))),
             pending: Arc::new(TokioMutex::new(HashMap::new())),
+            event_dispatch_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
             handlers_registered: AtomicU64::new(0),
             last_cursor: Arc::new(TokioMutex::new(HashMap::new())),
             mls_group_locks: MlsGroupLockPool::new(MlsGroupLockPool::DEFAULT_BUCKETS),
@@ -501,6 +529,14 @@ impl Dispatch {
     /// Override the stale-handler timeout. Intended for tests only.
     pub fn set_handler_stale_timeout(&mut self, timeout: Duration) {
         self.handler_stale_timeout = timeout;
+    }
+
+    /// Override the per-Squad group-message notification rate limit from
+    /// `[daemon]` config (`group_message_rate`/`group_message_burst`). The
+    /// compiled-in production default (one notification per minute) applies
+    /// when the config omits both fields.
+    pub fn set_group_rate_limit(&mut self, rate: f64, burst: f64) {
+        self.rate_limiter.set_group_limits(rate, burst);
     }
 
     /// Return the current diagnostics health snapshot.
@@ -585,6 +621,12 @@ impl Dispatch {
 
         let expected = handlers.len();
         let event_id = event.event_id.clone();
+        // Held for the rest of this call so a concurrent dispatch of the
+        // same underlying wire event (e.g. the other recipients of one
+        // group message) waits its turn instead of racing to insert into
+        // `pending` under the same key.
+        let dispatch_lock = self.acquire_event_dispatch_lock(&event_id);
+        let _dispatch_guard = dispatch_lock.lock().await;
         info!(
             bot_id = %event.bot_id,
             event_id = %event_id,
@@ -1715,6 +1757,12 @@ impl Dispatch {
     fn acquire_mls_group_lock(&self, bot_id: &str, group_name: &str) -> Arc<TokioMutex<()>> {
         let key = format!("{bot_id}\0{group_name}");
         self.mls_group_locks.acquire(&key)
+    }
+
+    /// Per-`event_id` lock serializing `dispatch_event` calls that share an
+    /// id (see the `event_dispatch_locks` field doc comment).
+    fn acquire_event_dispatch_lock(&self, event_id: &str) -> Arc<TokioMutex<()>> {
+        self.event_dispatch_locks.acquire(event_id)
     }
 
     /// Shared authorization and rate-limit gate for agent MLS group methods.

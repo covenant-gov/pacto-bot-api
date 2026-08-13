@@ -1,0 +1,16 @@
+# Invalid fixture: "teleport" does not map to any existing bot verb. Must be
+# rejected at parse time (U12a).
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[steps]]
+actor = "alice"
+action = "teleport"
+to = "bob"

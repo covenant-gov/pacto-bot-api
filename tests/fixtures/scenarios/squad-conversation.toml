@@ -1,0 +1,46 @@
+# A three-participant squad conversation (U12 verification scenario): alice
+# creates the squad and invites bob, then invites carol, then all three
+# exchange messages in a declared order.
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[participants]]
+name = "carol"
+bot_id = "carol-bot"
+
+[[steps]]
+actor = "alice"
+action = "create_group"
+group = "squad-chat"
+invite = "bob"
+
+[[steps]]
+actor = "alice"
+action = "invite"
+group = "squad-chat"
+invite = "carol"
+
+[[steps]]
+actor = "alice"
+action = "send_group_message"
+group = "squad-chat"
+content = "welcome to the squad"
+
+[[steps]]
+actor = "bob"
+action = "send_group_message"
+group = "squad-chat"
+content = "thanks for having me"
+
+[[steps]]
+actor = "carol"
+action = "send_group_message"
+group = "squad-chat"
+content = "hi everyone"
