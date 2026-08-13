@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! End-to-end replay tests for `pacto-bot-admin scenario run` (U12b/U12c)
 //! against a real spawned daemon and an in-process mock relay -- the same
 //! daemon-subprocess pattern `tests/mls_group.rs` already uses for MLS
@@ -19,10 +20,7 @@ use support::mock_relay::MockRelay;
 /// participant here needs its own MLS store, so this builds the config
 /// text directly instead of appending fields that would only land on the
 /// last `[[bots]]` table.
-fn write_scenario_config(
-    dir: &Path,
-    bots: &[BotConfig],
-) -> Result<PathBuf, Box<dyn Error>> {
+fn write_scenario_config(dir: &Path, bots: &[BotConfig]) -> Result<PathBuf, Box<dyn Error>> {
     let data_dir = dir.to_string_lossy();
     let socket_path = dir.join("pacto-bot-api.sock");
     let mut content = format!(
@@ -155,11 +153,7 @@ async fn two_participant_three_message_scenario_replays_in_declared_order()
     let log_path = dir.path().join("daemon.log");
     let daemon = common::spawn_daemon_until_ready_with_log(&config, Some(&log_path)).await?;
 
-    let assert = run_scenario(
-        &config,
-        &fixture("two-participant-three-messages.toml"),
-        20,
-    );
+    let assert = run_scenario(&config, &fixture("two-participant-three-messages.toml"), 20);
 
     common::shutdown_daemon(daemon).await?;
     relay.stop().await;
@@ -219,11 +213,7 @@ async fn unreachable_signal_fails_naming_the_step_and_the_signal() -> Result<(),
     let config = write_scenario_config(dir.path(), &[alice, bob])?;
     let daemon = common::spawn_daemon_until_ready(&config).await?;
 
-    let assert = run_scenario(
-        &config,
-        &fixture("two-participant-three-messages.toml"),
-        3,
-    );
+    let assert = run_scenario(&config, &fixture("two-participant-three-messages.toml"), 3);
 
     common::shutdown_daemon(daemon).await?;
     relay.stop().await;
@@ -263,18 +253,17 @@ async fn replaying_the_same_scenario_twice_produces_the_same_event_order()
         let config = write_scenario_config(dir.path(), &[alice, bob])?;
         let daemon = common::spawn_daemon_until_ready(&config).await?;
 
-        let assert = run_scenario(
-            &config,
-            &fixture("two-participant-three-messages.toml"),
-            20,
-        );
+        let assert = run_scenario(&config, &fixture("two-participant-three-messages.toml"), 20);
 
         common::shutdown_daemon(daemon).await?;
         relay.stop().await;
 
         let output = assert.get_output().clone();
         let stdout = String::from_utf8(output.stdout)?;
-        assert!(output.status.success(), "scenario run should succeed\n{stdout}");
+        assert!(
+            output.status.success(),
+            "scenario run should succeed\n{stdout}"
+        );
         Ok(trace_bot_id_order(&stdout))
     }
 

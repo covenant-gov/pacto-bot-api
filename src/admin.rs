@@ -3306,7 +3306,10 @@ fn read_latest_report(data_dir: &Path) -> Option<HealthSnapshot> {
     None
 }
 
-pub(crate) fn find_bot<'a>(bots: &'a [BotConfig], bot_id: &str) -> Result<&'a BotConfig, DaemonError> {
+pub(crate) fn find_bot<'a>(
+    bots: &'a [BotConfig],
+    bot_id: &str,
+) -> Result<&'a BotConfig, DaemonError> {
     bots.iter()
         .find(|b| b.id == bot_id)
         .ok_or_else(|| DaemonError::UnknownBot(bot_id.to_string()))

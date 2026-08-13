@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Black-box CLI-surface tests for `pacto-bot-admin scenario validate`
 //! (U12a). These exercise the actual subcommand a scenario author runs,
 //! not just the internal `parse` function (already covered by unit tests
@@ -34,8 +35,7 @@ fn validate_rejects_unknown_verb_at_parse_time() {
     let mut cmd = Command::cargo_bin("pacto-bot-admin").unwrap();
     cmd.args(["scenario", "validate", &fixture("unknown-verb.toml")]);
     cmd.assert().failure().stderr(
-        predicate::str::contains("unknown action")
-            .and(predicate::str::contains("teleport")),
+        predicate::str::contains("unknown action").and(predicate::str::contains("teleport")),
     );
 }
 
