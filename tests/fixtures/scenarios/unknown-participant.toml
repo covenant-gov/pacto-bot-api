@@ -1,0 +1,17 @@
+# Invalid fixture: step 1's actor "carol" is never declared as a
+# participant. Must be rejected at parse time (U12a).
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[steps]]
+actor = "carol"
+action = "send_dm"
+to = "alice"
+content = "hi"

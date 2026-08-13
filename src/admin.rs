@@ -63,10 +63,11 @@ use crate::scaffold::safety::set_config_permissions;
 use pacto_bot_api::guide;
 
 mod scaffold;
+mod scenario;
 
 const DAEMON_LOCK_FILE: &str = "daemon.lock";
 const BOT_SECRET_TOKEN_FILE: &str = "bot_secret_token";
-const AGENT_DB_FILE: &str = "agent.db";
+pub(crate) const AGENT_DB_FILE: &str = "agent.db";
 
 /// `pacto-bot-admin` command-line interface.
 const TOP_LEVEL_AFTER_HELP: &str = r#"Examples:
@@ -231,6 +232,11 @@ const UPDATE_AFTER_HELP: &str = r#"Examples:
 
   # Update a bot in a specific project directory
   pacto-bot-admin update echo-bot --project-dir /path/to/my-project
+"#;
+
+const SCENARIO_AFTER_HELP: &str = r#"Examples:
+  pacto-bot-admin scenario validate scenarios/squad-conversation.toml
+  pacto-bot-admin scenario run scenarios/squad-conversation.toml
 "#;
 
 #[derive(Parser, Debug)]
@@ -560,8 +566,31 @@ enum Command {
         #[arg(short, long, value_name = "FORMAT", default_value = "llm")]
         format: String,
     },
+    /// Parse, validate, and replay a declarative scenario file against
+    /// existing bot verbs (U12).
+    #[command(subcommand, after_help = SCENARIO_AFTER_HELP)]
+    Scenario(ScenarioCommand),
     /// Show the CLI version.
     Version,
+}
+
+#[derive(Subcommand, Debug)]
+#[command(name = "scenario", after_help = SCENARIO_AFTER_HELP)]
+enum ScenarioCommand {
+    /// Parse and validate a scenario file without executing it.
+    Validate {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Parse, validate, and replay a scenario file against the daemon.
+    Run {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Seconds to wait for each step's observable signal before failing.
+        #[arg(long, value_name = "SECONDS", default_value = "30")]
+        step_timeout: u64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -832,6 +861,12 @@ async fn run(cli: Cli) -> Result<(), DaemonError> {
         } => cmd_trace_events(&cli.config, cli.data_dir, &bot_id, since, limit).await,
         Command::Status { format } => cmd_status(&cli.config, cli.data_dir, &format).await,
         Command::Handlers(sub) => cmd_handlers(&cli.config, cli.data_dir, &sub).await,
+        Command::Scenario(ScenarioCommand::Validate { file }) => {
+            scenario::cmd_scenario_validate(&file)
+        }
+        Command::Scenario(ScenarioCommand::Run { file, step_timeout }) => {
+            scenario::cmd_scenario_run(&cli.config, cli.data_dir, &file, step_timeout).await
+        }
         Command::Docs { format } => cmd_docs(&format),
         Command::Version => {
             println!(
@@ -1365,7 +1400,7 @@ fn validate_capability(cap: &str) -> Result<(), DaemonError> {
 ///
 /// This mirrors the permission check performed by the daemon so the admin
 /// CLI rejects lax config files with a clear error before using them.
-fn load_admin_config(path: &Path) -> Result<DaemonConfig, DaemonError> {
+pub(crate) fn load_admin_config(path: &Path) -> Result<DaemonConfig, DaemonError> {
     enforce_config_permissions(path)?;
     DaemonConfig::load(path)
 }
@@ -2665,21 +2700,34 @@ async fn cmd_send_test_dm(
         let _bot = find_bot(&config.bots, bot_id)?;
         let data_dir = resolve_data_dir(&config, data_dir_override);
         let socket_path = data_dir.join("pacto-bot-api.sock");
-
-        let request = JsonRpcMessage::request(
-            1.into(),
-            "admin.send_test_dm",
-            Some(serde_json::json!({
-                "bot_id": bot_id,
-                "recipient": recipient,
-                "content": content,
-            })),
-        );
-        let value = with_admin_session(&socket_path, bot_id, request).await?;
-        let response: AdminSendTestDmResponse = serde_json::from_value(value)?;
+        let response = call_admin_send_test_dm(&socket_path, bot_id, recipient, content).await?;
         println!("{}", response.event_id);
         Ok(())
     }
+}
+
+/// Call `admin.send_test_dm` and return the parsed response, without
+/// printing. Shared by the `send-test-dm` CLI command and the scenario
+/// runner (U12b), which needs the event id programmatically rather than on
+/// stdout.
+#[cfg(unix)]
+pub(crate) async fn call_admin_send_test_dm(
+    socket_path: &Path,
+    bot_id: &str,
+    recipient: &str,
+    content: &str,
+) -> Result<AdminSendTestDmResponse, DaemonError> {
+    let request = JsonRpcMessage::request(
+        1.into(),
+        "admin.send_test_dm",
+        Some(serde_json::json!({
+            "bot_id": bot_id,
+            "recipient": recipient,
+            "content": content,
+        })),
+    );
+    let value = with_admin_session(socket_path, bot_id, request).await?;
+    Ok(serde_json::from_value(value)?)
 }
 
 async fn cmd_mls_group_create(
@@ -2716,21 +2764,35 @@ async fn cmd_mls_group_create(
             .iter()
             .map(|a| validate_mls_recipient(a))
             .collect::<Result<Vec<_>, _>>()?;
-
-        let mut params = serde_json::json!({
-            "bot_id": bot_id,
-            "group_name": group,
-            "recipient": recipient,
-        });
-        if !admins.is_empty() {
-            params["admins"] = serde_json::json!(admins);
-        }
-        let request = JsonRpcMessage::request(1.into(), "admin.create_mls_group", Some(params));
-        let value = with_admin_session(&socket_path, bot_id, request).await?;
-        let response: MlsGroupResponse = serde_json::from_value(value)?;
+        let response =
+            call_admin_create_mls_group(&socket_path, bot_id, group, &recipient, &admins).await?;
         println!("{}", response.wire_id);
         Ok(())
     }
+}
+
+/// Call `admin.create_mls_group` and return the parsed response, without
+/// printing. Shared by the `mls-group create` CLI command and the scenario
+/// runner (U12b).
+#[cfg(unix)]
+pub(crate) async fn call_admin_create_mls_group(
+    socket_path: &Path,
+    bot_id: &str,
+    group: &str,
+    recipient: &str,
+    admins: &[String],
+) -> Result<MlsGroupResponse, DaemonError> {
+    let mut params = serde_json::json!({
+        "bot_id": bot_id,
+        "group_name": group,
+        "recipient": recipient,
+    });
+    if !admins.is_empty() {
+        params["admins"] = serde_json::json!(admins);
+    }
+    let request = JsonRpcMessage::request(1.into(), "admin.create_mls_group", Some(params));
+    let value = with_admin_session(socket_path, bot_id, request).await?;
+    Ok(serde_json::from_value(value)?)
 }
 
 async fn cmd_mls_group_invite(
@@ -2755,21 +2817,34 @@ async fn cmd_mls_group_invite(
         let data_dir = resolve_data_dir(&config, data_dir_override);
         let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
         let recipient = validate_mls_recipient(recipient)?;
-
-        let request = JsonRpcMessage::request(
-            1.into(),
-            "admin.invite_to_mls_group",
-            Some(serde_json::json!({
-                "bot_id": bot_id,
-                "group_name": group,
-                "recipient": recipient,
-            })),
-        );
-        let value = with_admin_session(&socket_path, bot_id, request).await?;
-        let response: MlsGroupResponse = serde_json::from_value(value)?;
+        let response =
+            call_admin_invite_to_mls_group(&socket_path, bot_id, group, &recipient).await?;
         println!("{}", response.wire_id);
         Ok(())
     }
+}
+
+/// Call `admin.invite_to_mls_group` and return the parsed response, without
+/// printing. Shared by the `mls-group invite` CLI command and the scenario
+/// runner (U12b).
+#[cfg(unix)]
+pub(crate) async fn call_admin_invite_to_mls_group(
+    socket_path: &Path,
+    bot_id: &str,
+    group: &str,
+    recipient: &str,
+) -> Result<MlsGroupResponse, DaemonError> {
+    let request = JsonRpcMessage::request(
+        1.into(),
+        "admin.invite_to_mls_group",
+        Some(serde_json::json!({
+            "bot_id": bot_id,
+            "group_name": group,
+            "recipient": recipient,
+        })),
+    );
+    let value = with_admin_session(socket_path, bot_id, request).await?;
+    Ok(serde_json::from_value(value)?)
 }
 
 async fn cmd_mls_group_repair_admins(
@@ -2844,24 +2919,63 @@ async fn cmd_mls_group_send(
         let data_dir = resolve_data_dir(&config, data_dir_override);
         let socket_path = resolve_admin_socket_path(&config, bot, &data_dir)?;
         let group_id = validate_mls_wire_id(group)?;
-
-        let request = JsonRpcMessage::request(
-            1.into(),
-            "agent.send_group_message",
-            Some(serde_json::json!({
-                "bot_id": bot_id,
-                "group_id": group_id,
-                "content": content,
-            })),
-        );
-        let value =
-            with_capability_session(&socket_path, bot_id, &["SendGroupMessages"], request).await?;
-        let event_id = value
-            .as_str()
-            .ok_or_else(|| DaemonError::Config("unexpected daemon response".into()))?;
+        let event_id =
+            call_agent_send_group_message(&socket_path, bot_id, &group_id, content).await?;
         println!("{event_id}");
         Ok(())
     }
+}
+
+/// Call `agent.send_group_message` and return the published event id,
+/// without printing. Shared by `mls-group send` and the scenario runner
+/// (U12b); the daemon requires `SendGroupMessages` for this RPC regardless
+/// of caller, so each caller still performs its own capability check.
+#[cfg(unix)]
+pub(crate) async fn call_agent_send_group_message(
+    socket_path: &Path,
+    bot_id: &str,
+    group_id: &str,
+    content: &str,
+) -> Result<String, DaemonError> {
+    let request = JsonRpcMessage::request(
+        1.into(),
+        "agent.send_group_message",
+        Some(serde_json::json!({
+            "bot_id": bot_id,
+            "group_id": group_id,
+            "content": content,
+        })),
+    );
+    let value =
+        with_capability_session(socket_path, bot_id, &["SendGroupMessages"], request).await?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| DaemonError::Config("unexpected daemon response".into()))
+}
+
+/// Call `agent.publish_key_package` and return the published event id,
+/// without printing. No CLI subcommand wraps this RPC method yet -- the
+/// scenario runner (U12b) calls it directly so a fresh participant has a
+/// live KeyPackage before any `create_group`/`invite` step targets them.
+/// This is an existing bot verb (`Method::AgentPublishKeyPackage`), not a
+/// new wire-protocol capability.
+#[cfg(unix)]
+pub(crate) async fn call_agent_publish_key_package(
+    socket_path: &Path,
+    bot_id: &str,
+) -> Result<String, DaemonError> {
+    let request = JsonRpcMessage::request(
+        1.into(),
+        "agent.publish_key_package",
+        Some(serde_json::json!({ "bot_id": bot_id })),
+    );
+    let value =
+        with_capability_session(socket_path, bot_id, &["SendGroupMessages"], request).await?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| DaemonError::Config("unexpected daemon response".into()))
 }
 
 /// Drop `bot_id`'s local MLS state for a group.
@@ -2918,7 +3032,7 @@ async fn cmd_mls_group_delete(
 /// Confirm `bot`'s roster config grants `capability` before attempting an
 /// operation that requires it, with a message that names the missing
 /// capability instead of the daemon's sanitized generic one.
-fn require_bot_capability(bot: &BotConfig, capability: &str) -> Result<(), DaemonError> {
+pub(crate) fn require_bot_capability(bot: &BotConfig, capability: &str) -> Result<(), DaemonError> {
     if bot.capabilities.iter().any(|c| c == capability) {
         Ok(())
     } else {
@@ -2940,7 +3054,7 @@ fn validate_mls_wire_id(group: &str) -> Result<String, DaemonError> {
     }
 }
 
-fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
+pub(crate) fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
     let pk = PublicKey::parse(recipient)
         .map_err(|e| DaemonError::Config(format!("invalid recipient public key: {e}")))?;
     pk.to_bech32()
@@ -2948,7 +3062,7 @@ fn validate_mls_recipient(recipient: &str) -> Result<String, DaemonError> {
 }
 
 #[cfg(unix)]
-fn resolve_admin_socket_path(
+pub(crate) fn resolve_admin_socket_path(
     config: &DaemonConfig,
     bot: &BotConfig,
     data_dir: &Path,
@@ -3017,14 +3131,38 @@ async fn cmd_trace_events(
 
     for row in rows {
         let (event_id, author, preview, action, reply_event_id, created_at) = row?;
-        let when = DateTime::from_timestamp(created_at, 0)
-            .unwrap_or_else(Utc::now)
-            .to_rfc3339();
-        let reply = reply_event_id.as_deref().unwrap_or("-");
-        println!("{when} {event_id} {author} {action} reply_event_id={reply} preview={preview}");
+        println!(
+            "{}",
+            format_trace_line(
+                created_at,
+                &event_id,
+                &author,
+                &action,
+                reply_event_id.as_deref(),
+                &preview
+            )
+        );
     }
 
     Ok(())
+}
+
+/// Format one `event_trace` row exactly as `trace-events` prints it.
+/// Shared with the scenario runner (U12c) so a replay's emitted trace uses
+/// the bot side's existing event-trace output rather than a second format.
+pub(crate) fn format_trace_line(
+    created_at: i64,
+    event_id: &str,
+    author: &str,
+    action: &str,
+    reply_event_id: Option<&str>,
+    preview: &str,
+) -> String {
+    let when = DateTime::from_timestamp(created_at, 0)
+        .unwrap_or_else(Utc::now)
+        .to_rfc3339();
+    let reply = reply_event_id.unwrap_or("-");
+    format!("{when} {event_id} {author} {action} reply_event_id={reply} preview={preview}")
 }
 
 async fn cmd_status(
@@ -3168,7 +3306,7 @@ fn read_latest_report(data_dir: &Path) -> Option<HealthSnapshot> {
     None
 }
 
-fn find_bot<'a>(bots: &'a [BotConfig], bot_id: &str) -> Result<&'a BotConfig, DaemonError> {
+pub(crate) fn find_bot<'a>(bots: &'a [BotConfig], bot_id: &str) -> Result<&'a BotConfig, DaemonError> {
     bots.iter()
         .find(|b| b.id == bot_id)
         .ok_or_else(|| DaemonError::UnknownBot(bot_id.to_string()))
@@ -3952,7 +4090,7 @@ fn extract_port_from_url(url: &str) -> Option<u16> {
     }
 }
 
-fn resolve_data_dir(config: &DaemonConfig, override_path: Option<PathBuf>) -> PathBuf {
+pub(crate) fn resolve_data_dir(config: &DaemonConfig, override_path: Option<PathBuf>) -> PathBuf {
     override_path
         .as_deref()
         .map(expand_path_buf)
@@ -4318,7 +4456,7 @@ struct ServiceInfo {
     error: Option<String>,
 }
 
-fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
+pub(crate) fn open_agent_db(path: &Path) -> Result<Connection, DaemonError> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;

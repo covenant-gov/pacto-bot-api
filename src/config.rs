@@ -59,6 +59,17 @@ pub struct GlobalDaemonConfig {
     /// reset would be noise an operator has had no chance to act on yet.
     #[serde(default = "default_stuck_bot_warning_min_age_secs")]
     pub stuck_bot_warning_min_age_secs: u64,
+    /// Per-Squad group-message handler-notification token-bucket refill
+    /// rate, in tokens per second. Bounds how often a handler is
+    /// re-notified about ongoing Squad activity; MLS message persistence
+    /// itself is never rate limited, only the live notification. Defaults
+    /// to one notification per minute, matching the production default
+    /// before this was configurable.
+    #[serde(default = "default_group_message_rate")]
+    pub group_message_rate: f64,
+    /// Per-Squad group-message handler-notification token-bucket capacity.
+    #[serde(default = "default_group_message_burst")]
+    pub group_message_burst: f64,
 }
 
 impl Default for GlobalDaemonConfig {
@@ -76,6 +87,8 @@ impl Default for GlobalDaemonConfig {
             blob_servers: default_blob_servers(),
             mls_archive_retention_days: default_mls_archive_retention_days(),
             stuck_bot_warning_min_age_secs: default_stuck_bot_warning_min_age_secs(),
+            group_message_rate: default_group_message_rate(),
+            group_message_burst: default_group_message_burst(),
         }
     }
 }
@@ -126,6 +139,14 @@ fn default_mls_archive_retention_days() -> u32 {
 
 fn default_stuck_bot_warning_min_age_secs() -> u64 {
     3_600
+}
+
+fn default_group_message_rate() -> f64 {
+    1.0 / 60.0
+}
+
+fn default_group_message_burst() -> f64 {
+    1.0
 }
 
 /// Per-bot identity configuration.

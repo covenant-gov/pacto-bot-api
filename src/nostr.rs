@@ -47,6 +47,17 @@ pub struct NostrClient {
     mls_engines: Arc<RwLock<HashMap<PublicKey, (String, MlsEngineHandle)>>>,
     diagnostics: Option<Diagnostics>,
     attachment_processor: Option<Arc<InboundAttachmentProcessor>>,
+    /// Same-daemon multi-bot delivery correction (see `deliver_locally`):
+    /// set once `receive_events()` is called, so a later self-published
+    /// event addressed to another locally managed bot can still reach the
+    /// same stream `receive_events()` returned.
+    local_delivery_tx: Arc<std::sync::Mutex<Option<UnboundedSender<Result<AgentEvent, DaemonError>>>>>,
+    /// Each configured bot's own relay URLs, used only to scope
+    /// `deliver_locally`'s same-daemon delivery correction to a recipient
+    /// that is genuinely reachable through at least one connected relay
+    /// (see `deliver_locally`) -- it must not synthesize delivery to a bot
+    /// whose entire configured relay set is unreachable.
+    bot_relays: Arc<RwLock<HashMap<PublicKey, Vec<String>>>>,
 }
 
 impl std::fmt::Debug for NostrClient {
@@ -141,6 +152,8 @@ impl NostrClient {
             mls_engines: Arc::new(RwLock::new(HashMap::new())),
             diagnostics: None,
             attachment_processor: None,
+            local_delivery_tx: Arc::new(std::sync::Mutex::new(None)),
+            bot_relays: Arc::new(RwLock::new(HashMap::new())),
         };
         this.add_relays(&relays).await?;
         this.client.connect().await;
@@ -207,6 +220,14 @@ impl NostrClient {
     /// messages addressed to `pubkey` can be decrypted.
     pub async fn add_mls_engine(&self, pubkey: PublicKey, bot_id: String, mls: MlsEngineHandle) {
         self.mls_engines.write().await.insert(pubkey, (bot_id, mls));
+    }
+
+    /// Record a bot's own configured relay URLs, used by
+    /// `deliver_locally`'s same-daemon delivery correction to scope
+    /// itself to a recipient genuinely reachable through at least one
+    /// connected relay.
+    pub async fn add_bot_relays(&self, pubkey: PublicKey, relays: Vec<String>) {
+        self.bot_relays.write().await.insert(pubkey, relays);
     }
 
     /// Subscribe to kind 1059 gift wraps addressed to `npub`, optionally
@@ -512,6 +533,8 @@ impl NostrClient {
             );
         }
 
+        self.deliver_locally(&gift_event).await;
+
         Ok(event_id)
     }
 
@@ -715,6 +738,8 @@ impl NostrClient {
             "published evolution event"
         );
 
+        self.deliver_locally(event).await;
+
         Ok(event_id)
     }
 
@@ -802,6 +827,8 @@ impl NostrClient {
             );
             DaemonError::Nostr(format!("failed to publish event: {e}"))
         })?;
+
+        self.deliver_locally(&signed_wrapper).await;
 
         Ok(*output.id())
     }
@@ -930,6 +957,10 @@ impl NostrClient {
     /// Return an async stream of incoming DMs converted to [`AgentEvent`].
     pub fn receive_events(&self) -> impl Stream<Item = Result<AgentEvent, DaemonError>> + use<> {
         let (tx, rx) = unbounded_channel();
+        if let Ok(mut slot) = self.local_delivery_tx.lock() {
+            *slot = Some(tx.clone());
+        }
+        let local_delivery_tx = Arc::clone(&self.local_delivery_tx);
         let client = self.client.clone();
         let signers = Arc::clone(&self.signers);
         let mls_engines = Arc::clone(&self.mls_engines);
@@ -1075,9 +1106,142 @@ impl NostrClient {
                     }
                 })
                 .await;
+            // The notification loop has ended (relay pool shutdown); drop
+            // this stream's sender from `local_delivery_tx` too, or the
+            // client-held clone keeps the channel open forever and
+            // `receive_events()`'s stream never yields `None` even after
+            // `shutdown()`. Guarded by `same_channel` so a newer
+            // `receive_events()` call's sender already in the slot is left
+            // alone.
+            if let Ok(mut slot) = local_delivery_tx.lock() {
+                if slot.as_ref().is_some_and(|s| s.same_channel(&tx)) {
+                    *slot = None;
+                }
+            }
         });
 
         UnboundedReceiverStream::new(rx)
+    }
+
+    /// Whether `recipient`'s own configured relay set has at least one
+    /// currently connected relay. Used only to scope `deliver_locally`'s
+    /// same-daemon delivery correction to a recipient that is genuinely
+    /// reachable, not to a bot whose entire relay set is unreachable --
+    /// see the doc comment on `deliver_locally`.
+    ///
+    /// A bot with no recorded relay list (relay tracking never wired up,
+    /// e.g. a test double) is treated as reachable so this never blocks
+    /// delivery on missing bookkeeping.
+    async fn recipient_has_connected_relay(&self, recipient: &PublicKey) -> bool {
+        let configured = self.bot_relays.read().await;
+        let Some(urls) = configured.get(recipient) else {
+            return true;
+        };
+        if urls.is_empty() {
+            return true;
+        }
+        let urls = urls.clone();
+        drop(configured);
+        let statuses = self.relay_statuses().await;
+        urls.iter()
+            .any(|url| statuses.get(url).map(String::as_str) == Some("Connected"))
+    }
+
+    /// Same-daemon multi-bot delivery correction.
+    ///
+    /// `nostr-sdk`'s `Client` keeps its own local database of every event
+    /// it has seen, including ones it just published itself (see
+    /// `nostr_relay_pool::relay::inner::handle_event_msg`): when the relay
+    /// echoes a just-published event back on a live subscription, the
+    /// client finds the id already `Saved` and never raises a
+    /// `RelayPoolNotification::Event` for it. Since this daemon multiplexes
+    /// every configured bot onto the SAME shared `Client`, that silently
+    /// swallows an MLS welcome or group message one locally managed bot
+    /// sends to another: the recipient's own subscription never observes
+    /// it, even though an external subscriber genuinely would have. Run
+    /// the normal inbound pipeline directly against the just-published
+    /// event -- exactly once, since the pipeline is only ever invoked here
+    /// or from a genuine (non-duplicate) relay notification, never both --
+    /// so intra-daemon bot-to-bot delivery works the same as delivery from
+    /// an external sender.
+    async fn deliver_locally(&self, event: &Event) {
+        let Some(tx) = self
+            .local_delivery_tx
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+        else {
+            return;
+        };
+
+        match event.kind {
+            Kind::GiftWrap => {
+                let Some(recipient) = event.tags.public_keys().next().copied() else {
+                    return;
+                };
+                let signers = self.signers.read().await;
+                if !signers.contains_key(&recipient) {
+                    // Not addressed to a bot this daemon manages; the relay
+                    // round trip (if any) is the only path for it.
+                    return;
+                }
+                drop(signers);
+                if !self.recipient_has_connected_relay(&recipient).await {
+                    // The recipient bot's entire configured relay set is
+                    // unreachable, so a real relay round trip could never
+                    // have delivered this event either; do not synthesize
+                    // delivery to an offline bot.
+                    return;
+                }
+                let signers = self.signers.read().await.clone();
+                let mls_engines = self.mls_engines.read().await.clone();
+                match Self::process_gift_wrap(
+                    &signers,
+                    &mls_engines,
+                    event,
+                    self.diagnostics.as_ref(),
+                    self.attachment_processor.as_deref(),
+                )
+                .await
+                {
+                    Ok(Some(agent_event)) => {
+                        let _ = tx.send(Ok(agent_event));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
+                }
+            }
+            Kind::MlsGroupMessage => {
+                let signers = self.signers.read().await.clone();
+                let mls_engines = self.mls_engines.read().await.clone();
+                match Self::process_group_message(
+                    &self.client,
+                    &signers,
+                    &mls_engines,
+                    event,
+                    self.diagnostics.as_ref(),
+                    self.attachment_processor.as_deref(),
+                )
+                .await
+                {
+                    Ok(agent_events) => {
+                        for agent_event in agent_events {
+                            let _ = tx.send(Ok(agent_event));
+                        }
+                    }
+                    // No locally configured bot is a member of this group;
+                    // an external member (if any) relies on the relay.
+                    Err(DaemonError::Nostr(msg))
+                        if msg == "group message not addressed to a bot with an MLS engine" => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Decrypt+parse phase of gift-wrap processing: gift-wrap signature
@@ -1450,37 +1614,123 @@ impl NostrClient {
             ));
         }
 
-        // Decrypt the message once with the first member's engine to get the
-        // plaintext. The content is identical for every member.
-        let first_recipient = recipients[0];
-        let first_mls = mls_engines
-            .get(&first_recipient)
-            .ok_or_else(|| DaemonError::Nostr("first recipient engine missing".into()))?
-            .1
-            .clone();
-        let outcome = first_mls
-            .decrypt_group_message(event)
-            .await
-            .map_err(|e| DaemonError::Nostr(format!("failed to decrypt group message: {e}")))?;
+        // Every current member's own engine independently needs to process
+        // this event: a commit/proposal advances each member's epoch, so
+        // applying it to only one recipient candidate (then stopping, as
+        // this used to do) leaves every other member stuck at a stale
+        // epoch, unable to decrypt later messages -- decoding a *later*
+        // application message does not retroactively fix that, since each
+        // member's own engine (not whichever one happened to be tried
+        // first) is what actually needs the commit applied. Attempt every
+        // recipient rather than stopping at the first success. A member
+        // freshly added via a Welcome already starts at the post-commit
+        // epoch that Welcome encoded, so replaying the same "add" commit
+        // through their engine (which never held the pre-commit tree) is a
+        // structural mismatch, not a real error, and is expected to fail
+        // for exactly that member while others genuinely need it applied.
+        //
+        // `decrypted` captures the first genuine application-message
+        // decode (content is identical for every member that can process
+        // it); a commit/proposal event never produces one, so `decrypted`
+        // stays `None` and no `AgentEvent`s are built. `delivered` records
+        // every recipient whose *own* engine actually decoded this as an
+        // application message -- only those get an `AgentEvent`; a
+        // recipient whose attempt returned `None`/an error did not
+        // genuinely receive this message and must not be reported as
+        // having done so.
+        let mut decrypted: Option<mls::DecryptedMessage> = None;
+        let mut delivered: Vec<PublicKey> = Vec::new();
+        let mut any_processed = false;
+        for recipient in &recipients {
+            let (bot_id, signer) = signers.get(recipient).ok_or_else(|| {
+                DaemonError::Nostr(format!("no signer registered for {recipient}"))
+            })?;
+            let (_mls_bot_id, mls) = mls_engines.get(recipient).ok_or_else(|| {
+                DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
+            })?;
 
-        let decrypted = match outcome {
-            mls::GroupMessageOutcome::Message(d) => d,
-            mls::GroupMessageOutcome::PublishEvolution(evolution_event) => {
-                // MDK auto-committed a self-remove proposal on this bot's
-                // behalf; the commit must reach the group's relays or every
-                // peer's epoch diverges from this bot's and stops
-                // decrypting (R11 makes the bot a co-admin of every squad
-                // it creates, so this path is common, not exotic).
-                if let Err(e) = client.send_event(&evolution_event).await {
-                    error!(
-                        event_id = %event.id.to_hex(),
+            // A bot never needs to (and, per MDK's `CannotDecryptOwnMessage`,
+            // cannot) process an application message it published itself.
+            // Commits/proposals are not signed under the bot's own npub, so
+            // this never filters them out -- every member, including the
+            // one who committed, gets a (cheap, idempotent) attempt.
+            if event.pubkey == signer.public_key() {
+                debug!(
+                    event_id = %event.id.to_hex(),
+                    bot_id = %bot_id,
+                    "skipping own group message"
+                );
+                continue;
+            }
+
+            match mls.decrypt_group_message(event).await {
+                Ok(mls::GroupMessageOutcome::Message(d)) => {
+                    any_processed = true;
+                    delivered.push(*recipient);
+                    if decrypted.is_none() {
+                        decrypted = Some(d);
+                    }
+                }
+                Ok(mls::GroupMessageOutcome::PublishEvolution(evolution_event)) => {
+                    any_processed = true;
+                    // MDK auto-committed a self-remove proposal on this
+                    // bot's behalf; the commit must reach the group's
+                    // relays or every peer's epoch diverges from this
+                    // bot's and stops decrypting (R11 makes the bot a
+                    // co-admin of every squad it creates, so this path is
+                    // common, not exotic). This is a raw `client.send_event`
+                    // rather than the `deliver_locally`-wrapped path (this
+                    // free fn has no `&NostrClient` to call it on): without
+                    // the recursive apply below, no other locally-managed
+                    // bot would see it until a genuine relay round trip,
+                    // and self-published events on this shared `Client`
+                    // never generate one (see `deliver_locally`'s doc
+                    // comment) -- so it would otherwise never converge.
+                    if let Err(e) = client.send_event(&evolution_event).await {
+                        error!(
+                            event_id = %event.id.to_hex(),
+                            bot_id = %bot_id,
+                            error = %e,
+                            "failed to publish MLS evolution event from auto-committed proposal"
+                        );
+                    } else if let Err(e) = Box::pin(Self::process_group_message(
+                        client,
+                        signers,
+                        mls_engines,
+                        &evolution_event,
+                        diagnostics,
+                        attachment_processor,
+                    ))
+                    .await
+                    {
+                        error!(
+                            event_id = %evolution_event.id.to_hex(),
+                            error = %e,
+                            "failed to apply auto-committed evolution event to other local bots"
+                        );
+                    }
+                }
+                Ok(mls::GroupMessageOutcome::None) => {
+                    any_processed = true;
+                }
+                Err(e) => {
+                    debug!(
+                        bot_id = %bot_id,
                         error = %e,
-                        "failed to publish MLS evolution event from auto-committed proposal"
+                        "recipient could not process group message"
                     );
                 }
-                return Ok(vec![]);
             }
-            mls::GroupMessageOutcome::None => return Ok(vec![]),
+        }
+
+        let Some(decrypted) = decrypted else {
+            if !any_processed {
+                warn!(
+                    event_id = %event.id.to_hex(),
+                    "no recipient could process group message"
+                );
+            }
+            return Ok(vec![]);
         };
 
         let inner = UnsignedEvent::new(
@@ -1570,53 +1820,11 @@ impl NostrClient {
                 }
             };
 
-        let mut agent_events = Vec::new();
-        for recipient in &recipients {
-            let (bot_id, signer) = signers.get(recipient).ok_or_else(|| {
+        let mut agent_events = Vec::with_capacity(delivered.len());
+        for recipient in &delivered {
+            let (bot_id, _signer) = signers.get(recipient).ok_or_else(|| {
                 DaemonError::Nostr(format!("no signer registered for {recipient}"))
             })?;
-            let (_mls_bot_id, mls) = mls_engines.get(recipient).ok_or_else(|| {
-                DaemonError::Nostr(format!("no MLS engine registered for {recipient}"))
-            })?;
-
-            // Skip-own check is per bot: a bot should not receive messages it
-            // published itself.
-            if event.pubkey == signer.public_key() {
-                debug!(
-                    event_id = %event.id.to_hex(),
-                    bot_id = %bot_id,
-                    "skipping own group message"
-                );
-                continue;
-            }
-
-            // Advance each recipient's engine state so subsequent messages can be
-            // decrypted. The first recipient already processed the message above.
-            if *recipient != first_recipient {
-                match mls.decrypt_group_message(event).await {
-                    Ok(mls::GroupMessageOutcome::PublishEvolution(evolution_event)) => {
-                        if let Err(e) = client.send_event(&evolution_event).await {
-                            error!(
-                                event_id = %event.id.to_hex(),
-                                bot_id = %bot_id,
-                                error = %e,
-                                "failed to publish MLS evolution event from auto-committed proposal"
-                            );
-                        }
-                        continue;
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        debug!(
-                            bot_id = %bot_id,
-                            error = %e,
-                            "failed to advance engine state for group message; skipping recipient"
-                        );
-                        continue;
-                    }
-                }
-            }
-
             agent_events.push(AgentEvent {
                 bot_id: bot_id.clone(),
                 event_id: decrypted.event_id.clone(),
@@ -1771,6 +1979,25 @@ mod tests {
 
     fn dummy_relay() -> String {
         "wss://localhost:4242".into()
+    }
+
+    /// Test temp directory outside `/tmp`/`/dev/shm` so MLS path-hardening
+    /// checks do not reject the fixture (mirrors `mls::tests::test_tempdir`,
+    /// which is private to that module's own test scope).
+    fn test_tempdir() -> tempfile::TempDir {
+        let root = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"))
+            .join("test-temp")
+            .join("nostr-unit");
+        std::fs::create_dir_all(&root).expect("create test temp root");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+                .expect("chmod test temp root");
+        }
+        tempfile::tempdir_in(root).expect("tempdir")
     }
 
     fn assert_valid_event_id(event_id: &EventId) {
@@ -2177,6 +2404,155 @@ mod tests {
         assert_eq!(agent_event.event_type, EventType::DmReceived);
         assert_eq!(agent_event.content, "hello from relay");
         assert_eq!(agent_event.author, sender_keys.public_key().to_hex());
+    }
+
+    /// Build a real, engine-issued MLS KeyPackage event for `keys`, signed
+    /// with `keys` (mirrors `mls::tests::build_key_package`, which is
+    /// private to that module's own test scope).
+    async fn mls_key_package_for(engine: &MlsEngineHandle, keys: &Keys) -> Event {
+        let relays = vec![nostr::RelayUrl::parse("wss://test.relay").unwrap()];
+        let (content, tags) = engine
+            .publish_key_package(&keys.public_key(), relays)
+            .await
+            .expect("publish_key_package");
+        crate::nostr_json::sign_builder(EventBuilder::new(Kind::MlsKeyPackage, content).tags(tags), keys)
+            .expect("sign key package")
+    }
+
+    /// Regression test for the squad-conversation epoch-desync bug:
+    /// `process_group_message` used to walk candidate engines until ONE
+    /// resolved the incoming event (any outcome, including a commit that
+    /// engine just merged), then return immediately -- leaving every OTHER
+    /// *current* member's engine un-advanced by that commit. Once a real
+    /// application message arrived at the new epoch, whichever member was
+    /// never given the commit could no longer decrypt anything, silently
+    /// (see `squad_conversation_replays_end_to_end_with_declared_order_in_trace`
+    /// in `tests/scenario_replay.rs`, which flaked on exactly this).
+    ///
+    /// Three same-daemon bots (alice creates+admins, bob is an original
+    /// member, carol is added later): after alice's add-carol commit
+    /// lands, a *later* application message from alice must independently
+    /// decrypt for both bob and carol -- not just whichever engine
+    /// happened to process the commit first.
+    #[tokio::test]
+    async fn every_current_member_advances_past_a_later_add_member_commit() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+        let temp = test_tempdir();
+
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let carol_keys = Keys::generate();
+        let alice_signer: Arc<dyn Signer> =
+            Arc::new(LocalKey::parse(&alice_keys.secret_key().to_bech32().unwrap()).unwrap());
+        let bob_signer: Arc<dyn Signer> =
+            Arc::new(LocalKey::parse(&bob_keys.secret_key().to_bech32().unwrap()).unwrap());
+        let carol_signer: Arc<dyn Signer> =
+            Arc::new(LocalKey::parse(&carol_keys.secret_key().to_bech32().unwrap()).unwrap());
+
+        let alice_engine = MlsEngineHandle::new_persistent(temp.path().join("alice-mls.db"))
+            .expect("new_persistent");
+        let bob_engine = MlsEngineHandle::new_persistent(temp.path().join("bob-mls.db"))
+            .expect("new_persistent");
+        let carol_engine = MlsEngineHandle::new_persistent(temp.path().join("carol-mls.db"))
+            .expect("new_persistent");
+
+        client
+            .add_signer(alice_keys.public_key(), "alice-bot".into(), alice_signer.clone())
+            .await;
+        client
+            .add_signer(bob_keys.public_key(), "bob-bot".into(), bob_signer.clone())
+            .await;
+        client
+            .add_signer(carol_keys.public_key(), "carol-bot".into(), carol_signer)
+            .await;
+        client
+            .add_mls_engine(alice_keys.public_key(), "alice-bot".into(), alice_engine.clone())
+            .await;
+        client
+            .add_mls_engine(bob_keys.public_key(), "bob-bot".into(), bob_engine.clone())
+            .await;
+        client
+            .add_mls_engine(carol_keys.public_key(), "carol-bot".into(), carol_engine.clone())
+            .await;
+
+        let mut stream = client.receive_events();
+
+        // Alice creates the squad with bob.
+        let bob_kp = mls_key_package_for(&bob_engine, &bob_keys).await;
+        let (wire_id, bob_welcome) = alice_engine
+            .create_group(
+                alice_keys.public_key(),
+                bob_keys.public_key(),
+                bob_kp,
+                "squad-chat".to_string(),
+                vec![nostr::RelayUrl::parse(&relay.url()).unwrap()],
+                vec![alice_keys.public_key(), bob_keys.public_key()],
+            )
+            .await
+            .expect("create_group failed");
+        client
+            .send_welcome(alice_signer.as_ref(), &bob_keys.public_key(), bob_welcome)
+            .await
+            .expect("send_welcome(bob) failed");
+
+        // Alice invites carol into the existing squad.
+        let carol_kp = mls_key_package_for(&carol_engine, &carol_keys).await;
+        let outcome = alice_engine
+            .add_member(&wire_id, carol_keys.public_key(), carol_kp)
+            .await
+            .expect("add_member failed");
+        client
+            .send_welcome(alice_signer.as_ref(), &carol_keys.public_key(), outcome.welcome_rumor)
+            .await
+            .expect("send_welcome(carol) failed");
+        client
+            .send_evolution_event(&outcome.evolution_event)
+            .await
+            .expect("send_evolution_event(add carol) failed");
+
+        // A later application message from alice: with the bug, bob's
+        // engine never received the add-carol commit above and could not
+        // decrypt this, so only carol (whose Welcome already encoded the
+        // post-commit epoch) would receive it.
+        let group_id = alice_engine
+            .resolve_wire_id(&wire_id)
+            .await
+            .expect("resolve_wire_id failed");
+        let rumor = UnsignedEvent::new(
+            alice_keys.public_key(),
+            Timestamp::now(),
+            Kind::PrivateDirectMessage,
+            Vec::new(),
+            "welcome to the squad".to_string(),
+        );
+        client
+            .send_group_message(&alice_engine, alice_signer.as_ref(), group_id, rumor)
+            .await
+            .expect("send_group_message failed");
+
+        // Drain every queued `AgentEvent` (two welcomes plus the message
+        // fan-out) and assert both bob and carol -- not just one of them --
+        // independently decrypted the application message.
+        let mut message_recipients = Vec::new();
+        for _ in 0..4 {
+            let Ok(Some(Ok(event))) =
+                tokio::time::timeout(Duration::from_secs(5), stream.next()).await
+            else {
+                break;
+            };
+            if event.event_type == EventType::MlsGroupMessageReceived {
+                assert_eq!(event.content, "welcome to the squad");
+                message_recipients.push(event.bot_id);
+            }
+        }
+        message_recipients.sort();
+        assert_eq!(
+            message_recipients,
+            vec!["bob-bot".to_string(), "carol-bot".to_string()],
+            "both bob and carol must independently decrypt the message after the add-member \
+             commit; a missing bot_id means its engine never received that commit"
+        );
     }
 
     #[tokio::test]

@@ -357,6 +357,9 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
                 .add_mls_engine(*pubkey, bot.bot_id().to_string(), mls)
                 .await;
         }
+        nostr_client
+            .add_bot_relays(*pubkey, bot.config.relays.clone())
+            .await;
     }
 
     // Subscribe each bot to its gift-wrap filter, using the persisted cursor
@@ -375,6 +378,10 @@ async fn run_daemon(cli: Cli) -> Result<(), String> {
     dispatch.set_handler_stale_timeout(Duration::from_secs(
         config.daemon.handler_stale_timeout_secs,
     ));
+    dispatch.set_group_rate_limit(
+        config.daemon.group_message_rate,
+        config.daemon.group_message_burst,
+    );
     let dispatch = Arc::new(dispatch);
 
     if let Err(e) = dispatch.restore_handlers().await {

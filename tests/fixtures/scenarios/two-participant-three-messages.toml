@@ -1,0 +1,36 @@
+# Two participants, one group, three ordered messages (U12 test scenario:
+# "A two-participant scenario with three ordered messages replays with the
+# messages arriving in the declared order.").
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[steps]]
+actor = "alice"
+action = "create_group"
+group = "squad-chat"
+invite = "bob"
+
+[[steps]]
+actor = "alice"
+action = "send_group_message"
+group = "squad-chat"
+content = "hello bob, this is message one"
+
+[[steps]]
+actor = "bob"
+action = "send_group_message"
+group = "squad-chat"
+content = "hi alice, this is message two"
+
+[[steps]]
+actor = "alice"
+action = "send_group_message"
+group = "squad-chat"
+content = "great, this is message three"

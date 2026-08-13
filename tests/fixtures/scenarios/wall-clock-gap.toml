@@ -1,0 +1,20 @@
+# Invalid fixture: `after` declares a wall-clock gap. pacto-bot-api scenario
+# timelines are ordering-only (KD11/KTD8); this must be rejected at parse
+# time with a message naming the ordering-only contract, not silently
+# ignored.
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[steps]]
+actor = "alice"
+action = "send_dm"
+to = "bob"
+content = "hi, thirty seconds from now"
+after = "30s"
