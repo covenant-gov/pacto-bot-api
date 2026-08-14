@@ -204,6 +204,14 @@ pacto-bot-admin update echo-bot --project-dir /path/to/my-project"#,
         "pacto-bot-admin status\npacto-bot-admin status --format json",
         "`--format` accepts `text` or `json`.",
     );
+
+    render_command(
+        out,
+        "scenario",
+        "Parse, validate, and replay a declarative scenario file against existing bot verbs (no new wire-protocol capability).",
+        "pacto-bot-admin scenario validate scenarios/squad-conversation.toml\npacto-bot-admin scenario run scenarios/squad-conversation.toml\npacto-bot-admin scenario run scenarios/squad-conversation.toml --step-timeout 30",
+        "- `validate` parses the TOML and refuses unknown participants, unknown verbs, and any wall-clock gap fields (`after`, `min_age`, …) at parse time.\n- `run` (Unix only) replays steps through existing admin/agent verbs and gates each step on an observable signal (welcome accepted, message persisted), never on sleeps.\n- `--step-timeout` is seconds to wait for each step's signal (default: 30).\n- Raise `[daemon] group_message_rate` / `group_message_burst` for dense replays; production defaults remain one notification per minute per squad.",
+    );
 }
 
 fn render_command(out: &mut String, name: &str, description: &str, examples: &str, notes: &str) {
@@ -384,6 +392,7 @@ mod tests {
             "mls-group",
             "trace-events",
             "status",
+            "scenario",
         ] {
             assert!(
                 guide.contains(&format!("pacto-bot-admin {sub}")),
