@@ -350,6 +350,16 @@ fn validate_daemon_config(daemon: &GlobalDaemonConfig) -> Result<(), DaemonError
             "daemon.spool_outbound_retention_secs must be greater than 0".into(),
         ));
     }
+    if !daemon.group_message_rate.is_finite() || daemon.group_message_rate <= 0.0 {
+        return Err(DaemonError::Config(
+            "daemon.group_message_rate must be greater than 0".into(),
+        ));
+    }
+    if !daemon.group_message_burst.is_finite() || daemon.group_message_burst <= 0.0 {
+        return Err(DaemonError::Config(
+            "daemon.group_message_burst must be greater than 0".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -1792,5 +1802,83 @@ signing = { backend = "nsec", nsec = "nsec1a" }
         assert!(validate_bot_id("foo\\bar").is_err());
         assert!(validate_bot_id("bot id").is_err());
         assert!(validate_bot_id("a".repeat(65).as_str()).is_err());
+    }
+
+    fn bot_stanza() -> &'static str {
+        r#"
+[[bots]]
+id = "echo-bot"
+display_name = "Echo Bot"
+npub = "npub1a"
+signing = { backend = "nsec", nsec = "nsec1a" }
+capabilities = ["ReadMessages", "SendMessages"]
+"#
+    }
+
+    #[test]
+    fn group_message_rate_rejects_zero() {
+        let (_dir, _file, path) = write_config(&format!(
+            "[daemon]\ndata_dir = \"/tmp/pacto\"\ngroup_message_rate = 0\n{}",
+            bot_stanza()
+        ));
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("daemon.group_message_rate must be greater than 0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn group_message_rate_rejects_negative() {
+        let (_dir, _file, path) = write_config(&format!(
+            "[daemon]\ndata_dir = \"/tmp/pacto\"\ngroup_message_rate = -1.0\n{}",
+            bot_stanza()
+        ));
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("daemon.group_message_rate must be greater than 0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn group_message_burst_rejects_zero() {
+        let (_dir, _file, path) = write_config(&format!(
+            "[daemon]\ndata_dir = \"/tmp/pacto\"\ngroup_message_burst = 0\n{}",
+            bot_stanza()
+        ));
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("daemon.group_message_burst must be greater than 0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn group_message_burst_rejects_negative() {
+        let (_dir, _file, path) = write_config(&format!(
+            "[daemon]\ndata_dir = \"/tmp/pacto\"\ngroup_message_burst = -0.5\n{}",
+            bot_stanza()
+        ));
+        let err = DaemonConfig::load(&path).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("daemon.group_message_burst must be greater than 0"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn group_message_rate_and_burst_accept_positive() {
+        let (_dir, _file, path) = write_config(&format!(
+            "[daemon]\ndata_dir = \"/tmp/pacto\"\ngroup_message_rate = 0.5\ngroup_message_burst = 2.0\n{}",
+            bot_stanza()
+        ));
+        let config = DaemonConfig::load(&path).expect("positive rate and burst should load");
+        assert_eq!(config.daemon.group_message_rate, 0.5);
+        assert_eq!(config.daemon.group_message_burst, 2.0);
     }
 }

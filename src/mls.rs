@@ -1277,6 +1277,20 @@ impl MlsEngineHandle {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Handle whose worker channel is already closed, so every command
+    /// returns [`MlsError::WorkerDisconnected`]. Used to stand in for an
+    /// unhealthy co-located engine in unit tests.
+    #[cfg(test)]
+    pub(crate) fn disconnected_for_test() -> Self {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        Self {
+            tx,
+            db_path: PathBuf::from("disconnected-for-test"),
+            rollback_observer: std::sync::Arc::new(MdkRollbackObserver::default()),
+        }
+    }
+
     /// Check whether the engine knows a group whose `nostr_group_id` hex-matches
     /// the given wire id.
     pub async fn has_group_with_wire_id(&self, group_id: &str) -> Result<bool, MlsError> {

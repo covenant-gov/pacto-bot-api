@@ -1606,9 +1606,15 @@ impl NostrClient {
                     continue;
                 }
                 Err(e) => {
-                    return Err(DaemonError::Nostr(format!(
-                        "failed to check squad membership: {e}"
-                    )));
+                    // Match the per-recipient decrypt loop below: one
+                    // unhealthy engine must not fail-close discovery for
+                    // every co-located member. Empty `recipients` after
+                    // this loop still surfaces total failure.
+                    warn!(
+                        "failed to check squad membership for pubkey={} group={}: {}; skipping unhealthy engine",
+                        pubkey, group_id, e
+                    );
+                    continue;
                 }
             }
         }
@@ -2576,6 +2582,112 @@ mod tests {
             vec!["bob-bot".to_string(), "carol-bot".to_string()],
             "both bob and carol must independently decrypt the message after the add-member \
              commit; a missing bot_id means its engine never received that commit"
+        );
+    }
+
+    /// One unhealthy MLS engine used to fail-close recipient discovery
+    /// (`has_group_with_wire_id` returning Err aborted the whole apply),
+    /// stranding healthy co-located members at a stale epoch. Soft-skip
+    /// that engine so the remaining members still process the message.
+    #[tokio::test]
+    async fn unhealthy_engine_does_not_block_healthy_members_from_processing() {
+        let relay = MockRelay::start().await.expect("mock relay should start");
+        let client = NostrClient::new(vec![relay.url()]).await.unwrap();
+        let temp = test_tempdir();
+
+        let alice_keys = Keys::generate();
+        let bob_keys = Keys::generate();
+        let carol_keys = Keys::generate();
+        let alice_signer: Arc<dyn Signer> =
+            Arc::new(LocalKey::parse(&alice_keys.secret_key().to_bech32().unwrap()).unwrap());
+        let bob_signer: Arc<dyn Signer> =
+            Arc::new(LocalKey::parse(&bob_keys.secret_key().to_bech32().unwrap()).unwrap());
+
+        let alice_engine = MlsEngineHandle::new_persistent(temp.path().join("alice-mls.db"))
+            .expect("new_persistent");
+        let bob_engine = MlsEngineHandle::new_persistent(temp.path().join("bob-mls.db"))
+            .expect("new_persistent");
+        let carol_engine = MlsEngineHandle::disconnected_for_test();
+
+        client
+            .add_signer(
+                alice_keys.public_key(),
+                "alice-bot".into(),
+                alice_signer.clone(),
+            )
+            .await;
+        client
+            .add_signer(bob_keys.public_key(), "bob-bot".into(), bob_signer.clone())
+            .await;
+        client
+            .add_mls_engine(
+                alice_keys.public_key(),
+                "alice-bot".into(),
+                alice_engine.clone(),
+            )
+            .await;
+        client
+            .add_mls_engine(bob_keys.public_key(), "bob-bot".into(), bob_engine.clone())
+            .await;
+        client
+            .add_mls_engine(carol_keys.public_key(), "carol-bot".into(), carol_engine)
+            .await;
+
+        let mut stream = client.receive_events();
+
+        let bob_kp = mls_key_package_for(&bob_engine, &bob_keys).await;
+        let (wire_id, bob_welcome) = alice_engine
+            .create_group(
+                alice_keys.public_key(),
+                bob_keys.public_key(),
+                bob_kp,
+                "squad-chat".to_string(),
+                vec![nostr::RelayUrl::parse(&relay.url()).unwrap()],
+                vec![alice_keys.public_key(), bob_keys.public_key()],
+            )
+            .await
+            .expect("create_group failed");
+        client
+            .send_welcome(alice_signer.as_ref(), &bob_keys.public_key(), bob_welcome)
+            .await
+            .expect("send_welcome(bob) failed");
+
+        let group_id = alice_engine
+            .resolve_wire_id(&wire_id)
+            .await
+            .expect("resolve_wire_id failed");
+        let rumor = UnsignedEvent::new(
+            alice_keys.public_key(),
+            Timestamp::now(),
+            Kind::PrivateDirectMessage,
+            Vec::new(),
+            "still delivered".to_string(),
+        );
+        client
+            .send_group_message(&alice_engine, alice_signer.as_ref(), group_id, rumor)
+            .await
+            .expect("send_group_message failed");
+
+        let mut message_recipients = Vec::new();
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_secs(5), stream.next()).await {
+                Ok(Some(Ok(event))) => {
+                    if event.event_type == EventType::MlsGroupMessageReceived {
+                        assert_eq!(event.content, "still delivered");
+                        message_recipients.push(event.bot_id);
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    panic!("discovery must not fail-close on an unhealthy engine: {e}");
+                }
+                _ => break,
+            }
+        }
+        message_recipients.sort();
+        assert_eq!(
+            message_recipients,
+            vec!["bob-bot".to_string()],
+            "bob must still decrypt despite carol's unhealthy engine"
         );
     }
 
