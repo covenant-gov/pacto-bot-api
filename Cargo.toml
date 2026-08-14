@@ -68,7 +68,7 @@ colored = "3"
 nix = { version = "0.31", features = ["signal", "process"] }
     rpassword = "7.5.4"
 jsonschema = "0.46"
-aes = "0.8"
+aes = "0.9"
 aes-gcm = "0.10.3"
 sha2 = "0.10"
 base64 = "0.22"
