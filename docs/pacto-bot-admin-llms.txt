@@ -256,6 +256,23 @@ pacto-bot-admin status --format json
 Notes:
 `--format` accepts `text` or `json`.
 
+### `scenario`
+
+Parse, validate, and replay a declarative scenario file against existing bot verbs (no new wire-protocol capability).
+
+Examples:
+```bash
+pacto-bot-admin scenario validate scenarios/squad-conversation.toml
+pacto-bot-admin scenario run scenarios/squad-conversation.toml
+pacto-bot-admin scenario run scenarios/squad-conversation.toml --step-timeout 30
+```
+
+Notes:
+- `validate` parses the TOML and refuses unknown participants, unknown verbs, and any wall-clock gap fields (`after`, `min_age`, …) at parse time.
+- `run` (Unix only) replays steps through existing admin/agent verbs and gates each step on an observable signal (welcome accepted, message persisted), never on sleeps.
+- `--step-timeout` is seconds to wait for each step's signal (default: 30).
+- Raise `[daemon] group_message_rate` / `group_message_burst` for dense replays; production defaults remain one notification per minute per squad.
+
 ## Daemon configuration
 
 The daemon reads bot identities from `pacto-bot-api.toml`. The file must be readable only by the owner (`0o600` or stricter).
