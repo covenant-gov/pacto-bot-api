@@ -193,6 +193,55 @@ async fn two_participant_three_message_scenario_replays_in_declared_order()
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
+async fn two_participant_dm_scenario_replays_with_recipient_trace() -> Result<(), Box<dyn Error>> {
+    let dir = common::tempdir()?;
+    let relay = MockRelay::start().await?;
+
+    let alice = participant_bot("alice-bot", &relay.url())?;
+    let bob = participant_bot("bob-bot", &relay.url())?;
+    let config = write_scenario_config(dir.path(), &[alice, bob])?;
+
+    let daemon = common::spawn_daemon_until_ready(&config).await?;
+
+    let assert = run_scenario(&config, &fixture("two-participant-dm.toml"), 20);
+
+    common::shutdown_daemon(daemon).await?;
+    relay.stop().await;
+
+    let output = assert.get_output().clone();
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        output.status.success(),
+        "dm scenario run should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let steps = step_progress_lines(&stdout);
+    assert_eq!(steps.len(), 1, "expected 1 successful step\n{stdout}");
+    assert!(steps[0].starts_with("step 1 (alice send_dm)"));
+
+    let ids = trace_bot_id_order(&stdout);
+    assert_eq!(
+        ids,
+        vec!["bob-bot".to_string()],
+        "recipient should record a trace row\n{stdout}"
+    );
+    // event_trace.action is the handler response (`ack`), not the inbound
+    // event type; the wait-gate above already required DmReceived.
+    assert!(
+        stdout.lines().any(|line| {
+            line.starts_with("bob-bot ")
+                && line.contains(" ack ")
+                && line.contains("hello bob, this is a dm")
+        }),
+        "expected a bob-bot ack trace row for the DM\n{stdout}"
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
 async fn unreachable_signal_fails_naming_the_step_and_the_signal() -> Result<(), Box<dyn Error>> {
     let dir = common::tempdir()?;
     let relay = MockRelay::start().await?;

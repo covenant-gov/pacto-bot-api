@@ -15,10 +15,10 @@ pub struct DaemonConfigGenerated {
     /// data_dir
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
-    /// Per-Squad group-message handler-notification token-bucket capacity.
+    /// Per-Squad group-message handler-notification token-bucket capacity. Must be greater than 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_message_burst: Option<serde_json::Value>,
-    /// Per-Squad group-message handler-notification token-bucket refill rate, in tokens per second. Bounds how often a handler is re-notified about ongoing Squad activity, independent of MLS message persistence, which is never rate limited.
+    /// Per-Squad group-message handler-notification token-bucket refill rate, in tokens per second. Must be greater than 0. Bounds how often a handler is re-notified about ongoing Squad activity, independent of MLS message persistence, which is never rate limited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_message_rate: Option<serde_json::Value>,
     /// Seconds between stale-handler reaper sweeps

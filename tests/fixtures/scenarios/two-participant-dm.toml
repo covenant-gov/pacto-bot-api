@@ -1,0 +1,17 @@
+# Two participants, one DM (covers Step::SendDm e2e replay: wait-gated
+# on DmReceived, with a recipient dm_received trace row).
+version = 1
+
+[[participants]]
+name = "alice"
+bot_id = "alice-bot"
+
+[[participants]]
+name = "bob"
+bot_id = "bob-bot"
+
+[[steps]]
+actor = "alice"
+action = "send_dm"
+to = "bob"
+content = "hello bob, this is a dm"
