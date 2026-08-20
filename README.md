@@ -12,7 +12,14 @@ A standalone Rust daemon that multiplexes multiple Pacto bot identities onto one
 | **Where** | Self-hosted by each operator — typically `~/.local/share/pacto-bot-api` on a server or workstation. |
 | **When** | Phase 1 supports multi-bot static config, NIP-17/44/59 DMs, local test keys, NIP-46 bunkers, and handler registration. |
 
+## Architecture at a glance
+
+![How Pacto Bots Work](docs/diagrams/pacto-bot-api-big-picture-cartoon.png)
+
+*Kid-friendly overview: your bots are small ships that just talk to the Flagship. The Flagship handles all the crypto stuff and keeps your keys safe in the vault. See [`docs/diagrams/`](docs/diagrams/) for editable Excalidraw sources, the technical version, and the full diagram set.*
+
 ## Quickstart
+
 
 ### 1. Install
 
