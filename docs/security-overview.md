@@ -169,6 +169,14 @@ The repository includes tests that exercise these protections:
 You can run them with `make test` (Docker-free, in-process mocks) or
 `cargo test -- --ignored` when the `pacto-dev-env` Docker services are running.
 
+## CI and release supply chain
+
+GitHub Actions workflows pin third-party actions by commit SHA, use least-
+privilege job permissions, and keep Python package build separate from the
+PyPI publishing secret. Long-lived `PYPI_API_TOKEN` publishing is retained
+until a maintainer configures PyPI Trusted Publishing externally. See
+[CI and release supply-chain controls](./ci-supply-chain.md).
+
 ## If something goes wrong
 
 - Rotate the HTTP token with `pacto-bot-admin rotate-http-token`.
