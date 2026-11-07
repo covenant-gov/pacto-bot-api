@@ -39,34 +39,40 @@ concurrency:
   group: prep-release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
+# Default deny; the job below escalates only what create-pull-request needs.
+permissions: {}
 
 jobs:
   prep-release:
     name: Prep release (${{ inputs.version_bump }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # create-pull-request configures git with the job token; do not
+          # persist the default checkout credentials on disk.
+          persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           components: rustfmt, clippy
 
       - name: Restore Rust dependency cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: prep-release
 
       - name: Install cargo-generate
-        run: cargo install cargo-generate --version 0.23.12
+        run: cargo install cargo-generate --version 0.23.12 --locked
 
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -113,7 +119,7 @@ jobs:
 
       - name: Open release-prep pull request
         id: cpr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7.0.11
         with:
           commit-message: "chore: release ${{ steps.resolve.outputs.daemon_version }}"
           title: "chore: release ${{ steps.resolve.outputs.daemon_version }}"
@@ -130,7 +136,7 @@ jobs:
             git push origin v${{ steps.resolve.outputs.daemon_version }}
             ```
 
-            Pushing the tag triggers `release.yml` (build, package, GitHub release,
+            Pushing the tag triggers [`release.yml`](https://github.com/covenant-gov/pacto-bot-api/blob/main/.github/workflows/release.yml) (build, package, GitHub release,
             PyPI publish, Docker image).
           branch: release-prep/v${{ steps.resolve.outputs.daemon_version }}
           base: ${{ github.ref_name }}
